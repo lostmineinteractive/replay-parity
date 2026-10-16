@@ -4,6 +4,12 @@ All notable changes to this repository are recorded here. The format follows Kee
 
 ## Unreleased
 
+### Step 2: demo services
+
+- Added `@replay-parity/demo-reference`, a fastify inventory and fulfillment service with `GET /v1/inventory`, `POST /v1/orders`, `GET /v1/orders/:id`, `POST /v1/inventory/:sku/adjust`, and `/healthz`. Prices are stored in thousandths so order totals can land on exact half cents.
+- Added `@replay-parity/demo-candidate`, the same service with four planted divergences behind the `DIVERGENCES` environment variable: half even rounding, insertion ordered inventory, a 60 ms delay on a seeded 5 percent of adjust calls, and 200 with an empty body for an unknown order. The two `app.ts` files differ only at the four marked lines.
+- Tests cover each divergence, the delay plan's reproducibility for a seed, and byte identical responses to the reference over a scripted scenario when divergences are off.
+
 ### Step 1: core package
 
 - Added `@replay-parity/core` with the recording format (zod schemas, a streaming JSON Lines reader that reports line numbers and rejects decreasing `offset_ms`, an append only writer, body encoding with the one MiB truncation rule, header redaction, and a monotonic ULID generator).

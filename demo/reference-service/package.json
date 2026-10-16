@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "license": "MIT",
+  "description": "Reference inventory and fulfillment service for the replay-parity demo.",
   "engines": {
     "node": ">=22"
   },
@@ -15,5 +16,11 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "scripts": {
+    "start": "node dist/src/server.js"
+  },
+  "dependencies": {
+    "fastify": "^5.12.7"
+  }
 }
