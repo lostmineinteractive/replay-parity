@@ -1,0 +1,413 @@
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { REDACTED, parseRecordingText, sha256Hex, type Exchange } from '@replay-parity/core';
+import { buildApp } from '@replay-parity/demo-reference';
+import { request } from 'undici';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { CaptureServer, parseTagRule } from '../src/index.js';
+
+const TAG_RULES = [
+  'POST /v1/orders=create-order',
+  'GET /v1/orders/*=get-order',
+  'GET /v1/inventory=list-inventory',
+  'POST /v1/inventory/*/adjust=adjust-stock',
+].map(parseTagRule);
+
+interface Harness {
+  reference: ReturnType<typeof buildApp>;
+  referenceUrl: string;
+  capture: CaptureServer;
+  proxyUrl: string;
+  out: string;
+}
+
+async function startHarness(
+  options: Partial<Parameters<typeof CaptureServer.create>[0]> = {},
+): Promise<Harness> {
+  const reference = buildApp({ now: () => new Date('2026-10-16T18:00:00.000Z') });
+  await reference.listen({ port: 0, host: '127.0.0.1' });
+  const referenceUrl = `http://127.0.0.1:${(reference.server.address() as AddressInfo).port}`;
+  const dir = await mkdtemp(join(tmpdir(), 'rp-capture-'));
+  const out = join(dir, 'recording.jsonl');
+  const capture = await CaptureServer.create({
+    target: referenceUrl,
+    out,
+    tagRules: TAG_RULES,
+    ...options,
+  });
+  const addr = await capture.listen({ port: 0, host: '127.0.0.1' });
+  return { reference, referenceUrl, capture, proxyUrl: `http://127.0.0.1:${addr.port}`, out };
+}
+
+async function readRecording(path: string): Promise<Exchange[]> {
+  return parseRecordingText(await readFile(path, 'utf8'));
+}
+
+async function fetchBoth(h: Harness, path: string, init?: Parameters<typeof request>[1]) {
+  const [direct, proxied] = await Promise.all([
+    request(`${h.referenceUrl}${path}`, init),
+    request(`${h.proxyUrl}${path}`, init),
+  ]);
+  const [directBody, proxiedBody] = await Promise.all([
+    direct.body.arrayBuffer(),
+    proxied.body.arrayBuffer(),
+  ]);
+  return {
+    direct: { status: direct.statusCode, headers: direct.headers, body: Buffer.from(directBody) },
+    proxied: {
+      status: proxied.statusCode,
+      headers: proxied.headers,
+      body: Buffer.from(proxiedBody),
+    },
+  };
+}
+
+const harnesses: Harness[] = [];
+afterEach(async () => {
+  for (const h of harnesses.splice(0)) {
+    await h.capture.close();
+    await h.reference.close();
+  }
+});
+
+describe('pass through', () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await startHarness();
+    harnesses.push(h);
+  });
+
+  it('returns the same status, headers, and bytes as the reference for JSON routes', async () => {
+    for (const [path, init] of [
+      ['/v1/inventory', undefined],
+      ['/v1/orders/o-404', undefined],
+      [
+        '/v1/orders',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sku: 'A-100', qty: 1001 }),
+        },
+      ],
+    ] as const) {
+      const { direct, proxied } = await fetchBoth(h, path, init);
+      expect(proxied.status, path).toBe(direct.status);
+      expect(proxied.body.equals(direct.body), path).toBe(true);
+      expect(proxied.headers['content-type'], path).toBe(direct.headers['content-type']);
+      expect(proxied.headers['content-length'], path).toBe(direct.headers['content-length']);
+    }
+  });
+
+  it('records an exchange per request with the fields from the spec', async () => {
+    await request(`${h.proxyUrl}/v1/orders?source=test&source=again&dry=1`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer secret-token',
+        'x-api-key': 'k-1',
+      },
+      body: JSON.stringify({ sku: 'B-200', qty: 1 }),
+    }).then((r) => r.body.text());
+    await request(`${h.proxyUrl}/v1/orders/o-1`).then((r) => r.body.text());
+    await h.capture.close();
+    const exchanges = await readRecording(h.out);
+    expect(exchanges).toHaveLength(2);
+    const [create, get] = exchanges as [Exchange, Exchange];
+    expect(create.adapter).toBe('http');
+    expect(create.offset_ms).toBe(0);
+    expect(get.offset_ms).toBeGreaterThanOrEqual(0);
+    expect(create.request).toMatchObject({
+      method: 'POST',
+      path: '/v1/orders',
+      query: { source: ['test', 'again'], dry: '1' },
+      body: { sku: 'B-200', qty: 1 },
+    });
+    expect(create.request.headers.authorization).toBe(REDACTED);
+    expect(create.request.headers['x-api-key']).toBe(REDACTED);
+    expect(create.request.headers['content-type']).toBe('application/json');
+    expect(create.response.status).toBe(201);
+    expect(create.response.body).toMatchObject({ order_id: 'o-1', total: 4.13 });
+    expect(create.response.headers['content-type']).toContain('application/json');
+    expect(create.response.headers['transfer-encoding']).toBeUndefined();
+    expect(create.response.latency_ms).toBeGreaterThan(0);
+    expect(create.tags).toEqual(['create-order']);
+    expect(get.tags).toEqual(['get-order']);
+    expect(get.request.body).toBeUndefined();
+    expect(get.response.body).toEqual(create.response.body);
+    expect(h.capture.stats).toEqual({ seen: 2, recorded: 2, failed: 0 });
+  });
+
+  it('keeps arrival order in the recording under concurrency', async () => {
+    const paths = Array.from({ length: 30 }, (_, i) =>
+      i % 3 === 0 ? '/v1/inventory' : `/v1/orders/o-${i}`,
+    );
+    await Promise.all(paths.map((p) => request(`${h.proxyUrl}${p}`).then((r) => r.body.text())));
+    await h.capture.close();
+    const exchanges = await readRecording(h.out);
+    expect(exchanges).toHaveLength(30);
+    for (let i = 1; i < exchanges.length; i += 1) {
+      expect((exchanges[i] as Exchange).offset_ms).toBeGreaterThanOrEqual(
+        (exchanges[i - 1] as Exchange).offset_ms,
+      );
+    }
+  });
+});
+
+describe('body kinds', () => {
+  let upstream: Server;
+  let upstreamUrl: string;
+  const bigBody = Buffer.alloc(2_000_000, 'x');
+
+  beforeEach(async () => {
+    upstream = createServer((req, res) => {
+      if (req.url === '/text') {
+        res.writeHead(200, { 'content-type': 'text/plain', 'x-trace': 'abc' });
+        res.end('hello there');
+      } else if (req.url === '/binary') {
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        res.end(Buffer.from([0, 1, 2, 255]));
+      } else if (req.url === '/chunked') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.write('{"a":');
+        setTimeout(() => res.end('1}'), 10);
+      } else if (req.url === '/big') {
+        res.writeHead(200, { 'content-type': 'text/plain', 'content-length': bigBody.length });
+        res.end(bigBody);
+      } else if (req.url === '/cookie') {
+        res.writeHead(200, { 'set-cookie': ['a=1', 'b=2'], 'content-type': 'application/json' });
+        res.end('{}');
+      } else if (req.url === '/boom') {
+        res.writeHead(500, { 'content-type': 'text/plain' });
+        res.end('broken');
+      } else if (req.url === '/empty') {
+        res.writeHead(204);
+        res.end();
+      } else if (req.url === '/echo') {
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': req.headers['content-type'] ?? 'text/plain' });
+          res.end(Buffer.concat(chunks));
+        });
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    upstreamUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  });
+
+  async function startCapture(options: Partial<Parameters<typeof CaptureServer.create>[0]> = {}) {
+    const dir = await mkdtemp(join(tmpdir(), 'rp-capture-'));
+    const out = join(dir, 'recording.jsonl');
+    const capture = await CaptureServer.create({ target: upstreamUrl, out, ...options });
+    const addr = await capture.listen({ port: 0, host: '127.0.0.1' });
+    return { capture, out, proxyUrl: `http://127.0.0.1:${addr.port}` };
+  }
+
+  it('passes text, binary, chunked, cookie, error, and empty responses through byte for byte', async () => {
+    const { capture, out, proxyUrl } = await startCapture();
+    const expectations: Record<string, { status: number; body: Buffer }> = {
+      '/text': { status: 200, body: Buffer.from('hello there') },
+      '/binary': { status: 200, body: Buffer.from([0, 1, 2, 255]) },
+      '/chunked': { status: 200, body: Buffer.from('{"a":1}') },
+      '/cookie': { status: 200, body: Buffer.from('{}') },
+      '/boom': { status: 500, body: Buffer.from('broken') },
+      '/empty': { status: 204, body: Buffer.alloc(0) },
+    };
+    for (const [path, expected] of Object.entries(expectations)) {
+      const res = await request(`${proxyUrl}${path}`);
+      const body = Buffer.from(await res.body.arrayBuffer());
+      expect(res.statusCode, path).toBe(expected.status);
+      expect(body.equals(expected.body), path).toBe(true);
+    }
+    const cookie = await request(`${proxyUrl}/cookie`);
+    await cookie.body.text();
+    expect(cookie.headers['set-cookie']).toEqual(['a=1', 'b=2']);
+    const text = await request(`${proxyUrl}/text`);
+    await text.body.text();
+    expect(text.headers['x-trace']).toBe('abc');
+    await capture.close();
+
+    const exchanges = await readRecording(out);
+    const byPath = Object.fromEntries(exchanges.map((e) => [e.request.path, e]));
+    expect(byPath['/text']?.response).toMatchObject({
+      status: 200,
+      body: Buffer.from('hello there').toString('base64'),
+      encoding: 'base64',
+    });
+    expect(byPath['/binary']?.response.body).toBe(Buffer.from([0, 1, 2, 255]).toString('base64'));
+    expect(byPath['/chunked']?.response.body).toEqual({ a: 1 });
+    expect(byPath['/cookie']?.response.headers['set-cookie']).toBe(REDACTED);
+    expect(byPath['/boom']?.response.status).toBe(500);
+    expect(byPath['/empty']?.response.body).toBeUndefined();
+    expect(byPath['/empty']?.response.encoding).toBeUndefined();
+    expect(byPath['/text']?.tags).toEqual([]);
+  });
+
+  it('forwards a request body unchanged and records it', async () => {
+    const { capture, out, proxyUrl } = await startCapture();
+    const payload = Buffer.from([7, 8, 9]);
+    const res = await request(`${proxyUrl}/echo`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: payload,
+    });
+    expect(Buffer.from(await res.body.arrayBuffer()).equals(payload)).toBe(true);
+    await capture.close();
+    const [echo] = await readRecording(out);
+    expect(echo?.request).toMatchObject({ body: payload.toString('base64'), encoding: 'base64' });
+  });
+
+  it('streams a body over the cap to the caller and records only a hash', async () => {
+    const { capture, out, proxyUrl } = await startCapture();
+    const res = await request(`${proxyUrl}/big`);
+    const body = Buffer.from(await res.body.arrayBuffer());
+    expect(body.length).toBe(bigBody.length);
+    expect(body.equals(bigBody)).toBe(true);
+    await capture.close();
+    const [big] = await readRecording(out);
+    expect(big?.response).toMatchObject({
+      truncated: true,
+      body_sha256: sha256Hex(bigBody),
+      body_size: bigBody.length,
+    });
+    expect(big?.response.body).toBeUndefined();
+  });
+
+  it('honors a custom cap and stores a body exactly at the cap', async () => {
+    const { capture, out, proxyUrl } = await startCapture({ maxBodyBytes: 11 });
+    await request(`${proxyUrl}/text`).then((r) => r.body.text());
+    await request(`${proxyUrl}/chunked`).then((r) => r.body.text());
+    await capture.close();
+    const exchanges = await readRecording(out);
+    expect(exchanges[0]?.response.encoding).toBe('base64');
+    expect(exchanges[0]?.response.truncated).toBeUndefined();
+    expect(exchanges[1]?.response.body).toEqual({ a: 1 });
+  });
+
+  it('samples with the injected random source', async () => {
+    const draws = [0.05, 0.5, 0.01, 0.99, 0.2];
+    let i = 0;
+    const { capture, out, proxyUrl } = await startCapture({
+      sample: 0.1,
+      random: () => draws[i++ % draws.length] as number,
+    });
+    for (let n = 0; n < 5; n += 1) {
+      await request(`${proxyUrl}/text`).then((r) => r.body.text());
+    }
+    await capture.close();
+    const exchanges = await readRecording(out);
+    expect(exchanges).toHaveLength(2);
+    expect(exchanges[1]?.offset_ms).toBeGreaterThanOrEqual(0);
+    expect(capture.stats).toEqual({ seen: 5, recorded: 2, failed: 0 });
+  });
+
+  it('rejects an invalid sample fraction', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'rp-capture-'));
+    await expect(
+      CaptureServer.create({ target: upstreamUrl, out: join(dir, 'r.jsonl'), sample: 0 }),
+    ).rejects.toThrow(RangeError);
+    await expect(
+      CaptureServer.create({ target: upstreamUrl, out: join(dir, 'r.jsonl'), sample: 1.5 }),
+    ).rejects.toThrow(RangeError);
+  });
+});
+
+describe('failures and shutdown', () => {
+  it('answers 502 and records nothing when the upstream is unreachable', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'rp-capture-'));
+    const out = join(dir, 'recording.jsonl');
+    const errors: string[] = [];
+    const capture = await CaptureServer.create({
+      target: 'http://127.0.0.1:1',
+      out,
+      onError: (_err, context) => errors.push(context),
+    });
+    const addr = await capture.listen({ port: 0, host: '127.0.0.1' });
+    const res = await request(`http://127.0.0.1:${addr.port}/v1/inventory`);
+    expect(res.statusCode).toBe(502);
+    expect(await res.body.json()).toEqual({ error: 'upstream_unavailable' });
+    await capture.close();
+    expect(await readFile(out, 'utf8')).toBe('');
+    expect(errors).toEqual(['GET /v1/inventory']);
+    expect(capture.stats).toEqual({ seen: 1, recorded: 0, failed: 1 });
+  });
+
+  it('answers 504 on an upstream timeout', async () => {
+    const slow = createServer(() => undefined);
+    await new Promise<void>((resolve) => slow.listen(0, '127.0.0.1', resolve));
+    const dir = await mkdtemp(join(tmpdir(), 'rp-capture-'));
+    const capture = await CaptureServer.create({
+      target: `http://127.0.0.1:${(slow.address() as AddressInfo).port}`,
+      out: join(dir, 'recording.jsonl'),
+      upstreamTimeoutMs: 100,
+    });
+    const addr = await capture.listen({ port: 0, host: '127.0.0.1' });
+    const res = await request(`http://127.0.0.1:${addr.port}/slow`);
+    expect(res.statusCode).toBe(504);
+    await res.body.text();
+    await capture.close();
+    slow.closeAllConnections();
+    await new Promise<void>((resolve) => slow.close(() => resolve()));
+  });
+
+  it('lets in flight requests finish and flushes the file on close', async () => {
+    const slow = createServer((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"slow":true}');
+      }, 150);
+    });
+    await new Promise<void>((resolve) => slow.listen(0, '127.0.0.1', resolve));
+    const dir = await mkdtemp(join(tmpdir(), 'rp-capture-'));
+    const out = join(dir, 'recording.jsonl');
+    const capture = await CaptureServer.create({
+      target: `http://127.0.0.1:${(slow.address() as AddressInfo).port}`,
+      out,
+    });
+    const addr = await capture.listen({ port: 0, host: '127.0.0.1' });
+    const inflight = Array.from({ length: 6 }, (_, i) =>
+      request(`http://127.0.0.1:${addr.port}/slow/${i}`).then(async (r) => ({
+        status: r.statusCode,
+        body: await r.body.json(),
+      })),
+    );
+    while (capture.stats.seen < 6) await new Promise((resolve) => setTimeout(resolve, 2));
+    const closing = capture.close();
+    const results = await Promise.all(inflight);
+    await closing;
+    expect(results.every((r) => r.status === 200)).toBe(true);
+    const text = await readFile(out, 'utf8');
+    expect(text.endsWith('\n')).toBe(true);
+    expect(parseRecordingText(text)).toHaveLength(6);
+    await capture.close();
+    await new Promise<void>((resolve) => slow.close(() => resolve()));
+  });
+
+  it('starts a fresh file when append is false', async () => {
+    const h1 = await startHarness();
+    await request(`${h1.proxyUrl}/v1/inventory`).then((r) => r.body.text());
+    await h1.capture.close();
+    const second = await CaptureServer.create({
+      target: h1.referenceUrl,
+      out: h1.out,
+      append: false,
+    });
+    const addr = await second.listen({ port: 0, host: '127.0.0.1' });
+    await request(`http://127.0.0.1:${addr.port}/v1/orders/o-9`).then((r) => r.body.text());
+    await second.close();
+    await h1.reference.close();
+    const exchanges = await readRecording(h1.out);
+    expect(exchanges).toHaveLength(1);
+    expect(exchanges[0]?.request.path).toBe('/v1/orders/o-9');
+  });
+});

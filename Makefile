@@ -1,8 +1,9 @@
 # replay-parity build entry points. Compatible with GNU Make 3.81.
 
 PNPM ?= pnpm
+REFERENCE_URL ?= http://127.0.0.1:3001
 
-.PHONY: all install build typecheck lint format test test-unit test-int coverage check-prose check-secrets check demo demo-down clean
+.PHONY: all install build typecheck lint format test test-unit test-int coverage check-prose check-secrets check recording bench-capture demo demo-down clean
 
 all: install lint build test
 
@@ -40,6 +41,12 @@ check-secrets:
 	sh scripts/check-secrets.sh
 
 check: lint typecheck test check-prose check-secrets
+
+recording:
+	$(PNPM) --filter @replay-parity/scripts exec tsx make-recording.ts
+
+bench-capture:
+	$(PNPM) --filter @replay-parity/scripts exec tsx bench-capture.ts --reference $(REFERENCE_URL)
 
 demo:
 	@echo "make demo is implemented in build step 7." && exit 1

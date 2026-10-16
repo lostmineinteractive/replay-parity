@@ -1,13 +1,35 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/core" },
-    { "path": "packages/capture" },
-    { "path": "packages/replay" },
-    { "path": "packages/report" },
-    { "path": "packages/agent" },
-    { "path": "packages/cli" },
-    { "path": "demo/reference-service" },
-    { "path": "demo/candidate-service" }
+    {
+      "path": "packages/core"
+    },
+    {
+      "path": "packages/capture"
+    },
+    {
+      "path": "packages/replay"
+    },
+    {
+      "path": "packages/report"
+    },
+    {
+      "path": "packages/agent"
+    },
+    {
+      "path": "packages/cli"
+    },
+    {
+      "path": "demo/reference-service"
+    },
+    {
+      "path": "demo/candidate-service"
+    },
+    {
+      "path": "demo/load"
+    },
+    {
+      "path": "scripts"
+    }
   ]
 }

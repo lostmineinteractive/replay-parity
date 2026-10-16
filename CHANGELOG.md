@@ -4,6 +4,14 @@ All notable changes to this repository are recorded here. The format follows Kee
 
 ## Unreleased
 
+### Step 3: capture proxy, demo load, committed recording
+
+- Added `@replay-parity/capture`: a reverse proxy on Node `http` and `undici` that streams every response back unchanged, records the exchange with arrival order preserved under concurrency, applies `--tag-rule` style rules (`[METHOD ]<glob>=<tag>`), samples with an injectable random source, redacts headers, enforces `--max-body-bytes` (default 1 MiB) by storing an oversized body as hash and size, answers 502 or 504 when the upstream fails, and flushes the recording on close after in flight requests finish.
+- Added `@replay-parity/demo-load`, a seeded traffic generator for the four demo tags that looks up ids returned by earlier order creations and uses an unknown id on a share of lookups.
+- Added the `@replay-parity/scripts` workspace with `make-recording.ts` (produces `demo/recording.jsonl` in process, no Docker) and `bench-capture.ts` (measures proxy overhead against a running reference), plus `make recording` and `make bench-capture` targets.
+- Committed `demo/recording.jsonl`: 300 exchanges over 13 seconds across `create-order`, `get-order`, `list-inventory`, and `adjust-stock`, with the demo authorization header redacted.
+- Integration tests cover byte identical pass through for JSON, text, binary, chunked, cookie, error, and empty responses, the recorded fields from the spec, arrival order under concurrency, the body size cap, sampling, upstream failure and timeout, and graceful shutdown with requests in flight.
+
 ### Step 2: demo services
 
 - Added `@replay-parity/demo-reference`, a fastify inventory and fulfillment service with `GET /v1/inventory`, `POST /v1/orders`, `GET /v1/orders/:id`, `POST /v1/inventory/:sku/adjust`, and `/healthz`. Prices are stored in thousandths so order totals can land on exact half cents.

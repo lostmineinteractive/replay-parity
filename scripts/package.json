@@ -1,0 +1,21 @@
+{
+  "name": "@replay-parity/scripts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Repository tooling: recording generation and benchmarks.",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@replay-parity/capture": "workspace:*",
+    "@replay-parity/core": "workspace:*",
+    "@replay-parity/demo-load": "workspace:*",
+    "@replay-parity/demo-reference": "workspace:*",
+    "undici": "^8.12.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
+  }
+}

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "license": "MIT",
+  "description": "Recording reverse proxy for replay-parity.",
   "engines": {
     "node": ">=22"
   },
@@ -15,5 +16,12 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "dependencies": {
+    "@replay-parity/core": "workspace:*",
+    "undici": "^8.12.2"
+  },
+  "devDependencies": {
+    "@replay-parity/demo-reference": "workspace:*"
+  }
 }

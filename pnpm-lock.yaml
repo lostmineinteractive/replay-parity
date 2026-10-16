@@ -55,6 +55,8 @@ importers:
         specifier: workspace:*
         version: link:../reference-service
 
+  demo/load: {}
+
   demo/reference-service:
     dependencies:
       fastify:
@@ -63,7 +65,18 @@ importers:
 
   packages/agent: {}
 
-  packages/capture: {}
+  packages/capture:
+    dependencies:
+      '@replay-parity/core':
+        specifier: workspace:*
+        version: link:../core
+      undici:
+        specifier: ^8.12.2
+        version: 8.12.2
+    devDependencies:
+      '@replay-parity/demo-reference':
+        specifier: workspace:*
+        version: link:../../demo/reference-service
 
   packages/cli: {}
 
@@ -82,6 +95,28 @@ importers:
   packages/replay: {}
 
   packages/report: {}
+
+  scripts:
+    dependencies:
+      '@replay-parity/capture':
+        specifier: workspace:*
+        version: link:../packages/capture
+      '@replay-parity/core':
+        specifier: workspace:*
+        version: link:../packages/core
+      '@replay-parity/demo-load':
+        specifier: workspace:*
+        version: link:../demo/load
+      '@replay-parity/demo-reference':
+        specifier: workspace:*
+        version: link:../demo/reference-service
+      undici:
+        specifier: ^8.12.2
+        version: 8.12.2
+    devDependencies:
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
 
 packages:
 
@@ -1160,6 +1195,10 @@ packages:
   undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
 
+  undici@8.12.2:
+    resolution: {integrity: sha512-XtuDWVdqTLr3NAxm2ly9/hU6kUsJOgGh1RASzMBbsw6aWCOaQzHdW+QQDfdERjfJ2V5vL5pRPa4RetO9UfivDg==}
+    engines: {node: '>=22.19.0'}
+
   uri-js@4.4.1:
     resolution: {integrity: sha512-7rKUyy33Q1yc98pQ1DAmLtwX109F7TIfWlW1Ydo8Wl1ii1SeHieeh0HHfPeL2fMXK6z0s8ecKs9frCuLJvndBg==}
 
@@ -2233,6 +2272,8 @@ snapshots:
   typescript@6.0.3: {}
 
   undici-types@6.21.0: {}
+
+  undici@8.12.2: {}
 
   uri-js@4.4.1:
     dependencies:

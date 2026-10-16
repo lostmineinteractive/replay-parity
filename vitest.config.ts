@@ -13,6 +13,7 @@ const alias = [
     find: '@replay-parity/demo-candidate',
     replacement: here('demo/candidate-service/src/index.ts'),
   },
+  { find: '@replay-parity/demo-load', replacement: here('demo/load/src/index.ts') },
   { find: /^@replay-parity\/([a-z]+)$/, replacement: here('packages/$1/src/index.ts') },
 ];
 
