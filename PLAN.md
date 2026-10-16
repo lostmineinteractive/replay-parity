@@ -22,7 +22,7 @@ This plan turns SPEC.md into an ordered sequence of packages. Each step lists wh
 - TypeScript 5.x, `module: NodeNext`, `target: ES2022`, `strict: true`, `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess` on. Each package has `tsconfig.json` extending `tsconfig.base.json` with project references. `pnpm build` runs `tsc -b`.
 - Vitest runs tests against TypeScript sources. Workspace packages resolve to `src/index.ts` in tests through a vitest alias, so tests never need a prior build. Unit tests sit next to sources as `*.test.ts`. Integration tests live in `test/*.int.test.ts` per package. `pnpm test` runs both. `pnpm test:unit` and `pnpm test:int` run them separately.
 - Coverage is v8 through `@vitest/coverage-v8`. The core package enforces 90 percent lines, branches, functions, and statements in its vitest config, so a drop fails the run.
-- ESLint flat config with `typescript-eslint` recommended type checked rules. Prettier with default settings except `printWidth: 100`. `pnpm lint` runs both in check mode.
+- ESLint flat config with `typescript-eslint` recommended type checked rules. Prettier with `printWidth: 100` and `singleQuote: true`. `pnpm lint` runs both in check mode.
 - Dependencies beyond the spec's list, each flagged in section 4: `redis` (node-redis client for the Redis Streams bus), `ajv` as a dev dependency for schema validation tests. ULID generation and glob matching are hand written in core because each is under forty lines.
 - `CHANGELOG.md` follows the Keep a Changelog layout with one `Unreleased` section. Each build step appends an entry when its tests pass.
 - Every Markdown file passes `scripts/check-prose.sh`, which fails on any em dash (U+2014) and on a short list of banned financial terms. `scripts/check-secrets.sh` fails when any git visible file contains an Anthropic API key prefix and prints only file names and line numbers. CI runs both.
@@ -239,8 +239,8 @@ Each item names the default. Reply with the item id to change one.
 
 ```yaml
 unordered:
-  - path: "$.items"
-    key: "$.sku"
+  - path: '$.items'
+    key: '$.sku'
 ```
 
 **R2. `rp report` exit code.** The spec gives one exit code table for the tool. I apply 2 only to `rp replay` (item A13). If you want `rp report` to also exit 2 on a failed run for CI pipelines that gate on the rendered report, say so and I will add it to both.
