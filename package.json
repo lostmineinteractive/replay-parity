@@ -1,0 +1,39 @@
+{
+  "name": "replay-parity",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Capture, replay, diff, and latency gating harness for proving that a candidate system behaves like a reference system on real traffic.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.34.7",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write . && eslint . --fix",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:int": "vitest run --project integration",
+    "test:coverage": "vitest run --coverage",
+    "check-prose": "sh scripts/check-prose.sh",
+    "check-secrets": "sh scripts/check-secrets.sh",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm check-prose && pnpm check-secrets"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@types/node": "^22.20.5",
+    "@vitest/coverage-v8": "^5.0.5",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.10",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.2",
+    "vitest": "^5.0.5"
+  }
+}

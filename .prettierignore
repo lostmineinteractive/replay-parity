@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+demo/out/
+pnpm-lock.yaml
+SPEC.md
+*.jsonl
