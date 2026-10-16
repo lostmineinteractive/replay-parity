@@ -4,6 +4,18 @@ All notable changes to this repository are recorded here. The format follows Kee
 
 ## Unreleased
 
+### Step 3b: order lifecycle in the demo services (Addendum A0)
+
+- Both demo services gain `Idempotency-Key` on `POST /v1/orders`, `POST /v1/orders/:id/cancel`, `POST /v1/orders/:id/quantity`, `POST /v1/orders/:id/shipments`, `GET /v1/ledger` with decimal strings, and the admin controls `POST /admin/restart` and `POST /admin/reset`. Orders carry `status` (`OPEN`, `PARTIALLY_SHIPPED`, `SHIPPED`, `CANCELED`, `REJECTED`), `quantity`, `shipped`, `remaining`, and `canceled_unshipped` next to the amount in `total`. Stock on hand changes only on accepted shipments and adjustments. Creation allocates against available stock and a shortfall yields a `REJECTED` order. Cancellation acceptance is the cancel request's own `originated_at`.
+- A `Store` keeps the working state in memory and commits every mutation to a durable copy, a JSON file when `STORE_PATH` is set. `restart` reloads the durable copy, which is what a process restart does.
+- The candidate's `DIVERGENCES` switch is now a named set. `on` enables the original four (`rounding-half-even`, `inventory-insertion-order`, `adjust-stock-delay`, `unknown-order-200`), `off` enables none, and a comma separated list enables exactly the named ones. The four seeded defects of Addendum A3 are present as marked lines: `shipment-applied-twice`, `quantity-as-additional`, `drop-late-precancel-shipment`, `idempotency-lost-on-restart`.
+- The candidate `app.ts` is derived from the reference `app.ts`. `scripts/check-parallel.sh` fails when the two differ outside hunks marked `DIVERGENCE` or `DEFECT`, or when `store.ts` or `catalog.ts` differ at all.
+- The load generator now runs a seeded plan of twelve lifecycle scenarios with background traffic between them, a ledger read after each, and a final read of every order and the ledger. New tags: `cancel-order`, `set-quantity`, `ship-order`, `list-ledger`, `admin-restart`, `admin-reset`.
+- `demo/recording.jsonl` regenerated: 283 exchanges over 12.8 seconds, 44 orders, nine tags, seven retried idempotency keys, one restart.
+- `scripts/check-prose.sh` no longer bans `ledger`, since the route name is mandated by the addendum.
+- Tests: 42 across the two services and the load package cover every lifecycle route, idempotency, cancellation by `originated_at`, duplicate shipments, allocation, the store across an in memory restart and a real rebuild, each seeded defect alone, byte identical parity with divergences off over every route, and the plan's shape.
+- PLAN.md gains section 8, the Addendum A plan, with the approval record.
+
 ### Step 3: capture proxy, demo load, committed recording
 
 - Added `@replay-parity/capture`: a reverse proxy on Node `http` and `undici` that streams every response back unchanged, records the exchange with arrival order preserved under concurrency, applies `--tag-rule` style rules (`[METHOD ]<glob>=<tag>`), samples with an injectable random source, redacts headers, enforces `--max-body-bytes` (default 1 MiB) by storing an oversized body as hash and size, answers 502 or 504 when the upstream fails, and flushes the recording on close after in flight requests finish.

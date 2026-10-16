@@ -1,11 +1,23 @@
 import { buildApp } from './app.js';
+import { DivergenceError, parseDivergences } from './divergences.js';
 
 const port = Number(process.env.PORT ?? 3000);
-const divergences = (process.env.DIVERGENCES ?? 'on').toLowerCase() !== 'off';
 const seed = Number(process.env.DIVERGENCE_SEED ?? 1);
-const app = buildApp({ logger: true, divergences, seed });
+const storePath = process.env.STORE_PATH ?? null;
 
-app.log.info({ divergences, seed }, 'candidate configuration');
+let divergences;
+try {
+  divergences = parseDivergences(process.env.DIVERGENCES);
+} catch (err) {
+  if (err instanceof DivergenceError) {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(1);
+  }
+  throw err;
+}
+
+const app = buildApp({ logger: true, divergences, seed, storePath });
+app.log.info({ divergences: [...divergences], seed, storePath }, 'candidate configuration');
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {

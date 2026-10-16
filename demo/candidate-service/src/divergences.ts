@@ -1,13 +1,78 @@
 /**
- * The four planted divergences of the candidate service. Each is switched by
- * the `divergences` option of `buildApp`, which `server.ts` reads from the
- * `DIVERGENCES` environment variable (`on` by default, `off` to disable).
+ * The planted divergences of the candidate service. Each is one marked line
+ * in `app.ts`. The set is chosen with the `divergences` option of `buildApp`,
+ * which `server.ts` reads from the `DIVERGENCES` environment variable.
  *
- * 1. Rounding: totals round half to even instead of half up.
- * 2. Ordering: `GET /v1/inventory` returns items in insertion order instead of SKU order.
- * 3. Latency: `POST /v1/inventory/:sku/adjust` sleeps 60 ms on 5 percent of calls.
- * 4. Behavior: `GET /v1/orders/:id` on an unknown id returns 200 with an empty body instead of 404.
+ * `on` enables the original four. `off` enables none. A comma separated list
+ * enables exactly the named ones.
+ *
+ * Original four (DIVERGENCE):
+ *   rounding-half-even          totals round half to even instead of half up
+ *   inventory-insertion-order   GET /v1/inventory returns insertion order instead of SKU order
+ *   adjust-stock-delay          POST /v1/inventory/:sku/adjust sleeps 60 ms on 5 percent of calls
+ *   unknown-order-200           GET /v1/orders/:id on an unknown id returns 200 with an empty body
+ *
+ * Seeded defects (DEFECT):
+ *   shipment-applied-twice          a repeated shipment id is applied again while the original response is returned
+ *   quantity-as-additional          the quantity command adds to the quantity instead of setting it
+ *   drop-late-precancel-shipment    a shipment that originated before cancellation but arrives after it is rejected
+ *   idempotency-lost-on-restart     idempotency keys are not written to the store, so a retry after restart creates a second order
  */
+
+export const CLASSIC_DIVERGENCES = [
+  'rounding-half-even',
+  'inventory-insertion-order',
+  'adjust-stock-delay',
+  'unknown-order-200',
+] as const;
+
+export const SEEDED_DEFECTS = [
+  'shipment-applied-twice',
+  'quantity-as-additional',
+  'drop-late-precancel-shipment',
+  'idempotency-lost-on-restart',
+] as const;
+
+export const ALL_DIVERGENCES = [...CLASSIC_DIVERGENCES, ...SEEDED_DEFECTS] as const;
+
+export type DivergenceName = (typeof ALL_DIVERGENCES)[number];
+export type DivergenceSetting = 'on' | 'off' | Iterable<DivergenceName>;
+
+export class DivergenceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DivergenceError';
+  }
+}
+
+export function isDivergenceName(value: string): value is DivergenceName {
+  return (ALL_DIVERGENCES as readonly string[]).includes(value);
+}
+
+/** Parses the `DIVERGENCES` environment value. Missing or empty means `on`. */
+export function parseDivergences(text: string | undefined): Set<DivergenceName> {
+  const trimmed = (text ?? '').trim().toLowerCase();
+  if (trimmed === '' || trimmed === 'on') return new Set(CLASSIC_DIVERGENCES);
+  if (trimmed === 'off') return new Set();
+  const names = new Set<DivergenceName>();
+  for (const part of trimmed.split(',')) {
+    const name = part.trim();
+    if (name === '') continue;
+    if (!isDivergenceName(name)) {
+      throw new DivergenceError(
+        `unknown divergence "${name}"; known names: ${ALL_DIVERGENCES.join(', ')}`,
+      );
+    }
+    names.add(name);
+  }
+  return names;
+}
+
+export function resolveDivergences(setting: DivergenceSetting | undefined): Set<DivergenceName> {
+  if (setting === undefined || setting === 'on') return new Set(CLASSIC_DIVERGENCES);
+  if (setting === 'off') return new Set();
+  return new Set(setting);
+}
 
 export const DELAY_MS = 60;
 export const DELAY_FRACTION = 0.05;

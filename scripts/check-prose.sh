@@ -22,7 +22,7 @@ for f in $md_files; do
 done
 
 # Banned vocabulary. Matched as whole words, case insensitive.
-banned='bank|banking|ledger|settlement|settle|trade|trading|trader|payment|payments|payout|payouts|invoice|invoicing|currency|currencies|broker|brokerage|fintech|wallet|equities|securities|custody|forex'
+banned='bank|banking|settlement|settle|trade|trading|trader|payment|payments|payout|payouts|invoice|invoicing|currency|currencies|broker|brokerage|fintech|wallet|equities|securities|custody|forex'
 
 text_files=$(find . \( $prune \) -prune -o -type f \( -name '*.md' -o -name '*.ts' -o -name '*.js' -o -name '*.mjs' -o -name '*.json' -o -name '*.yaml' -o -name '*.yml' -o -name '*.html' -o -name '*.sh' -o -name 'Makefile' -o -name 'Dockerfile' \) -print | grep -v -e 'scripts/check-prose.sh' -e 'pnpm-lock.yaml' | sort)
 for f in $text_files; do

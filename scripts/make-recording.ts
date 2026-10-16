@@ -3,7 +3,7 @@
  * and the capture proxy in this process, runs the demo load through the proxy,
  * and writes the recording. Usage:
  *
- *   pnpm --filter @replay-parity/scripts exec tsx make-recording.ts [--count 300] [--seed 42]
+ *   pnpm --filter @replay-parity/scripts exec tsx make-recording.ts [--background 14] [--seed 42]
  */
 import type { AddressInfo } from 'node:net';
 import { dirname, resolve } from 'node:path';
@@ -16,7 +16,7 @@ import { buildApp } from '@replay-parity/demo-reference';
 
 const { values } = parseArgs({
   options: {
-    count: { type: 'string', default: '300' },
+    background: { type: 'string', default: '14' },
     seed: { type: 'string', default: '42' },
     out: { type: 'string' },
   },
@@ -40,7 +40,7 @@ const addr = await capture.listen({ port: 0, host: '127.0.0.1' });
 
 const summary = await runLoad({
   target: `http://127.0.0.1:${addr.port}`,
-  count: Number(values.count),
+  backgroundPerBlock: Number(values.background),
   seed: Number(values.seed),
 });
 
@@ -53,7 +53,7 @@ for (const e of exchanges) for (const t of e.tags) byTag[t] = (byTag[t] ?? 0) + 
 process.stdout.write(
   [
     `wrote ${out}`,
-    `exchanges: ${exchanges.length} (sent ${summary.sent}, recorded ${capture.stats.recorded})`,
+    `exchanges: ${exchanges.length} (sent ${summary.sent}, recorded ${capture.stats.recorded}, orders ${summary.orderIds.length})`,
     `by tag: ${Object.entries(byTag)
       .map(([k, v]) => `${k}=${v}`)
       .join(' ')}`,

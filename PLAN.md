@@ -264,3 +264,150 @@ unordered:
 - I will not add features outside SPEC.md. Items in section 4 are interpretations of existing requirements, and each names a default so you can veto it.
 - All prose in docs and README uses plain declarative sentences and contains no em dash. `scripts/check-prose.sh` enforces the em dash rule mechanically.
 - Git workflow: one conventional commit on `main` at the end of each step. No branches, no PR flow, no push. Recorded in project memory.
+
+## 8. Addendum A plan
+
+Addendum A inserts after Step 3. The revised order is 3b, A2, 4, A1, A4, 5, 6, 7 with A3, 8, 9 with A5. This section covers each inserted item in that order and ends with a table of existing tests that change. Decisions that need your approval are numbered D1 to D14. Each names a default.
+
+### 8.1 Step 3b: order lifecycle in the demo services (A0)
+
+**Changes to existing packages.** Both demo services gain the lifecycle routes identically, with the `app.ts` files still differing only at marked lines.
+
+- `POST /v1/orders` reads `Idempotency-Key`. The key maps to a payload hash and the original response. Same key and payload replays the stored response with no effect. Same key and a different payload returns 409 `idempotency_conflict`.
+- `POST /v1/orders/:id/cancel`, `POST /v1/orders/:id/quantity`, `POST /v1/orders/:id/shipments`, and `GET /v1/ledger` are added as specified.
+- Order status values become `OPEN`, `PARTIALLY_SHIPPED`, `SHIPPED`, `CANCELED`, and `REJECTED`. `PENDING` is accepted by the schema and documented as reserved for asynchronous allocation. The demo services allocate synchronously and never produce it.
+- Stock on hand changes only on accepted shipments and on `adjust-stock`. Order creation allocates against available stock (on hand minus open allocations) and no longer decrements on hand. Cancellation releases unshipped allocation.
+- Each service gets a `store.ts` holding orders, shipment ids, idempotency keys, stock, and receivables. With `STORE_PATH` set, every mutation is written to that JSON file. Without it, the store keeps a separate in memory durable copy. Two admin routes are added to both services: `POST /admin/restart` drops in memory state and reloads from the store, and `POST /admin/reset` returns the service to its initial state. The first makes the restart test possible without orchestration. The second is the reset hook that shrinking needs (8.6).
+- The candidate's divergence switch changes from a boolean to a named set in preparation for A3. `DIVERGENCES` accepts `on` (the original four, now named `rounding-half-even`, `inventory-insertion-order`, `adjust-stock-delay`, `unknown-order-200`), `off`, or a comma separated list of names. An unknown name exits 1 at startup.
+- The load generator gains the lifecycle scenarios from the A5 table (full shipment, partial shipments, duplicate delivery, cancel before shipment, partial then cancel, partial then quantity change, ship and cancel race, out of order shipments, stock rejection, retry with the same idempotency key, retry of a timed out submit, restart around a ledger read). It reads `GET /v1/ledger` periodically and ends with `GET /v1/ledger` plus `GET /v1/orders/:id` for every order it created, so the recording carries the reference's final observed state. New tags: `cancel-order`, `set-quantity`, `ship-order`, `list-ledger`, `admin-restart`.
+- `demo/recording.jsonl` is regenerated. `scripts/check-prose.sh` drops `ledger` from the ban list because the route name is now mandated across code, tests, the recording, and docs.
+- Harness control tags. Exchanges tagged `admin-restart` and `admin-reset` are harness controls, not workload. They are excluded from latency statistics and from latency thresholds, and they are diffed on status only. The tags are declared in the rules file under `controls.tags` with that default, the stats collector skips them for latency, and the differ compares only the status for them. The report lists them in the exchange drill down with a control marker and never in the per tag latency tables. This lands with the engine in step 4, since the tags only exist in the recording until then.
+- `scripts/check-parallel.sh` asserts that the two `app.ts` files differ only in hunks that carry a `DIVERGENCE` or `DEFECT` marker, and that `store.ts` and `catalog.ts` are identical. The candidate's `app.ts` is derived from the reference's by applying the marked lines, so the guard keeps A0's rule mechanical.
+
+**New.** No new package. New modules in both services (`store.ts`, `lifecycle.ts`) and new scenario kinds in `demo/load`.
+
+**Existing tests that change.** `demo/reference-service/src/app.test.ts` and `demo/candidate-service/src/app.test.ts` (status values, stock semantics, the divergence option shape, the parity scenario extended to every lifecycle route), `demo/load/src/scenario.test.ts` (new kinds and tags). `packages/capture/test/proxy.int.test.ts` keeps passing because `total` and `order_id` keep their meaning.
+
+**Collisions.**
+
+- **D1. The word `total`.** The spec's recording example uses `total` for the amount (29.97) and the rounding divergence depends on it. A0 lists `total` among quantities. Default: `total` stays the amount. Quantities are `quantity` (effective total quantity), `shipped`, `remaining`, and `canceled_unshipped`. A0's "total quantity" maps to `quantity`.
+- **D2. Insufficient stock on creation.** Today this is 409 with no order. Invariants 7 and 10 need a rejected order that exists and can be fetched. Default: 201 with `status: "REJECTED"` and nothing allocated.
+- **D3. Cancellation acceptance time.** If pre cancel shipment events were judged against server wall time, every recorded event would look pre cancel during replay, since the replay happens later. Default: the cancel request carries its own `originated_at`, the server records it as the acceptance time, and shipment events compare against it. This is deterministic across capture and replay.
+- **D4. Quantity increase beyond available stock.** A0 only forbids going below shipped. Default: an increase that exceeds available stock returns 409 `insufficient_stock`.
+- **D5. Receivables precision.** Default: receivables are the exact sum of quantity times unit price in thousandths, rendered as a decimal string with three places. No rounding, so both services agree and the rounding divergence stays confined to order `total`.
+- **D6. Restart mechanism.** Default: the in process `POST /admin/restart` reload described above, called by the load generator so the recording carries the restart and the replay repeats it against the candidate at the same point. The alternative is a real container restart between two replay invocations, which needs substitution state carried across runs and a reconnect grace period in the adapter. I recommend the default and the integration test still performs a true restart in process by closing the app and rebuilding it on the same `STORE_PATH`.
+
+### 8.2 A2: INCONCLUSIVE in core
+
+**Changes to existing packages (core).**
+
+- `Run.verdict` becomes `pass | fail | inconclusive`. A new `inconclusive` array lists triggering conditions, each with `kind` in `barrier_timeout`, `snapshot_before_ack`, `schedule_not_held`, `insufficient_samples` and a `detail` string. The report names them.
+- `ThresholdResult.pass: boolean` becomes `outcome: pass | fail | inconclusive`. The evaluator's verdict becomes tri state.
+- Thresholds schema gains `latency.min_samples` (default 1) with an optional per block override inside `overall` and each `by_tag` entry, and a new `pacing` section with `slip_max_ms` (optional). `min_samples` counts successful candidate samples.
+- Evaluator semantics change. A latency row with fewer successful samples than its minimum is `inconclusive` with the counts in `detail`. A `by_tag` entry whose tag is absent is `inconclusive` rather than `fail` (this reverses A18, since "could not decide" is the accurate description). A correctness row with zero compared exchanges is `inconclusive`. A ratio row with a zero reference value stays `fail` because that is a measured fact about the data, not a harness limitation.
+- `packages/core/schema/run.schema.json` is regenerated. `testing.ts` fixtures gain the new fields.
+- The run model gains `pacing.barrier_timeout_ms`, `pacing.barrier_waits`, and per exchange `acked_at_ms`, which step 4 fills and the snapshot check (8.4) reads.
+- Exit codes: 0 pass, 2 fail, 3 inconclusive, 1 tool error. Applies to `rp replay` and later to `rp invariants`.
+
+**New.** `packages/core/src/run/verdict.ts` with the precedence rule below. No new package.
+
+**Existing tests that change.** `thresholds/evaluate.test.ts` (no sample rows, missing tag rows, new `min_samples` and `pacing` cases), `thresholds/schema.test.ts`, `run/io.test.ts` (schema sync, the enum, the new section), `testing.ts`.
+
+**Collisions and decisions.**
+
+- **D7. Precedence.** Default: a run level condition (`barrier_timeout`, `snapshot_before_ack`, `schedule_not_held`) makes the run `inconclusive` even when mismatches were observed, because those mismatches may be artifacts. Otherwise any failed threshold or invariant makes it `fail`. Otherwise any `insufficient_samples` row makes it `inconclusive`. Otherwise `pass`. The report shows the observed mismatches in every case.
+- **D8. Schedule held.** Default: `pacing.slip_max_ms` in the thresholds file. When set and the run's maximum schedule slip exceeds it, the run is `inconclusive` with `schedule_not_held`. When unset, slip is reported but never triggers. This applies to replay pacing. The capture time load generator is outside the verdict.
+
+### 8.3 Step 4 additions for the addendum
+
+The replay engine plan in section 3 stands, with these additions.
+
+- `--barrier-tag <tag>` (repeatable) and `--barrier-timeout-ms` (default 10000). Before sending an exchange with a barrier tag, the engine waits until every earlier selected exchange has a response or a terminal error. A timeout records `barrier_timeout`. Completion is acknowledged commands, not silence. The demo uses `--barrier-tag list-ledger --barrier-tag admin-restart`.
+- `--candidate-recording <path>` writes the requests as sent and the candidate responses as a second JSON Lines recording in the same format. This is the candidate's observed log for A1 and it keeps `run.json` small.
+- Each result records `sent_at_ms` and `acked_at_ms`.
+- Substitutions already cover the new routes because order ids appear in the path. Shipment ids and idempotency keys are client supplied and are replayed as recorded.
+
+### 8.4 A1: independent invariants
+
+**New.** `packages/invariants`. It depends on core only. Inputs for one system are that system's recording (the reference recording, or the candidate recording from 8.3) and nothing else. It never sees the other system.
+
+- `commands.ts` maps exchanges to commands by method and path: create, cancel, set quantity, shipment, adjust stock, restart, and reads (order, ledger). Expected state is computed from the commands and each system's own acknowledgements.
+- `snapshot.ts` selects the observed state: the last `GET /v1/ledger` and the last `GET /v1/orders/:id` per order, plus every intermediate ledger read for interval checks.
+- `rules/` holds the ten invariants, one file each, each returning `holds | violated | not_applicable | inconclusive` with evidence (order id, shipment id, expected and observed values). Operationalization: invariant 1 and 5 compare stock deltas between consecutive ledger reads with unique accepted shipments and adjustments in that interval, so a duplicate application is localized to an interval. Invariant 4 uses the quantity from the last accepted quantity command, which is what catches `quantity-as-additional`, and expects pre cancel events to be applied, which is what catches `drop-late-precancel-shipment`. Invariant 8 and 9 compare order counts and effects across retries, including across the restart command. Invariant 10 recomputes the allocation decision from the reconstructed stock at each create.
+- Completion check: if any command was acknowledged after the final snapshot read was sent, the snapshot predates it and the result is `inconclusive` with `snapshot_before_ack`. With the barrier in place this cannot happen in a healthy run, and the condition is still checked and named.
+- `evaluateInvariants(recording) -> InvariantReport` and `rp invariants --recording <path> [--out <json>]` for one system. `rp replay --invariants` runs it on both recordings after the barrier and writes the `invariants` section of `run.json` with `reference` and `candidate` arrays. The report (step 5) renders that section above the diff.
+
+**Changes to existing packages.** Core gains the `invariants` section in the run model and schema. The thresholds schema gains `invariants: { fail_on_violation: true }` so a violation is a `fail` by default and can be demoted to a reported finding. The replay engine gains the `--invariants` flag.
+
+**Existing tests that change.** `run/io.test.ts` and `testing.ts` for the new section. `thresholds/schema.test.ts` for the new key.
+
+**Collisions.**
+
+- **D9. Candidate response bodies.** `ExchangeResult` stores only status and latency for the candidate. Default: the candidate recording from 8.3 carries the bodies, and `run.json` references it by path. The alternative of embedding bodies in `run.json` roughly doubles its size and mixes the two systems' logs.
+- **D10. Invariant 5 and adjust stock.** The existing `adjust-stock` tag changes stock on hand. Default: invariant 5 reads "initial stock plus accepted adjustments minus unique accepted shipments". The docs state this extension.
+
+### 8.5 A4: shrinking
+
+**New.** `packages/shrink`. It depends on core, replay, and invariants.
+
+- Input: a failing run, its recording, the candidate target, a reset hook, and the failing rule (an invariant id or a mismatch path). Default rule: the first violated invariant, else the first mismatching exchange.
+- Algorithm: delta debugging (ddmin) over the ordered list of exchanges that the failing rule depends on, followed by a second pass that lowers `quantity` and `qty` values toward 1. Each candidate reduction is replayed against a reset candidate and judged by the same rule. Prerequisites are enforced by construction: an exchange that references an order id is never kept without that order's create, shipment ids are never renamed, relative order is never changed, and the barrier tags stay.
+- Bounds: `--max-attempts` (default 64) and `--time-budget-ms` (default 120000). An attempt whose replay is inconclusive counts as not reproduced.
+- Output: `reduced-reproduction.jsonl` and a `reproduction` section in `run.json` with `rule`, `original_steps`, `reduced_steps`, `attempts`, `successful`, and the steps. If no attempt reproduces, the original is kept and `successful` is false with the label `reduction unsuccessful`. The report and docs say "reduced reproduction" and never "minimal".
+- CLI: `rp shrink --run run.json --recording recording.jsonl --target <url> --reset <url> [--rule <id>]`. `make demo` runs it after the defect run.
+
+**Changes to existing packages.** Core gains the `reproduction` section. The replay engine exposes a library entry point that replays an exchange list against a target and returns a run without writing files, which shrinking calls per attempt.
+
+**Collisions.**
+
+- **D11. Reset between attempts.** Shrinking needs a candidate in its initial state for every attempt. Default: `--reset <url>` posts to the candidate's `POST /admin/reset` from 8.1. The in process tests reset by rebuilding the app. A real system would supply its own reset endpoint or a script, and the docs say so.
+
+### 8.6 A3: seeded defects (in step 7)
+
+**Changes to existing packages.** The candidate gains four named defects, each one marked line in `app.ts` or `store.ts`: `shipment-applied-twice` (a repeated shipment id is applied to stock and shipped quantity again while the original response is returned), `quantity-as-additional` (the quantity command adds instead of sets), `drop-late-precancel-shipment` (a shipment that originated before cancellation but arrives after it is rejected), `idempotency-lost-on-restart` (idempotency keys are not written to the store, so a retried create after the restart makes a second order). The switch mechanism is the named set from 8.1, so nothing else changes.
+
+**New.** `fixtures/defects/<name>/cause.md` for each, naming the mechanism, the marked line, and the invariant or diff rule expected to catch it. A test per defect that runs the lifecycle scenario in process with only that defect enabled and asserts the named invariant reports `violated` on the candidate and `holds` on the reference. A test that the clean pair holds every invariant on both sides.
+
+**`make demo` flow.** Three replays. First the original four divergences, which fails on the four planted differences as before. Then the clean pair with `DIVERGENCES=off`, which passes and shows the invariants holding on both sides. Then one defect, `shipment-applied-twice` by default, which fails on invariants 1 and 5, followed by `rp shrink` and the reduced reproduction in the report. `DEMO_DEFECT` selects a different defect.
+
+**Agent exclusion.** The agent's inputs are explicit files: the run, the recording, the rules, and the thresholds. It never reads the repository tree. A test plants a sentinel in a `cause.md` and asserts the sentinel never appears in any prompt the agent builds.
+
+**Collisions.** The boolean `divergences` option and `DIVERGENCES=on|off` from Step 2 are replaced in 8.1. The existing candidate tests that pass `divergences: false` change to the named set.
+
+### 8.7 A5: docs/oms-mapping.md (in step 9)
+
+**New.** `docs/oms-mapping.md` with the three parts the addendum lists. The README links it in one sentence after the demo section.
+
+**What the guard bans today.** `scripts/check-prose.sh` fails on an em dash in any Markdown file, and on the 24 whole words held in the `banned` variable of the script, case insensitive, in every Markdown, TypeScript, JavaScript, JSON, YAML, HTML, shell, Makefile, and Dockerfile in the tree. The list covers the vocabulary of accounts, markets, and billing, and `ledger` was on it. The script and the lockfile are skipped. The guard currently fails on SPEC.md at two lines of the addendum, both for `ledger`, and it will fail on this plan for the same word until 3b lands.
+
+**How the exemption will work.**
+
+- A `banned_exempt` list in the script, holding `./docs/oms-mapping.md`. The banned term loop skips a file whose path is in that list. The em dash check keeps running on it, and the plain declarative sentence rule still applies to its prose.
+- `ledger` leaves the ban list in 3b, since A0 mandates the route name everywhere. Every other word stays banned outside the exempt file.
+- A test in step 9 runs the script against a temporary tree with a banned word in the exempt file (passes) and in another file (fails), so the exemption cannot widen silently.
+- **D12.** Default: the exemption is by exact path, not by directory, so a second document cannot inherit it.
+
+### 8.8 Existing tests that change, by step
+
+| Step | Test file                                       | Change                                                                                              |
+| ---- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| 3b   | `demo/reference-service/src/app.test.ts`        | status values, stock semantics, rejected orders, new routes, store and restart                      |
+| 3b   | `demo/candidate-service/src/app.test.ts`        | named divergence set, parity scenario over every lifecycle route, restart parity                    |
+| 3b   | `demo/load/src/scenario.test.ts`                | new kinds, new tags, final snapshot reads                                                           |
+| A2   | `packages/core/src/thresholds/evaluate.test.ts` | no sample and missing tag rows become inconclusive, `min_samples`, `pacing.slip_max_ms`, precedence |
+| A2   | `packages/core/src/thresholds/schema.test.ts`   | new keys                                                                                            |
+| A2   | `packages/core/src/run/io.test.ts`              | verdict enum, new sections, regenerated schema                                                      |
+| A2   | `packages/core/src/testing.ts`                  | fixture fields                                                                                      |
+| A1   | `packages/core/src/run/io.test.ts`              | `invariants` section                                                                                |
+| A4   | `packages/core/src/run/io.test.ts`              | `reproduction` section                                                                              |
+| A3   | `demo/candidate-service/src/app.test.ts`        | one test per defect                                                                                 |
+| A5   | none existing                                   | new guard test                                                                                      |
+
+### 8.9 Approval record
+
+Approved on 2026-10-16 with all defaults D1 to D14 and the harness control rule above. Step 3b runs next and stops for review before A2.
+
+### 8.10 Two more decisions
+
+- **D13. Demo thresholds.** The clean pair must pass. Default: `latency.min_samples: 20` overall and per tag, `pacing.slip_max_ms: 250`, and `invariants.fail_on_violation: true` in `demo/thresholds.yaml`, with the absolute latency limits set after measuring in step 7 so that the clean pair passes with margin in Docker.
+- **D14. Ordering of A3 code.** The addendum places the defect catch in step 7. The four marked lines are small and sit in code written in 3b. Default: write the marked lines and their unit tests in 3b, since the lifecycle code is open then, and write the fixtures, the demo flow, and the shrink integration in step 7. Say so if you want the candidate untouched by defects until step 7.

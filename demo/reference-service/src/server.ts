@@ -1,7 +1,10 @@
 import { buildApp } from './app.js';
 
 const port = Number(process.env.PORT ?? 3000);
-const app = buildApp({ logger: true });
+const storePath = process.env.STORE_PATH ?? null;
+const app = buildApp({ logger: true, storePath });
+
+app.log.info({ storePath }, 'reference configuration');
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {

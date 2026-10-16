@@ -4,8 +4,8 @@ import { runLoad } from './run.js';
 const { values } = parseArgs({
   options: {
     target: { type: 'string' },
-    count: { type: 'string', default: '300' },
     seed: { type: 'string', default: '42' },
+    background: { type: 'string', default: '14' },
     'min-gap-ms': { type: 'string', default: '20' },
     'max-gap-ms': { type: 'string', default: '60' },
     verbose: { type: 'boolean', default: false },
@@ -16,9 +16,10 @@ const { values } = parseArgs({
 if (values.help || !values.target) {
   process.stdout.write(
     [
-      'Usage: demo-load --target <url> [--count 300] [--seed 42] [--min-gap-ms 20] [--max-gap-ms 60] [--verbose]',
+      'Usage: demo-load --target <url> [--seed 42] [--background 14] [--min-gap-ms 20] [--max-gap-ms 60] [--verbose]',
       '',
-      'Sends the demo traffic mix (create-order, get-order, list-inventory, adjust-stock) to the target.',
+      'Sends the demo traffic plan to the target: twelve order lifecycle scenarios with background',
+      'traffic between them, a ledger read after each, and a final read of every order and the ledger.',
       '',
     ].join('\n'),
   );
@@ -27,8 +28,8 @@ if (values.help || !values.target) {
 
 const summary = await runLoad({
   target: values.target,
-  count: Number(values.count),
   seed: Number(values.seed),
+  backgroundPerBlock: Number(values.background),
   minGapMs: Number(values['min-gap-ms']),
   maxGapMs: Number(values['max-gap-ms']),
   log: values.verbose
@@ -46,5 +47,6 @@ const lines = [
   `by status: ${Object.entries(summary.byStatus)
     .map(([k, v]) => `${k}=${v}`)
     .join(' ')}`,
+  `orders created: ${summary.orderIds.length}`,
 ];
 process.stdout.write(`${lines.join('\n')}\n`);

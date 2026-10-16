@@ -1,11 +1,14 @@
-export { runLoad, type LoadOptions, type LoadSummary } from './run.js';
+export { resolvePath, runLoad, type LoadOptions, type LoadSummary } from './run.js';
 export {
   DEMO_TAG_RULES,
+  LOAD_KINDS,
+  SCENARIOS,
   SKUS,
   UNKNOWN_ORDER_SHARE,
-  createScenario,
+  buildPlan,
   mulberry32,
   type LoadKind,
   type LoadRequest,
-  type Scenario,
+  type PlanOptions,
+  type ScenarioName,
 } from './scenario.js';

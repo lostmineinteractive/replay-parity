@@ -20,7 +20,8 @@
     "test:coverage": "vitest run --coverage",
     "check-prose": "sh scripts/check-prose.sh",
     "check-secrets": "sh scripts/check-secrets.sh",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm check-prose && pnpm check-secrets"
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm check-prose && pnpm check-secrets && pnpm check-parallel",
+    "check-parallel": "sh scripts/check-parallel.sh"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",
