@@ -83,8 +83,10 @@ $RP capture --listen "127.0.0.1:$PROXY_PORT" --target "http://127.0.0.1:$REF_POR
   --tag-rule 'POST /admin/restart=admin-restart' \
   --tag-rule 'POST /admin/reset=admin-reset' &
 CAPTURE_PID=$!
+# Wait for the proxy socket without sending a request through it, so the
+# recording holds the load generator's traffic and nothing else.
 i=0
-until curl -fsS "http://127.0.0.1:$PROXY_PORT/healthz" >/dev/null 2>&1; do
+until node -e "require('node:net').connect($PROXY_PORT, '127.0.0.1').once('connect', () => process.exit(0)).once('error', () => process.exit(1))" 2>/dev/null; do
   i=$((i + 1))
   if [ "$i" -gt 50 ]; then echo "demo: capture proxy did not start" >&2; exit 1; fi
   sleep 0.2

@@ -1,6 +1,7 @@
 import { ConfigError, EXIT_CODES, RecordingParseError } from '@replay-parity/core';
 import { TagRuleError } from '@replay-parity/capture';
 import { CommanderError, Command, InvalidArgumentError } from 'commander';
+import { agentCommand } from './commands/agent.js';
 import { captureCommand } from './commands/capture.js';
 import { invariantsCommand } from './commands/invariants.js';
 import { replayCommand } from './commands/replay.js';
@@ -13,15 +14,6 @@ export const CLI_VERSION = '0.1.0';
 export interface RunCliOptions extends Partial<CliStreams> {
   /** Aborted to stop long running commands such as capture. */
   signal?: AbortSignal | undefined;
-}
-
-/** Commands other build steps register, such as the agent. */
-export type CommandFactory = (streams: CliStreams, exit: (code: number) => void) => Command;
-
-const extraCommands: CommandFactory[] = [];
-
-export function registerCommand(factory: CommandFactory): void {
-  extraCommands.push(factory);
 }
 
 export function buildProgram(
@@ -49,7 +41,7 @@ export function buildProgram(
   program.addCommand(reportCommand(streams, exit));
   program.addCommand(invariantsCommand(streams, exit));
   program.addCommand(shrinkCommand(streams, exit));
-  for (const factory of extraCommands) program.addCommand(factory(streams, exit));
+  program.addCommand(agentCommand(streams, exit));
   for (const sub of program.commands) {
     sub.configureOutput({
       writeOut: (text) => {

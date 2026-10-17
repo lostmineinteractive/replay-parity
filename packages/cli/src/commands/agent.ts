@@ -1,0 +1,164 @@
+import { writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import {
+  AnthropicModelClient,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_MODEL,
+  runAgent,
+  type ModelClient,
+} from '@replay-parity/agent';
+import {
+  emptyRules,
+  emptyThresholds,
+  loadDiffRules,
+  loadThresholds,
+  readRecording,
+  readRun,
+  writeRun,
+} from '@replay-parity/core';
+import { HttpAdapter } from '@replay-parity/replay';
+import { Command, Option } from 'commander';
+import { loadDotEnv } from '../env.js';
+import { err, out, type CliStreams } from '../io.js';
+import { collect, positiveInt, positiveNumber, resolveHeaders } from '../options.js';
+
+export interface AgentCommandOptions {
+  run: string;
+  recording: string;
+  target: string;
+  reference: string;
+  rules?: string;
+  thresholds?: string;
+  out: string;
+  casesPerRound: number;
+  model: string;
+  budgetUsd: number;
+  maxRounds: number;
+  header: string[];
+  headersFile?: string;
+  timeoutMs: number;
+  env: string;
+}
+
+export interface AgentCommandHooks {
+  /** Builds the model client. Tests pass a mock. Default: the Anthropic client on the key. */
+  clientFactory?: ((apiKey: string, model: string) => ModelClient) | undefined;
+  env?: NodeJS.ProcessEnv | undefined;
+}
+
+export const NO_KEY_MESSAGE =
+  'rp agent: ANTHROPIC_API_KEY is not set, so the agent did not run. Set it in the shell or in a .env file at the repository root to generate cases.';
+
+export async function runAgentCommand(
+  options: AgentCommandOptions,
+  streams: CliStreams,
+  hooks: AgentCommandHooks = {},
+): Promise<number> {
+  const env = hooks.env ?? process.env;
+  loadDotEnv(options.env, env);
+  const apiKey = env.ANTHROPIC_API_KEY;
+  if (apiKey === undefined || apiKey.length === 0) {
+    out(streams, NO_KEY_MESSAGE);
+    return 0;
+  }
+  const run = await readRun(options.run);
+  const recording = await readRecording(options.recording);
+  const rules = options.rules === undefined ? run.rules : await loadDiffRules(options.rules);
+  const thresholds =
+    options.thresholds === undefined ? run.thresholds : await loadThresholds(options.thresholds);
+  const headers = await resolveHeaders(options.header, options.headersFile);
+  const client =
+    hooks.clientFactory === undefined
+      ? new AnthropicModelClient({ apiKey, model: options.model, timeoutMs: options.timeoutMs })
+      : hooks.clientFactory(apiKey, options.model);
+  const reference = new HttpAdapter(options.reference, { timeoutMs: options.timeoutMs });
+  const candidate = new HttpAdapter(options.target, { timeoutMs: options.timeoutMs });
+  const transcriptPath = join(dirname(options.out), 'agent-transcript.json');
+  try {
+    const outcome = await runAgent({
+      run,
+      recording,
+      rules: rules ?? emptyRules(),
+      thresholds: thresholds ?? emptyThresholds(),
+      adapters: { reference, candidate },
+      client,
+      budgetUsd: options.budgetUsd,
+      maxRounds: options.maxRounds,
+      casesPerRound: options.casesPerRound,
+      headers,
+      maxTokens: DEFAULT_MAX_TOKENS,
+      transcriptPath,
+      casesPath: options.out,
+      log: (line) => err(streams, `agent: ${line}`),
+    });
+    await writeFile(
+      options.out,
+      outcome.cases.map((c) => JSON.stringify(c)).join('\n') +
+        (outcome.cases.length > 0 ? '\n' : ''),
+      'utf8',
+    );
+    await writeFile(transcriptPath, `${JSON.stringify(outcome.transcript, null, 2)}\n`, 'utf8');
+    await writeRun(options.run, { ...run, agent: outcome.report });
+    const r = outcome.report;
+    out(
+      streams,
+      [
+        `agent: ${r.model}, ${r.rounds} of ${r.max_rounds} rounds, stopped on ${r.stop_reason}`,
+        `  proposed ${r.proposed}, valid ${r.valid}, executed ${r.executed}, kept ${r.kept}`,
+        `  tokens: ${r.input_tokens} in, ${r.output_tokens} out, ${r.cache_read_tokens} cache read, ${r.cache_write_tokens} cache write`,
+        `  cost: $${r.cost_usd.toFixed(4)} of a $${r.budget_usd.toFixed(2)} budget`,
+        ...r.cases.map((c) => `  ${c.id} [${c.tags.join(', ')}] ${c.hypothesis}: ${c.revealed}`),
+        `  wrote ${options.out}, ${transcriptPath}, and the agent section of ${options.run}`,
+      ].join('\n'),
+    );
+    return 0;
+  } finally {
+    await reference.close();
+    await candidate.close();
+  }
+}
+
+export function agentCommand(streams: CliStreams, exit: (code: number) => void): Command {
+  return new Command('agent')
+    .description(
+      'Ask a model for new cases that sharpen the differences a run found, send each to both systems, keep the ones that reveal something new, and add an agent section to the run. Without ANTHROPIC_API_KEY it prints a message and exits 0.',
+    )
+    .requiredOption('--run <path>', 'run file from rp replay, updated in place')
+    .requiredOption('--recording <path>', 'the recording the run replayed')
+    .requiredOption('--target <url>', 'base URL of the candidate system')
+    .requiredOption('--reference <url>', 'base URL of the reference system')
+    .option('--rules <path>', 'diff rules file; default: the rules embedded in the run')
+    .option('--thresholds <path>', 'thresholds file; default: the thresholds embedded in the run')
+    .option(
+      '--out <path>',
+      'kept cases file; the transcript lands next to it',
+      'generated-cases.jsonl',
+    )
+    .addOption(
+      new Option('--cases-per-round <n>', 'cases to ask for per round')
+        .default(8)
+        .argParser(positiveInt),
+    )
+    .option('--model <id>', 'model id', DEFAULT_MODEL)
+    .addOption(
+      new Option('--budget-usd <n>', 'spending limit in US dollars')
+        .default(2)
+        .argParser(positiveNumber),
+    )
+    .addOption(new Option('--max-rounds <n>', 'round limit').default(3).argParser(positiveInt))
+    .option('--header <name: value>', 'header applied to every request, repeatable', collect, [])
+    .option('--headers-file <path>', 'file with one "name: value" header per line')
+    .addOption(
+      new Option('--timeout-ms <n>', 'request timeout for both systems and the model')
+        .default(120_000)
+        .argParser(positiveInt),
+    )
+    .option(
+      '--env <path>',
+      '.env file read for ANTHROPIC_API_KEY when the variable is not set',
+      '.env',
+    )
+    .action(async (opts: AgentCommandOptions) => {
+      exit(await runAgentCommand(opts, streams));
+    });
+}

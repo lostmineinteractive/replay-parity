@@ -63,6 +63,12 @@ The third replay targets a candidate with one of the four seeded defects enabled
 
 `fixtures/defects/<name>/cause.md` names each defect's mechanism, its marked line, and the invariant expected to catch it.
 
+## The agent
+
+With `ANTHROPIC_API_KEY` set, `make demo` runs `rp agent` for two rounds against the classic candidate after the first replay and renders `report.html` again with the agent section. The model receives the run summary, one request shape per tag, and the kept cases, and answers with new cases. Each case is sent to both systems and kept when it reveals a mismatch path set or a latency breach that no kept case already reveals. The transcript lands in `demo/out/agent-transcript.json`. `docs/agent-loop.md` explains the loop and shows a real transcript.
+
+![Agent section with the kept cases](../docs/images/report-agent.png)
+
 ## Knobs
 
 | Variable                                                                                               | Default                      | Effect                                                                                                                                                            |

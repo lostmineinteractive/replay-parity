@@ -57,3 +57,4 @@ shot report-unordered.html correctness report-unordered 900
 shot report-clean.html - report-clean 1000
 shot report-defect.html invariants report-defect-invariants 1300
 shot report-defect.html reproduction report-defect-reproduction 700
+shot report.html agent report-agent 900

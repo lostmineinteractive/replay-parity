@@ -16,7 +16,8 @@ import {
 import { buildApp as buildCandidate, type DivergenceSetting } from '@replay-parity/demo-candidate';
 import { buildApp as buildReference } from '@replay-parity/demo-reference';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { runCli } from '../src/index.js';
+import { MockModelClient } from '@replay-parity/agent';
+import { NO_KEY_MESSAGE, runAgentCommand, runCli } from '../src/index.js';
 
 const ROOT = resolve(import.meta.dirname, '../../..');
 const RECORDING = join(ROOT, 'demo/recording.jsonl');
@@ -83,6 +84,23 @@ const FLAGS: Record<string, string[]> = {
     '--headers-file',
     '--barrier-tag',
     '--timeout-ms',
+  ],
+  agent: [
+    '--run',
+    '--recording',
+    '--target',
+    '--reference',
+    '--rules',
+    '--thresholds',
+    '--out',
+    '--cases-per-round',
+    '--model',
+    '--budget-usd',
+    '--max-rounds',
+    '--header',
+    '--headers-file',
+    '--timeout-ms',
+    '--env',
   ],
 };
 
@@ -438,6 +456,125 @@ describe('invariants and shrink', () => {
     ]);
     expect(nothing.code).toBe(1);
     expect(nothing.err).toContain('no violated invariant and no mismatched exchange');
+  }, 60_000);
+});
+
+describe('agent', () => {
+  it('prints a message and exits 0 without a key, reading .env only when the variable is unset', async () => {
+    const envFile = join(dir, 'empty.env');
+    await writeFile(envFile, '# no key here\n');
+    const stdout = new Sink();
+    const stderr = new Sink();
+    const code = await runAgentCommand(
+      {
+        run: join(dir, 'failing.json'),
+        recording: RECORDING,
+        target: 'http://127.0.0.1:9',
+        reference: 'http://127.0.0.1:9',
+        out: join(dir, 'generated-cases.jsonl'),
+        casesPerRound: 8,
+        model: 'claude-sonnet-5-5',
+        budgetUsd: 2,
+        maxRounds: 3,
+        header: [],
+        timeoutMs: 1000,
+        env: envFile,
+      },
+      { stdout, stderr },
+      {
+        env: {},
+        clientFactory: () => {
+          throw new Error('the client must not be built without a key');
+        },
+      },
+    );
+    expect(code).toBe(0);
+    expect(stdout.text).toContain(NO_KEY_MESSAGE);
+    expect(stderr.text).toBe('');
+  });
+
+  it('runs the loop with an injected client and adds the agent section to the run', async () => {
+    const url = await candidate('on');
+    const ref = buildReference();
+    await ref.listen({ port: 0, host: '127.0.0.1' });
+    cleanups.push(() => ref.close());
+    const refUrl = `http://127.0.0.1:${(ref.server.address() as AddressInfo).port}`;
+    // Both systems are fresh, so they assign the same ids to the cases.
+    const envFile = join(dir, 'key.env');
+    await writeFile(envFile, 'ANTHROPIC_API_KEY=test-key-from-file\n');
+    const runPath = join(dir, 'agent-run.json');
+    await writeFile(runPath, await readFile(join(dir, 'failing.json'), 'utf8'));
+    const stdout = new Sink();
+    const stderr = new Sink();
+    let seenKey = '';
+    const code = await runAgentCommand(
+      {
+        run: runPath,
+        recording: RECORDING,
+        target: url,
+        reference: refUrl,
+        out: join(dir, 'cases.jsonl'),
+        casesPerRound: 4,
+        model: 'claude-sonnet-5-5',
+        budgetUsd: 2,
+        maxRounds: 2,
+        header: [],
+        timeoutMs: 5000,
+        env: envFile,
+      },
+      { stdout, stderr },
+      {
+        env: {},
+        clientFactory: (apiKey, model) => {
+          seenKey = apiKey;
+          return new MockModelClient(
+            [
+              JSON.stringify({
+                cases: [
+                  {
+                    hypothesis: 'a half cent total rounds differently',
+                    tags: ['create-order'],
+                    steps: [
+                      {
+                        request: {
+                          method: 'POST',
+                          path: '/v1/orders',
+                          body: { sku: 'A-100', qty: 3 },
+                        },
+                      },
+                    ],
+                  },
+                ],
+              }),
+              JSON.stringify({ cases: [] }),
+            ],
+            { model },
+          );
+        },
+      },
+    );
+    expect(code).toBe(0);
+    expect(seenKey).toBe('test-key-from-file');
+    expect(stdout.text).toContain(
+      'agent: claude-sonnet-5-5, 2 of 2 rounds, stopped on no_valid_cases',
+    );
+    expect(stdout.text).toContain('kept 1');
+    expect(stdout.text).not.toContain('test-key-from-file');
+    expect(stderr.text).not.toContain('test-key-from-file');
+    const updated = parseRun(await readFile(runPath, 'utf8'));
+    expect(updated.agent?.kept).toBe(1);
+    expect(updated.agent?.cases[0]?.dedupe_key).toBe('mismatch:$.total');
+    expect(validate(updated), validate.errors ?? '').toBe(true);
+    const lines = (await readFile(join(dir, 'cases.jsonl'), 'utf8')).trim().split('\n');
+    expect(lines).toHaveLength(1);
+    const transcript = JSON.parse(await readFile(join(dir, 'agent-transcript.json'), 'utf8')) as {
+      rounds: unknown[];
+    };
+    expect(transcript.rounds).toHaveLength(2);
+    expect(JSON.stringify(transcript)).not.toContain('test-key-from-file');
+    const html = await rp(['report', '--run', runPath, '--format', 'html']);
+    expect(html.out).toContain('id="agent"');
+    expect(html.out).toContain('a half cent total rounds differently');
   }, 60_000);
 });
 

@@ -7,13 +7,32 @@
   },
   "include": ["src", "test"],
   "references": [
-    { "path": "../core" },
-    { "path": "../capture" },
-    { "path": "../invariants" },
-    { "path": "../replay" },
-    { "path": "../report" },
-    { "path": "../shrink" },
-    { "path": "../../demo/candidate-service" },
-    { "path": "../../demo/reference-service" }
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../agent"
+    },
+    {
+      "path": "../capture"
+    },
+    {
+      "path": "../invariants"
+    },
+    {
+      "path": "../replay"
+    },
+    {
+      "path": "../report"
+    },
+    {
+      "path": "../shrink"
+    },
+    {
+      "path": "../../demo/candidate-service"
+    },
+    {
+      "path": "../../demo/reference-service"
+    }
   ]
 }

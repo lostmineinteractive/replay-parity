@@ -21,6 +21,7 @@
     "dist"
   ],
   "dependencies": {
+    "@replay-parity/agent": "workspace:*",
     "@replay-parity/capture": "workspace:*",
     "@replay-parity/core": "workspace:*",
     "@replay-parity/invariants": "workspace:*",
