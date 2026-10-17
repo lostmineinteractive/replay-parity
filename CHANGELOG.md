@@ -4,6 +4,13 @@ All notable changes to this repository are recorded here. The format follows Kee
 
 ## Unreleased
 
+### Step 5: report renderers
+
+- Added `@replay-parity/report` with three renderers over the run model. `renderTerminal` writes a fixed width plain text summary: the verdict, the recording and target, the pacing line with requested and achieved rate and schedule slip, the conditions behind an inconclusive verdict, every threshold row with its limit and measured value, the invariant summary per system with the violated and inconclusive rules and their evidence, the latency table per tag with reference and candidate percentiles, the correctness counts with the top mismatching paths and the first mismatched exchanges, the harness controls in sequence marked as not scored, the reproduction with its label and steps, and the agent summary with the kept cases.
+- `renderHtml` writes one HTML file with inline CSS and inline SVG, no script, no external resource. It has the header with the verdict badge and run facts, the inconclusive conditions, the threshold table, the invariants section per system placed above the diff, the latency section with a percentile table, the pacing line, and one histogram per tag plus overall with the reference drawn behind the candidate, the correctness section with counts by tag, the top mismatching paths, a drill down per mismatched exchange with the field level findings side by side, and the transport errors, the harness controls in sequence, the reproduction section, and the agent section when the run has one. Every recorded string is escaped.
+- `renderJson` validates the run and pretty prints it. `renderHistogram` draws one bar per bin for each series over the 48 log spaced bins and labels the decade edges.
+- Tests: 10 cover the terminal output with a snapshot, the HTML file's offline property and each section's presence and absence, escaping with a body that contains a script tag, the JSON round trip against the schema, and the determinism and bar count of the SVG. The word "minimal" never appears in either renderer's output.
+
 ### A4: shrinking (Addendum A4)
 
 - Added `@replay-parity/shrink`. `shrink(options)` takes a recording, a candidate target, a reset hook, and a failing rule, and returns a reduced reproduction. The rule is either an invariant on one system (`invariant:<system>:<name>`) or a mismatching exchange with an optional finding path (`mismatch:<exchange id>[:<path>]`). `defaultRule(run)` picks the first violated candidate invariant, then the reference, then the first mismatching exchange.

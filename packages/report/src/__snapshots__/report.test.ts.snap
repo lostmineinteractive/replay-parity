@@ -1,0 +1,23 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderTerminal > names the verdict, every threshold row, the per tag table, and the pacing line 1`] = `
+"replay-parity run 01M52Z67EP0000000000000099: FAIL
+recording recording.jsonl (3 exchanges, 3 selected) -> http://localhost:3001 via http
+pacing as-recorded, concurrency 4, requested n/a, achieved 10.0 rps, schedule slip p50 1.00 ms, max 3.00 ms
+duration 300 ms, warmup 0, filter none, limit none
+thresholds:
+  pass  latency.overall.p99_ms           limit 100  measured 25.007
+  fail  latency.by_tag.get-items.p50_ms  limit 5    measured 12.007
+  fail  correctness.mismatch_rate_max    limit 0    measured 0.5
+  pass  errors.rate_max                  limit 0.5  measured 0.3333
+  pass  pacing.slip_max_ms               limit 250  measured 3
+latency by tag (reference/candidate, ms):
+  tag          count  errors  p50        p99        max        mismatches
+  overall      3      1       10.0/12.0  20.0/25.0  20.0/25.0  1
+  create-item  1      0       20.0/25.0  20.0/25.0  20.0/25.0  1
+  get-items    2      1       10.0/12.0  10.0/12.0  10.0/12.0  0
+correctness: 2 compared, 1 match, 0 tolerated, 1 mismatch (50.00%), 1 errors (33.33%)
+  top mismatching paths: $.total x1
+  01M52Z67BM0000000000000001 POST /v1/items [create-item] 201/201: $.total
+"
+`;

@@ -123,7 +123,11 @@ importers:
         specifier: workspace:*
         version: link:../../demo/reference-service
 
-  packages/report: {}
+  packages/report:
+    dependencies:
+      '@replay-parity/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/shrink:
     dependencies:

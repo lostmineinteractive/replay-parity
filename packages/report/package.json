@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "license": "MIT",
+  "description": "Terminal, HTML, and JSON renderers for a replay-parity run.",
   "engines": {
     "node": ">=22"
   },
@@ -15,5 +16,8 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "dependencies": {
+    "@replay-parity/core": "workspace:*"
+  }
 }
