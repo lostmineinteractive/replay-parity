@@ -33,6 +33,8 @@ export interface Differ {
     candidate: JsonValue | undefined,
     equivalences?: ValueEquivalences,
   ): Finding[];
+  /** Compares the status only. Used for harness control exchanges. */
+  diffStatus(reference: RecordedResponse, candidate: RecordedResponse): Diff;
 }
 
 interface CompiledIgnore {
@@ -431,6 +433,11 @@ export function createDiffer(rules: DiffRules): Differ {
     },
     diffBodies(reference, candidate, equivalences) {
       return new BodyWalker(compiled, equivalences).run(reference, candidate);
+    },
+    diffStatus(reference, candidate) {
+      const status = compareStatus(compiled, reference, candidate);
+      const findings = status ? [status] : [];
+      return { verdict: verdictOf(findings), findings };
     },
   };
 }

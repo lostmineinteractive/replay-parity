@@ -447,3 +447,20 @@ describe('diffBodies and parsed rules', () => {
     expect(createDiffer(emptyRules()).rules.ignore).toEqual([]);
   });
 });
+
+describe('diffStatus', () => {
+  it('compares the status alone and honors equivalence classes', () => {
+    const differ = createDiffer(parseDiffRules('status:\n  equivalent:\n    - [200, 201]\n'));
+    const ref = jsonResponse({ restarted: true }, 200);
+    expect(differ.diffStatus(ref, jsonResponse({ different: 1 }, 200))).toEqual({
+      verdict: 'match',
+      findings: [],
+    });
+    expect(differ.diffStatus(ref, jsonResponse({}, 201)).verdict).toBe('tolerated');
+    const mismatch = differ.diffStatus(ref, jsonResponse({}, 500));
+    expect(mismatch.verdict).toBe('mismatch');
+    expect(mismatch.findings).toEqual([
+      { path: 'status', kind: 'status', tolerated: false, reference: 200, candidate: 500 },
+    ]);
+  });
+});

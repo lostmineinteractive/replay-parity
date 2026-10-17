@@ -62,6 +62,17 @@ export const DiffRulesSchema = z
       .strict()
       .default({ compare: [] }),
     substitutions: z.array(SubstitutionRuleSchema).default([]),
+    /**
+     * Harness controls. An exchange with one of these tags is replayed in
+     * order behind a full barrier, diffed on status only, excluded from
+     * statistics and thresholds, and marked `control: true` in the run.
+     */
+    controls: z
+      .object({
+        tags: z.array(z.string().min(1)).default([]),
+      })
+      .strict()
+      .default({ tags: [] }),
   })
   .strict();
 

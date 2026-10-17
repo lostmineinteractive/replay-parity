@@ -33,6 +33,7 @@
               "barrier_timeout",
               "snapshot_before_ack",
               "schedule_not_held",
+              "control_failed",
               "insufficient_samples"
             ]
           },
@@ -332,9 +333,35 @@
             "required": ["name", "capture", "apply"],
             "additionalProperties": false
           }
+        },
+        "controls": {
+          "default": {
+            "tags": []
+          },
+          "type": "object",
+          "properties": {
+            "tags": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "required": ["tags"],
+          "additionalProperties": false
         }
       },
-      "required": ["ignore", "tolerances", "unordered", "status", "headers", "substitutions"],
+      "required": [
+        "ignore",
+        "tolerances",
+        "unordered",
+        "status",
+        "headers",
+        "substitutions",
+        "controls"
+      ],
       "additionalProperties": false
     },
     "thresholds": {

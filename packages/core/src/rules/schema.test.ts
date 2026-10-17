@@ -59,7 +59,14 @@ describe('parseDiffRules', () => {
       status: { equivalent: [] },
       headers: { compare: [] },
       substitutions: [],
+      controls: { tags: [] },
     });
+  });
+
+  it('parses harness control tags', () => {
+    const rules = parseDiffRules('controls:\n  tags: [admin-restart, admin-reset]\n');
+    expect(rules.controls.tags).toEqual(['admin-restart', 'admin-reset']);
+    expect(() => parseDiffRules('controls:\n  tag: [x]\n')).toThrow(/unknown key "tag"/);
   });
 
   it('defaults substitution apply to every location', () => {

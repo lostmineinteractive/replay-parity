@@ -18,6 +18,8 @@ export const InconclusiveKindSchema = z.enum([
   'snapshot_before_ack',
   /** The replay could not hold its schedule within `pacing.slip_max_ms`. */
   'schedule_not_held',
+  /** A harness control such as a restart failed or returned a different status. */
+  'control_failed',
   /** A threshold row had fewer successful samples than its minimum. */
   'insufficient_samples',
 ]);
@@ -38,7 +40,12 @@ export type InconclusiveCondition = z.output<typeof InconclusiveConditionSchema>
  * observed, because those mismatches may be artifacts of the harness.
  */
 export const RUN_LEVEL_INCONCLUSIVE_KINDS: ReadonlySet<InconclusiveKind> =
-  new Set<InconclusiveKind>(['barrier_timeout', 'snapshot_before_ack', 'schedule_not_held']);
+  new Set<InconclusiveKind>([
+    'barrier_timeout',
+    'snapshot_before_ack',
+    'schedule_not_held',
+    'control_failed',
+  ]);
 
 export interface VerdictInput {
   threshold_results: readonly ThresholdResult[];
