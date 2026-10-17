@@ -1,0 +1,15 @@
+# Diff rules for the demo. This file keeps array order significant, so the
+# inventory ordering divergence shows up as a mismatch. diff-rules-unordered.yaml
+# is the same file with the keyed unordered rule that tolerates it.
+ignore:
+  # Set by each service from its own clock, so it never matches across a replay.
+  - '$.created_at'
+substitutions:
+  # Order ids are assigned by each service. A later request that uses an id from
+  # an earlier create is rewritten to the candidate's id, and the differ treats the
+  # pair as equivalent.
+  - name: order_id
+    capture: { tag: create-order, path: '$.order_id' }
+controls:
+  # Harness controls: replayed in order as barriers, diffed on status only, never scored.
+  tags: [admin-restart, admin-reset]

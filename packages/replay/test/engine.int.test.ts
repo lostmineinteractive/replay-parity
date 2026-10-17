@@ -363,12 +363,14 @@ describe('selection, warmup, and pacing', () => {
         return jsonResponse({ echo: req.path }, 200, 15);
       },
     };
+    // Recorded as overlapping: every response arrived long after the next request began,
+    // so the replay may keep them in flight together.
     const exchanges = Array.from({ length: 40 }, (_, i) =>
       makeExchange({
         index: i,
         tags: ['probe'],
         request: makeRequest({ path: `/p/${i}` }),
-        response: jsonResponse({ echo: `/p/${i}` }, 200, 1),
+        response: jsonResponse({ echo: `/p/${i}` }, 200, 10_000),
       }),
     );
     const recording = await writeRecording(exchanges);
@@ -405,29 +407,89 @@ describe('selection, warmup, and pacing', () => {
 
 describe('inconclusive outcomes and errors', () => {
   it('records a barrier timeout when an earlier exchange has not been acknowledged', async () => {
-    const { url } = await startCandidate('off');
-    const inner = new HttpAdapter(url);
-    const slow = new Shim(inner, async (req, _ctx, next) => {
-      if (req.path === '/v1/inventory') await sleep(200);
-      return next();
-    });
-    const run = await demoRun(url, {
-      adapter: slow,
+    // Overlapping in the recording, so the replay may keep them in flight. The fake
+    // candidate answers the first exchange late and the barrier does not wait that long.
+    const adapter: Adapter = {
+      name: 'fake',
+      async send(req) {
+        if (req.path === '/slow') await sleep(300);
+        return jsonResponse({ ok: true }, 200, 1);
+      },
+    };
+    const exchanges = [
+      makeExchange({
+        index: 0,
+        tags: ['slow'],
+        request: makeRequest({ path: '/slow' }),
+        response: jsonResponse({ ok: true }, 200, 10_000),
+      }),
+      makeExchange({
+        index: 1,
+        tags: ['fast'],
+        request: makeRequest({ path: '/fast' }),
+        response: jsonResponse({ ok: true }, 200, 10_000),
+      }),
+      makeExchange({
+        index: 2,
+        tags: ['snapshot'],
+        request: makeRequest({ path: '/snapshot' }),
+        response: jsonResponse({ ok: true }, 200, 10_000),
+      }),
+    ];
+    const run = await replay({
+      recording: await writeRecording(exchanges),
+      target: 'fake://',
+      adapter,
       pace: 'max',
       concurrency: 4,
-      limit: 60,
-      barrierTags: ['list-ledger'],
+      barrierTags: ['snapshot'],
       barrierTimeoutMs: 40,
       thresholds: parseThresholds('correctness:\n  mismatch_rate_max: 0\n'),
     });
-    await slow.close();
     expect(run.verdict).toBe('inconclusive');
     expect(run.inconclusive[0]).toMatchObject({ kind: 'barrier_timeout' });
     expect(run.inconclusive[0]?.detail).toMatch(
-      /GET \/v1\/ledger .* waited 40 ms for \d+ earlier exchange/,
+      /GET \/snapshot .* waited 40 ms for 1 earlier exchange: /,
     );
-    expect(run.pacing.barrier_waits).toBeGreaterThan(0);
+    expect(run.pacing.barrier_waits).toBe(1);
     expect(validate(run), validate.errors ?? '').toBe(true);
+  });
+
+  it('keeps the recorded happens-before order under max pacing', async () => {
+    let inflight = 0;
+    let peak = 0;
+    const adapter: Adapter = {
+      name: 'fake',
+      async send(req) {
+        inflight += 1;
+        peak = Math.max(peak, inflight);
+        await sleep(5);
+        inflight -= 1;
+        return jsonResponse({ echo: req.path }, 200, 1);
+      },
+    };
+    // Recorded sequentially: each response arrived before the next request began.
+    const exchanges = Array.from({ length: 12 }, (_, i) =>
+      makeExchange({
+        index: i,
+        request: makeRequest({ path: `/s/${i}` }),
+        response: jsonResponse({ echo: `/s/${i}` }, 200, 1),
+      }),
+    );
+    const run = await replay({
+      recording: await writeRecording(exchanges),
+      target: 'fake://',
+      adapter,
+      pace: 'max',
+      concurrency: 8,
+    });
+    expect(peak).toBe(1);
+    expect(run.stats.overall.matches).toBe(12);
+    for (let i = 1; i < run.exchanges.length; i += 1) {
+      expect(run.exchanges[i]?.sent_at_ms).toBeGreaterThanOrEqual(
+        run.exchanges[i - 1]?.acked_at_ms ?? Infinity,
+      );
+    }
   });
 
   it('makes the run inconclusive when a control fails', async () => {

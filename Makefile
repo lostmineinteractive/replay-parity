@@ -1,9 +1,10 @@
 # replay-parity build entry points. Compatible with GNU Make 3.81.
 
 PNPM ?= pnpm
-REFERENCE_URL ?= http://127.0.0.1:3001
+REFERENCE_URL ?= http://127.0.0.1:3000
+CANDIDATE_URL ?= http://127.0.0.1:3002
 
-.PHONY: all install build typecheck lint format test test-unit test-int coverage check-prose check-secrets check-parallel check recording bench-capture demo demo-down clean
+.PHONY: all install build typecheck lint format test test-unit test-int coverage check-prose check-secrets check-parallel check recording bench-capture bench-replay demo demo-down screenshots clean
 
 all: install lint build test
 
@@ -51,11 +52,17 @@ recording:
 bench-capture:
 	$(PNPM) --filter @replay-parity/scripts exec tsx bench-capture.ts --reference $(REFERENCE_URL)
 
+bench-replay:
+	$(PNPM) --filter @replay-parity/scripts exec tsx bench-replay.ts --candidate $(CANDIDATE_URL)
+
 demo:
-	@echo "make demo is implemented in build step 7." && exit 1
+	sh scripts/demo.sh
 
 demo-down:
-	@echo "make demo-down is implemented in build step 7." && exit 1
+	docker compose -f demo/docker-compose.yml down -v --remove-orphans
+
+screenshots:
+	sh scripts/screenshots.sh
 
 clean:
 	rm -rf packages/*/dist demo/*/dist coverage demo/out

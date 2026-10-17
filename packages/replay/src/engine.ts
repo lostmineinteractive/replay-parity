@@ -40,6 +40,9 @@ import { DependencyIndex, SubstitutionTable } from './substitutions.js';
  *
  * Ordering rules:
  * - Sends start in recording order. A bounded pool limits how many are in flight.
+ * - The recorded happens-before order is kept: an exchange that began after an
+ *   earlier exchange's response in the recording waits for that exchange to be
+ *   acknowledged. Exchanges that overlapped in the recording may overlap again.
  * - A request that needs a value captured from an earlier exchange waits for
  *   that exchange to complete, under every pacing mode.
  * - An exchange with a barrier tag waits until every earlier exchange has a
@@ -325,6 +328,16 @@ export async function replayExchanges(
       }
       const deps = dependencies.dependenciesOf(i, e.request);
       if (deps.length > 0) await Promise.all(deps.map((k) => completion[k] as Promise<void>));
+      // Recorded happens-before. An exchange whose recorded request began after an earlier
+      // exchange's recorded response is never sent before that exchange is acknowledged, so
+      // the replay never introduces an ordering the recording did not have.
+      const precursors = [...pending].filter((k) => {
+        const earlier = selected[k] as Exchange;
+        return earlier.offset_ms + earlier.response.latency_ms <= e.offset_ms;
+      });
+      if (precursors.length > 0) {
+        await Promise.all(precursors.map((k) => completion[k] as Promise<void>));
+      }
       const scheduledAt = pace === 'max' ? rel() : (schedule[i] as number);
       const wait = scheduledAt - rel();
       if (wait > 0) await sleep(wait);

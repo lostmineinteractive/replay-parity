@@ -55,7 +55,26 @@ importers:
         specifier: workspace:*
         version: link:../reference-service
 
-  demo/load: {}
+  demo/load:
+    devDependencies:
+      '@replay-parity/capture':
+        specifier: workspace:*
+        version: link:../../packages/capture
+      '@replay-parity/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@replay-parity/demo-candidate':
+        specifier: workspace:*
+        version: link:../candidate-service
+      '@replay-parity/demo-reference':
+        specifier: workspace:*
+        version: link:../reference-service
+      '@replay-parity/replay':
+        specifier: workspace:*
+        version: link:../../packages/replay
+      '@replay-parity/report':
+        specifier: workspace:*
+        version: link:../../packages/report
 
   demo/reference-service:
     dependencies:
@@ -185,6 +204,9 @@ importers:
       '@replay-parity/demo-reference':
         specifier: workspace:*
         version: link:../demo/reference-service
+      '@replay-parity/replay':
+        specifier: workspace:*
+        version: link:../packages/replay
       undici:
         specifier: ^8.12.2
         version: 8.12.2

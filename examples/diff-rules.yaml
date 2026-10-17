@@ -1,0 +1,35 @@
+# diff-rules.yaml, every key explained. Paths use a JSONPath subset:
+# $, .name, ['name'], [n], [*], .* and nothing else.
+ignore:
+  # Removed from both sides before comparison. No finding is produced.
+  - '$.request_id'
+  - '$.timestamps.*'
+tolerances:
+  # Numbers within abs, or within rel times the larger magnitude, are tolerated.
+  - path: '$.total'
+    abs: 0.005
+  - path: '$.items[*].unit_price'
+    rel: 0.0001
+unordered:
+  # Arrays compared as sets. With key, elements are matched by the value at that path.
+  - path: '$.items'
+    key: '$.sku'
+status:
+  # Status codes in one class are equivalent.
+  equivalent:
+    - [200, 201]
+headers:
+  # Response headers compared by name. Default: none.
+  compare: ['content-type']
+substitutions:
+  # A value captured from the response of every exchange carrying the tag, on the
+  # reference and on the candidate. Later requests have the reference value replaced
+  # with the candidate value in the listed locations, and the differ treats the pair
+  # as equivalent. Default apply: [path, query, body].
+  - name: order_id
+    capture: { tag: create-order, path: '$.order_id' }
+    apply: [path, body]
+controls:
+  # Harness controls such as a restart. Replayed in order as barriers, diffed on status
+  # only, excluded from statistics and thresholds, shown in the report as control: true.
+  tags: [admin-restart, admin-reset]

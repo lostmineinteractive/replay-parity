@@ -13,6 +13,7 @@
     "@replay-parity/core": "workspace:*",
     "@replay-parity/demo-load": "workspace:*",
     "@replay-parity/demo-reference": "workspace:*",
+    "@replay-parity/replay": "workspace:*",
     "undici": "^8.12.2"
   },
   "devDependencies": {

@@ -1,0 +1,27 @@
+# Gates for the demo. The clean pair passes these with margin on the demo
+# hardware. The classic candidate breaches adjust-stock p99 with its seeded
+# 60 ms delay and the correctness rows with its three other divergences.
+latency:
+  # A latency row with fewer successful samples than this is inconclusive, not failed.
+  min_samples: 20
+  overall: { p50_ms: 25, p99_ms: 120 }
+  by_tag:
+    create-order: { p99_ms: 120 }
+    get-order: { p99_ms: 80 }
+    list-inventory: { p99_ms: 80 }
+    adjust-stock: { p99_ms: 40 }
+    list-ledger: { p99_ms: 80, min_samples: 10 }
+correctness:
+  mismatch_rate_max: 0
+  by_tag:
+    create-order: { mismatch_rate_max: 0 }
+    get-order: { mismatch_rate_max: 0 }
+    list-inventory: { mismatch_rate_max: 0 }
+errors:
+  rate_max: 0
+pacing:
+  # The replay must hold its schedule within this slip or the run is inconclusive.
+  slip_max_ms: 250
+invariants:
+  # An invariant violation on either system fails the run.
+  fail_on_violation: true

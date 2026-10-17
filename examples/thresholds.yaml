@@ -1,0 +1,31 @@
+# thresholds.yaml, every key explained. Every section is optional. The run
+# passes only when every row passes. A row that cannot decide, for example
+# a tag with fewer samples than min_samples, makes the run inconclusive.
+latency:
+  # Successful candidate samples a latency row needs before it can decide. Default 1.
+  min_samples: 20
+  # Absolute limits in milliseconds on the candidate's latency across every tag.
+  # Any of p50_ms, p90_ms, p99_ms, p999_ms, max_ms, mean_ms. A block may carry its own min_samples.
+  overall: { p50_ms: 20, p99_ms: 80 }
+  # The same limits for one tag.
+  by_tag:
+    create-order: { p99_ms: 120 }
+    list-ledger: { p99_ms: 80, min_samples: 10 }
+  # Ratios of the candidate's percentile over the reference's, from the recording.
+  relative_to_reference:
+    p99_ratio_max: 1.5
+correctness:
+  # Fraction of compared exchanges whose diff verdict is mismatch, overall and per tag.
+  mismatch_rate_max: 0.001
+  by_tag:
+    create-order: { mismatch_rate_max: 0 }
+errors:
+  # Fraction of exchanges with a transport error, no candidate response.
+  rate_max: 0.0
+pacing:
+  # Largest schedule slip (actual send time minus scheduled time) before the run is
+  # inconclusive with schedule_not_held. Unset: slip is reported and never gates.
+  slip_max_ms: 250
+invariants:
+  # With --invariants, a violation on either system fails the run. Set false to report only.
+  fail_on_violation: true

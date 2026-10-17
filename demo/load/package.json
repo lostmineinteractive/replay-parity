@@ -19,5 +19,13 @@
   ],
   "scripts": {
     "start": "node dist/src/main.js"
+  },
+  "devDependencies": {
+    "@replay-parity/capture": "workspace:*",
+    "@replay-parity/core": "workspace:*",
+    "@replay-parity/demo-candidate": "workspace:*",
+    "@replay-parity/demo-reference": "workspace:*",
+    "@replay-parity/replay": "workspace:*",
+    "@replay-parity/report": "workspace:*"
   }
 }
