@@ -1,0 +1,489 @@
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { Writable } from 'node:stream';
+import { setTimeout as sleep } from 'node:timers/promises';
+import {
+  compileRunValidator,
+  parseRecordingText,
+  parseRun,
+  type RunValidator,
+} from '@replay-parity/core';
+import { buildApp as buildCandidate, type DivergenceSetting } from '@replay-parity/demo-candidate';
+import { buildApp as buildReference } from '@replay-parity/demo-reference';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { runCli } from '../src/index.js';
+
+const ROOT = resolve(import.meta.dirname, '../../..');
+const RECORDING = join(ROOT, 'demo/recording.jsonl');
+const MAIN = join(ROOT, 'packages/cli/src/main.ts');
+
+const RULES = `
+ignore: ["$.created_at"]
+substitutions:
+  - name: order_id
+    capture: { tag: create-order, path: "$.order_id" }
+controls:
+  tags: [admin-restart, admin-reset]
+`;
+
+const FLAGS: Record<string, string[]> = {
+  capture: [
+    '--listen',
+    '--target',
+    '--out',
+    '--tag-rule',
+    '--sample',
+    '--redact-header',
+    '--max-body-bytes',
+    '--no-append',
+    '--upstream-timeout-ms',
+  ],
+  replay: [
+    '--recording',
+    '--target',
+    '--out',
+    '--pace',
+    '--rps',
+    '--concurrency',
+    '--warmup',
+    '--filter',
+    '--limit',
+    '--rules',
+    '--thresholds',
+    '--adapter',
+    '--bus-url',
+    '--header',
+    '--headers-file',
+    '--barrier-tag',
+    '--barrier-timeout-ms',
+    '--candidate-recording',
+    '--invariants',
+    '--timeout-ms',
+    '--max-body-bytes',
+    '--quiet',
+  ],
+  report: ['--run', '--out', '--format', '--explain'],
+  invariants: ['--recording', '--out', '--system'],
+  shrink: [
+    '--run',
+    '--recording',
+    '--target',
+    '--reset',
+    '--rule',
+    '--rules',
+    '--max-attempts',
+    '--time-budget-ms',
+    '--out',
+    '--header',
+    '--headers-file',
+    '--barrier-tag',
+    '--timeout-ms',
+  ],
+};
+
+class Sink extends Writable {
+  text = '';
+  override _write(chunk: Buffer | string, _enc: BufferEncoding, cb: () => void): void {
+    this.text += chunk.toString();
+    cb();
+  }
+}
+
+async function rp(args: string[]): Promise<{ code: number; out: string; err: string }> {
+  const stdout = new Sink();
+  const stderr = new Sink();
+  const code = await runCli(args, { stdout, stderr });
+  return { code, out: stdout.text, err: stderr.text };
+}
+
+let validate: RunValidator;
+let dir: string;
+const cleanups: (() => Promise<void>)[] = [];
+
+beforeAll(async () => {
+  validate = await compileRunValidator();
+  dir = await mkdtemp(join(tmpdir(), 'rp-cli-'));
+  await writeFile(join(dir, 'rules.yaml'), RULES);
+});
+
+afterEach(async () => {
+  for (const fn of cleanups.splice(0)) await fn();
+});
+
+async function candidate(divergences: DivergenceSetting): Promise<string> {
+  const app = buildCandidate({ divergences, seed: 1 });
+  await app.listen({ port: 0, host: '127.0.0.1' });
+  cleanups.push(() => app.close());
+  return `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+}
+
+async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  await new Promise<void>((r) => server.close(() => r()));
+  return port;
+}
+
+describe('help and usage', () => {
+  it('lists the commands and every flag with a description', async () => {
+    const top = await rp(['--help']);
+    expect(top.code).toBe(0);
+    for (const name of Object.keys(FLAGS)) expect(top.out).toContain(`  ${name}`);
+    for (const [name, flags] of Object.entries(FLAGS)) {
+      const help = await rp([name, '--help']);
+      expect(help.code).toBe(0);
+      for (const flag of flags) {
+        const line = help.out
+          .split('\n')
+          .find(
+            (l) => l.includes(`${flag} `) || l.includes(`${flag}\n`) || l.trimEnd().endsWith(flag),
+          );
+        expect(line, `${name} ${flag}`).toBeDefined();
+        const after = (line as string).split(flag)[1] ?? '';
+        expect(
+          after.replace(/<[^>]*>|\[[^\]]*\]/g, '').trim().length,
+          `${name} ${flag} has no description`,
+        ).toBeGreaterThan(5);
+      }
+    }
+    const version = await rp(['--version']);
+    expect(version.code).toBe(0);
+    expect(version.out.trim()).toBe('0.1.0');
+  });
+
+  it('exits 1 with a message on an unknown flag, a missing required flag, and a missing file', async () => {
+    const unknown = await rp([
+      'replay',
+      '--recording',
+      RECORDING,
+      '--target',
+      'http://x',
+      '--bogus',
+    ]);
+    expect(unknown.code).toBe(1);
+    expect(unknown.err).toContain("unknown option '--bogus'");
+    const missingFlag = await rp(['report']);
+    expect(missingFlag.code).toBe(1);
+    expect(missingFlag.err).toContain("required option '--run <path>' not specified");
+    const missingFile = await rp(['report', '--run', join(dir, 'nope.json')]);
+    expect(missingFile.code).toBe(1);
+    expect(missingFile.err).toMatch(/^rp: .*nope\.json/);
+    const badValue = await rp([
+      'replay',
+      '--recording',
+      RECORDING,
+      '--target',
+      'http://x',
+      '--concurrency',
+      '0',
+    ]);
+    expect(badValue.code).toBe(1);
+    expect(badValue.err).toContain('expected a positive integer');
+    const badRule = await rp([
+      'replay',
+      '--recording',
+      RECORDING,
+      '--target',
+      'http://x',
+      '--rules',
+      join(dir, 'nope.yaml'),
+    ]);
+    expect(badRule.code).toBe(1);
+    expect(badRule.err).toMatch(/^rp: .*nope\.yaml/);
+  });
+});
+
+describe('replay and report', () => {
+  it('exits 2 on a failing run, 0 on a passing run, and 3 on an inconclusive run', async () => {
+    const thresholds = join(dir, 'thresholds.yaml');
+    await writeFile(
+      thresholds,
+      'latency:\n  by_tag:\n    adjust-stock: { p99_ms: 30 }\ncorrectness:\n  by_tag:\n    list-inventory: { mismatch_rate_max: 0 }\n',
+    );
+    const on = await candidate('on');
+    const failing = join(dir, 'failing.json');
+    const fail = await rp([
+      'replay',
+      '--recording',
+      RECORDING,
+      '--target',
+      on,
+      '--pace',
+      'max',
+      '--concurrency',
+      '1',
+      '--rules',
+      join(dir, 'rules.yaml'),
+      '--thresholds',
+      thresholds,
+      '--out',
+      failing,
+    ]);
+    expect(fail.code).toBe(2);
+    expect(fail.out).toContain(': FAIL');
+    expect(fail.out).toContain('latency.by_tag.adjust-stock.p99_ms');
+    expect(fail.err).toContain(`wrote ${failing}: FAIL`);
+    const run = parseRun(await readFile(failing, 'utf8'));
+    expect(validate(run), validate.errors ?? '').toBe(true);
+    expect(run.recording.path).toBe(RECORDING);
+
+    const off = await candidate('off');
+    const passing = join(dir, 'passing.json');
+    const pass = await rp([
+      'replay',
+      '--recording',
+      RECORDING,
+      '--target',
+      off,
+      '--pace',
+      'max',
+      '--concurrency',
+      '1',
+      '--rules',
+      join(dir, 'rules.yaml'),
+      '--thresholds',
+      thresholds,
+      '--out',
+      passing,
+      '--quiet',
+      '--header',
+      'x-run: cli',
+      '--barrier-tag',
+      'list-ledger',
+      '--invariants',
+      '--candidate-recording',
+      join(dir, 'candidate.jsonl'),
+    ]);
+    expect(pass.code).toBe(0);
+    expect(pass.out).toBe('');
+    const passed = parseRun(await readFile(passing, 'utf8'));
+    expect(passed.verdict).toBe('pass');
+    expect(passed.pacing.barrier_tags).toEqual(['list-ledger']);
+    expect(passed.invariants.candidate?.violations).toBe(0);
+    expect(parseRecordingText(await readFile(join(dir, 'candidate.jsonl'), 'utf8'))).toHaveLength(
+      283,
+    );
+
+    const thin = join(dir, 'thin.yaml');
+    await writeFile(thin, 'latency:\n  min_samples: 1000\n  overall: { p99_ms: 100 }\n');
+    const inconclusive = await rp([
+      'replay',
+      '--recording',
+      RECORDING,
+      '--target',
+      off,
+      '--pace',
+      'max',
+      '--concurrency',
+      '1',
+      '--limit',
+      '20',
+      '--thresholds',
+      thin,
+      '--out',
+      join(dir, 'thin.json'),
+      '--quiet',
+    ]);
+    expect(inconclusive.code).toBe(3);
+    expect(inconclusive.err).toContain('INCONCLUSIVE');
+  }, 60_000);
+
+  it('rejects contradictory replay flags with exit 1', async () => {
+    const res = await rp([
+      'replay',
+      '--recording',
+      RECORDING,
+      '--target',
+      'http://127.0.0.1:9',
+      '--pace',
+      'fixed-rate',
+    ]);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('rp: fixed-rate pacing needs --rps');
+    const bus = await rp([
+      'replay',
+      '--recording',
+      RECORDING,
+      '--target',
+      'http://127.0.0.1:9',
+      '--adapter',
+      'bus',
+    ]);
+    expect(bus.code).toBe(1);
+    expect(bus.err).toContain('--adapter bus needs --bus-url');
+  });
+
+  it('renders terminal, html, and json, and explains one or every mismatch', async () => {
+    const failing = join(dir, 'failing.json');
+    const terminal = await rp(['report', '--run', failing, '--format', 'terminal']);
+    expect(terminal.code).toBe(0);
+    expect(terminal.out).toContain(': FAIL');
+    const html = join(dir, 'report.html');
+    const rendered = await rp(['report', '--run', failing, '--out', html]);
+    expect(rendered.code).toBe(0);
+    expect(rendered.err).toContain(`wrote ${html} (html): FAIL`);
+    expect((await readFile(html, 'utf8')).startsWith('<!doctype html>')).toBe(true);
+    const json = await rp(['report', '--run', failing, '--format', 'json']);
+    expect(json.code).toBe(0);
+    expect(validate(JSON.parse(json.out)), validate.errors ?? '').toBe(true);
+
+    const run = parseRun(await readFile(failing, 'utf8'));
+    const mismatched = run.exchanges.filter((e) => !e.control && e.diff?.verdict === 'mismatch');
+    const first = mismatched[0]!;
+    const one = await rp(['report', '--run', failing, '--explain', first.id]);
+    expect(one.code).toBe(0);
+    expect(one.out.startsWith(`${first.id} ${first.method} ${first.path}`)).toBe(true);
+    expect(one.out).toContain('The responses mismatch.');
+    expect(one.out.split('\n\n')).toHaveLength(1);
+    const all = await rp(['report', '--run', failing, '--explain']);
+    expect(all.code).toBe(0);
+    for (const e of mismatched) expect(all.out).toContain(`${e.id} ${e.method} ${e.path}`);
+    expect(all.out.split('\n\n')).toHaveLength(mismatched.length);
+    const unknown = await rp(['report', '--run', failing, '--explain', 'nope']);
+    expect(unknown.code).toBe(1);
+    expect(unknown.err).toContain('rp: exchange nope is not in the run');
+  });
+});
+
+describe('invariants and shrink', () => {
+  it('evaluates the invariants of one recording', async () => {
+    const out = join(dir, 'invariants.json');
+    const res = await rp([
+      'invariants',
+      '--recording',
+      RECORDING,
+      '--system',
+      'reference',
+      '--out',
+      out,
+    ]);
+    expect(res.code).toBe(0);
+    expect(res.out).toContain('invariants for reference');
+    expect(res.out).toContain('10 hold');
+    expect(res.out).toMatch(/ 1\. holds\s+shipment-applied-once/);
+    expect(JSON.parse(await readFile(out, 'utf8'))).toMatchObject({
+      system: 'reference',
+      violations: 0,
+    });
+  });
+
+  it('shrinks a failing run and updates it in place', async () => {
+    const url = await candidate(['shipment-applied-twice']);
+    const runPath = join(dir, 'defect.json');
+    const replayed = await rp([
+      'replay',
+      '--recording',
+      RECORDING,
+      '--target',
+      url,
+      '--pace',
+      'max',
+      '--concurrency',
+      '1',
+      '--rules',
+      join(dir, 'rules.yaml'),
+      '--out',
+      runPath,
+      '--quiet',
+      '--invariants',
+    ]);
+    expect(replayed.code).toBe(2);
+    const reduced = join(dir, 'reduced.jsonl');
+    const shrunk = await rp([
+      'shrink',
+      '--run',
+      runPath,
+      '--recording',
+      RECORDING,
+      '--target',
+      url,
+      '--reset',
+      `${url}/admin/reset`,
+      '--out',
+      reduced,
+    ]);
+    expect(shrunk.code).toBe(0);
+    expect(shrunk.out).toMatch(
+      /^reduced reproduction: 283 -> \d+ steps in \d+ attempts for invariant:candidate:shipment-applied-once/,
+    );
+    expect(shrunk.err).toMatch(/attempt 1 \(confirm, \d+ steps\): reproduced/);
+    const run = parseRun(await readFile(runPath, 'utf8'));
+    expect(run.reproduction).toMatchObject({
+      successful: true,
+      label: 'reduced reproduction',
+      recording: reduced,
+    });
+    expect(run.reproduction?.reduced_steps).toBeLessThanOrEqual(5);
+    expect(parseRecordingText(await readFile(reduced, 'utf8'))).toHaveLength(
+      run.reproduction?.reduced_steps ?? -1,
+    );
+    expect(validate(run), validate.errors ?? '').toBe(true);
+
+    const nothing = await rp([
+      'shrink',
+      '--run',
+      join(dir, 'passing.json'),
+      '--recording',
+      RECORDING,
+      '--target',
+      url,
+      '--reset',
+      `${url}/admin/reset`,
+    ]);
+    expect(nothing.code).toBe(1);
+    expect(nothing.err).toContain('no violated invariant and no mismatched exchange');
+  }, 60_000);
+});
+
+describe('capture as a child process', () => {
+  it('records traffic and exits cleanly on SIGTERM', async () => {
+    const reference = buildReference();
+    await reference.listen({ port: 0, host: '127.0.0.1' });
+    cleanups.push(() => reference.close());
+    const referenceUrl = `http://127.0.0.1:${(reference.server.address() as AddressInfo).port}`;
+    const port = await freePort();
+    const out = join(dir, 'captured.jsonl');
+    const child = spawn(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        MAIN,
+        'capture',
+        '--listen',
+        `127.0.0.1:${port}`,
+        '--target',
+        referenceUrl,
+        '--out',
+        out,
+        '--tag-rule',
+        'GET /v1/inventory=list-inventory',
+      ],
+      { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let stderr = '';
+    child.stderr.on('data', (c: Buffer) => {
+      stderr += c.toString();
+    });
+    const deadline = Date.now() + 20_000;
+    while (!stderr.includes('capturing on') && Date.now() < deadline) await sleep(100);
+    expect(stderr).toContain(`capturing on 127.0.0.1:${port}`);
+    for (let i = 0; i < 3; i += 1) {
+      const res = await fetch(`http://127.0.0.1:${port}/v1/inventory`);
+      expect(res.status).toBe(200);
+    }
+    child.kill('SIGTERM');
+    const [code] = (await once(child, 'exit')) as [number | null];
+    expect(code).toBe(0);
+    expect(stderr).toContain('capture closed: 3 requests seen, 3 recorded, 0 failed upstream');
+    const recorded = parseRecordingText(await readFile(out, 'utf8'));
+    expect(recorded).toHaveLength(3);
+    expect(recorded.every((e) => e.tags.includes('list-inventory'))).toBe(true);
+  }, 30_000);
+});

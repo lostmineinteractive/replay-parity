@@ -4,8 +4,12 @@
   "private": true,
   "type": "module",
   "license": "MIT",
+  "description": "The rp command line: capture, replay, report, invariants, shrink, agent.",
   "engines": {
     "node": ">=22"
+  },
+  "bin": {
+    "rp": "./dist/src/main.js"
   },
   "exports": {
     ".": {
@@ -15,5 +19,18 @@
   },
   "files": [
     "dist"
-  ]
+  ],
+  "dependencies": {
+    "@replay-parity/capture": "workspace:*",
+    "@replay-parity/core": "workspace:*",
+    "@replay-parity/invariants": "workspace:*",
+    "@replay-parity/replay": "workspace:*",
+    "@replay-parity/report": "workspace:*",
+    "@replay-parity/shrink": "workspace:*",
+    "commander": "^15.0.0"
+  },
+  "devDependencies": {
+    "@replay-parity/demo-candidate": "workspace:*",
+    "@replay-parity/demo-reference": "workspace:*"
+  }
 }

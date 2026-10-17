@@ -9,8 +9,11 @@
   "references": [
     { "path": "../core" },
     { "path": "../capture" },
+    { "path": "../invariants" },
     { "path": "../replay" },
     { "path": "../report" },
-    { "path": "../agent" }
+    { "path": "../shrink" },
+    { "path": "../../demo/candidate-service" },
+    { "path": "../../demo/reference-service" }
   ]
 }

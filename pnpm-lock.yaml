@@ -78,7 +78,36 @@ importers:
         specifier: workspace:*
         version: link:../../demo/reference-service
 
-  packages/cli: {}
+  packages/cli:
+    dependencies:
+      '@replay-parity/capture':
+        specifier: workspace:*
+        version: link:../capture
+      '@replay-parity/core':
+        specifier: workspace:*
+        version: link:../core
+      '@replay-parity/invariants':
+        specifier: workspace:*
+        version: link:../invariants
+      '@replay-parity/replay':
+        specifier: workspace:*
+        version: link:../replay
+      '@replay-parity/report':
+        specifier: workspace:*
+        version: link:../report
+      '@replay-parity/shrink':
+        specifier: workspace:*
+        version: link:../shrink
+      commander:
+        specifier: ^15.0.0
+        version: 15.0.0
+    devDependencies:
+      '@replay-parity/demo-candidate':
+        specifier: workspace:*
+        version: link:../../demo/candidate-service
+      '@replay-parity/demo-reference':
+        specifier: workspace:*
+        version: link:../../demo/reference-service
 
   packages/core:
     dependencies:
@@ -758,6 +787,10 @@ packages:
   chai@6.3.0:
     resolution: {integrity: sha512-XWAtwJ6OHO+tj0EKCs0Y2UamnyOxseZWltU4x2U2wh8g4AigdjwvtUjvLP2tqkA/avxHEtzxNaqGq/YGNwckKg==}
     engines: {node: '>=18'}
+
+  commander@15.0.0:
+    resolution: {integrity: sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg==}
+    engines: {node: '>=22.12.0'}
 
   cookie@2.0.1:
     resolution: {integrity: sha512-yuToqVvRrj6pfDXREyQAAv8SkAEk/8GS3jQRTiUMm66TVtBYmqQeoEjL2Lmq8Rpo6271vH76InTChTitEAm65w==}
@@ -1863,6 +1896,8 @@ snapshots:
       qified: 0.10.1
 
   chai@6.3.0: {}
+
+  commander@15.0.0: {}
 
   cookie@2.0.1: {}
 
