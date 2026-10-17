@@ -33,7 +33,11 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'integration',
-          include: ['packages/*/test/**/*.int.test.ts', 'demo/*/test/**/*.int.test.ts'],
+          include: [
+            'packages/*/test/**/*.int.test.ts',
+            'demo/*/test/**/*.int.test.ts',
+            'scripts/test/**/*.int.test.ts',
+          ],
           testTimeout: 30_000,
           hookTimeout: 30_000,
         },

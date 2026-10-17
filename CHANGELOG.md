@@ -4,6 +4,14 @@ All notable changes to this repository are recorded here. The format follows Kee
 
 ## Unreleased
 
+### Step 9: docs, README, CI, and the OMS mapping (Addendum A5)
+
+- `README.md` in the spec's order: what the tool is and the question it answers, the architecture diagram, the report screenshot, `make demo` and what it produces, the four divergences and how the report shows each, the agent in one paragraph with a link to the transcript, the measured capture overhead and replay throughput with the commands, design notes, and limitations stated plainly.
+- `docs/architecture.md` names the packages and the decisions. `docs/report-format.md` documents every field of the run file, the inconclusive kinds and the precedence rule, and the exit codes. `docs/writing-adapters.md` gives the adapter contract, what the engine does around a send, substitutions, the HTTP adapter, the bus adapter with the responder contract, and how to add a transport.
+- `docs/oms-mapping.md` maps the demo onto an order management system migration: a paragraph on the domain agnostic harness, the twelve scenarios with their OMS equivalents, and the ten invariants restated for positions, cash, and executions. `scripts/check-prose.sh` exempts that one file from the banned term scan by exact path through a `banned_exempt` list, keeps the em dash check on it, and a test runs the script against temporary trees to show that a banned word passes only in that file, that a nested file with the same name fails, and that an em dash fails everywhere. The README links the document in one sentence after the demo section.
+- `.github/workflows/ci.yml` runs on every push and pull request on Node 22: install, lint and format check, typecheck and build, unit and integration tests with coverage, the prose, secrets, and parallel guards, then a second job that builds the demo images, runs `make demo` with the key unset, stops the containers, and uploads the four reports, three runs, and the reduced reproduction as an artifact.
+- `DEFERRED.md` gains the items noticed in Steps 7 and 8.
+
 ### Step 8: the agent
 
 - Added `@replay-parity/agent`. `runAgent` runs the loop from the spec: each round summarizes the run (verdict, threshold rows that did not pass, mismatches by tag, mismatching paths with array indices generalized, a sample of mismatched exchanges, failed latency rows), describes one request shape per tag from the recording, lists the kept cases so far, asks the model for up to `--cases-per-round` cases as one JSON object, validates them, sends each to the reference and the candidate, diffs the final responses, and keeps a case when it reveals a mismatch path set or a latency breach that no kept case already reveals. It stops when a round adds nothing new, the budget would be crossed, the round limit is reached, every case in a round is invalid, the model declines, or a call fails.

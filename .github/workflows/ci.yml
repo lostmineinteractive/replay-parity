@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    name: lint, typecheck, test, guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Enable pnpm through corepack
+        run: corepack enable
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Lint and format check
+        run: pnpm lint
+      - name: Typecheck and build
+        run: pnpm build
+      - name: Unit and integration tests with coverage
+        run: pnpm test:coverage
+      - name: Prose guard
+        run: pnpm check-prose
+      - name: Secrets guard
+        run: pnpm check-secrets
+      - name: Parallel services guard
+        run: pnpm check-parallel
+      - name: Coverage summary
+        if: always()
+        run: cat coverage/coverage-summary.json | head -c 2000 || true
+
+  demo:
+    name: make demo without the agent
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Enable pnpm through corepack
+        run: corepack enable
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build the demo images
+        run: docker compose -f demo/docker-compose.yml build
+      - name: Run the demo
+        env:
+          ANTHROPIC_API_KEY: ''
+        run: make demo
+      - name: Stop the demo
+        if: always()
+        run: make demo-down
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-reports
+          path: |
+            demo/out/report.html
+            demo/out/report-unordered.html
+            demo/out/report-clean.html
+            demo/out/report-defect.html
+            demo/out/run.json
+            demo/out/run-clean.json
+            demo/out/run-defect.json
+            demo/out/reduced-reproduction.jsonl
+          if-no-files-found: error

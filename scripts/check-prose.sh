@@ -24,8 +24,17 @@ done
 # Banned vocabulary. Matched as whole words, case insensitive.
 banned='bank|banking|settlement|settle|trade|trading|trader|payment|payments|payout|payouts|invoice|invoicing|currency|currencies|broker|brokerage|fintech|wallet|equities|securities|custody|forex'
 
+# Files exempt from the banned term scan, by exact path. The em dash check still
+# applies to them. A second document does not inherit the exemption.
+banned_exempt='./docs/oms-mapping.md'
+
 text_files=$(find . \( $prune \) -prune -o -type f \( -name '*.md' -o -name '*.ts' -o -name '*.js' -o -name '*.mjs' -o -name '*.json' -o -name '*.yaml' -o -name '*.yml' -o -name '*.html' -o -name '*.sh' -o -name 'Makefile' -o -name 'Dockerfile' \) -print | grep -v -e 'scripts/check-prose.sh' -e 'pnpm-lock.yaml' | sort)
 for f in $text_files; do
+  exempt=0
+  for e in $banned_exempt; do
+    if [ "$f" = "$e" ]; then exempt=1; fi
+  done
+  if [ "$exempt" -eq 1 ]; then continue; fi
   if grep -n -i -w -E "$banned" "$f" >/dev/null 2>&1; then
     echo "banned term found in $f:"
     grep -n -i -w -E "$banned" "$f"
