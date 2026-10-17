@@ -125,6 +125,19 @@ importers:
 
   packages/report: {}
 
+  packages/shrink:
+    dependencies:
+      '@replay-parity/core':
+        specifier: workspace:*
+        version: link:../core
+      '@replay-parity/replay':
+        specifier: workspace:*
+        version: link:../replay
+    devDependencies:
+      '@replay-parity/demo-candidate':
+        specifier: workspace:*
+        version: link:../../demo/candidate-service
+
   scripts:
     dependencies:
       '@replay-parity/capture':

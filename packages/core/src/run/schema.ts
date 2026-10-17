@@ -140,6 +140,40 @@ export const AgentReportSchema = z
   })
   .strict();
 
+export const ReproductionStepSchema = z
+  .object({
+    id: z.string().min(1),
+    method: z.string().min(1),
+    path: z.string().min(1),
+    tags: z.array(z.string()),
+    body: z.json().optional(),
+    /** True when a quantity in the body was lowered from the recorded value. */
+    quantity_reduced: z.boolean(),
+  })
+  .strict();
+
+/**
+ * The result of shrinking a failing run. The steps are a subsequence of the
+ * recording, in recorded order, that still trips the rule. The label says
+ * "reduced reproduction" and never "minimal".
+ */
+export const ReproductionSchema = z
+  .object({
+    /** `invariant:<system>:<name>` or `mismatch:<exchange id>[:<path>]`. */
+    rule: z.string().min(1),
+    original_steps: count,
+    reduced_steps: count,
+    attempts: count,
+    /** True when the steps are fewer than the original and still reproduce. */
+    successful: z.boolean(),
+    label: z.enum(['reduced reproduction', 'reduction unsuccessful']),
+    duration_ms: nonneg,
+    /** Path of the reduced recording, when one was written. */
+    recording: z.string().nullable(),
+    steps: z.array(ReproductionStepSchema),
+  })
+  .strict();
+
 export const RunSchema = z
   .object({
     schema_version: z.literal(RUN_SCHEMA_VERSION),
@@ -178,10 +212,14 @@ export const RunSchema = z
         candidate: InvariantReportSchema.nullable(),
       })
       .strict(),
+    /** Filled by `rp shrink`. Null until then. */
+    reproduction: ReproductionSchema.nullable(),
     agent: AgentReportSchema.optional(),
   })
   .strict();
 
+export type ReproductionStep = z.output<typeof ReproductionStepSchema>;
+export type Reproduction = z.output<typeof ReproductionSchema>;
 export type PacingMode = z.output<typeof PacingModeSchema>;
 export type Pacing = z.output<typeof PacingSchema>;
 export type ExchangeResult = z.output<typeof ExchangeResultSchema>;

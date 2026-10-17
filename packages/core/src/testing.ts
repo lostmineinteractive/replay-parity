@@ -169,6 +169,7 @@ export function makeRun(over: Partial<Run> = {}): Run {
     exchanges,
     candidate_recording: null,
     invariants: { reference: null, candidate: null },
+    reproduction: null,
     ...over,
   };
 }

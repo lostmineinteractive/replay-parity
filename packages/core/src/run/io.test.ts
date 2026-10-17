@@ -167,6 +167,44 @@ describe('run model', () => {
     expect(validate(badStatus)).toBe(false);
   });
 
+  it('carries the reproduction section', () => {
+    const run = makeRun({
+      reproduction: {
+        rule: 'invariant:candidate:shipment-applied-once',
+        original_steps: 21,
+        reduced_steps: 4,
+        attempts: 9,
+        successful: true,
+        label: 'reduced reproduction',
+        duration_ms: 812,
+        recording: 'reduced-reproduction.jsonl',
+        steps: [
+          {
+            id: 'a',
+            method: 'POST',
+            path: '/v1/orders',
+            tags: ['create-order'],
+            body: { sku: 'H-800', qty: 2 },
+            quantity_reduced: true,
+          },
+          {
+            id: 'b',
+            method: 'GET',
+            path: '/v1/orders/o-7',
+            tags: ['get-order'],
+            quantity_reduced: false,
+          },
+        ],
+      },
+    });
+    expect(RunSchema.parse(run)).toEqual(run);
+    expect(validate(run), validate.errors ?? '').toBe(true);
+    expect(makeRun().reproduction).toBeNull();
+    const badLabel = { ...run, reproduction: { ...run.reproduction, label: 'minimal' } };
+    expect(RunSchema.safeParse(badLabel).success).toBe(false);
+    expect(validate(badLabel)).toBe(false);
+  });
+
   it('records barrier settings, acknowledgement times, and the control flag', () => {
     const run = makeRun();
     expect(run.pacing).toMatchObject({

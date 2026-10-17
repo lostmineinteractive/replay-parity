@@ -1,0 +1,27 @@
+{
+  "name": "@replay-parity/shrink",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Bounded delta debugging that reduces a failing replay to a reduced reproduction.",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@replay-parity/core": "workspace:*",
+    "@replay-parity/replay": "workspace:*"
+  },
+  "devDependencies": {
+    "@replay-parity/demo-candidate": "workspace:*"
+  }
+}

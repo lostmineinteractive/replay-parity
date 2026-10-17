@@ -109,7 +109,7 @@ function selectExchanges(
   return selected;
 }
 
-function validate(options: ReplayOptions): void {
+function validate(options: ReplayExchangesOptions): void {
   const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
   if (!Number.isInteger(concurrency) || concurrency < 1) {
     throw new ConfigError(`concurrency must be a positive integer, got ${concurrency}`);
@@ -149,7 +149,23 @@ async function waitWithTimeout(promises: Promise<void>[], timeoutMs: number): Pr
   return timedOut;
 }
 
+/** Options for replaying exchanges that are already in memory. */
+export type ReplayExchangesOptions = Omit<ReplayOptions, 'recording'> & {
+  /** Label written to `recording.path`. Default empty. */
+  recording?: string | undefined;
+};
+
+/** Reads the recording and replays it. */
 export async function replay(options: ReplayOptions): Promise<Run> {
+  const all = await readRecording(options.recording);
+  return replayExchanges(all, options);
+}
+
+/** Replays exchanges held in memory. Used by `replay` and by shrinking, which replays per attempt. */
+export async function replayExchanges(
+  all: readonly Exchange[],
+  options: ReplayExchangesOptions,
+): Promise<Run> {
   validate(options);
   const pace = options.pace ?? 'as-recorded';
   const rps = pace === 'fixed-rate' ? (options.rps as number) : null;
@@ -165,7 +181,6 @@ export async function replay(options: ReplayOptions): Promise<Run> {
   const barrierTimeoutMs = options.barrierTimeoutMs ?? DEFAULT_BARRIER_TIMEOUT_MS;
   const now = options.now ?? (() => new Date());
 
-  const all = await readRecording(options.recording);
   const selected = selectExchanges(all, filterTag, limit);
   const n = selected.length;
   const schedule = buildSchedule(
@@ -358,7 +373,7 @@ export async function replay(options: ReplayOptions): Promise<Run> {
   if (options.invariants) {
     const reference = evaluateInvariants(selected, {
       system: 'reference',
-      recording: options.recording,
+      recording: options.recording ?? '',
     });
     const candidate = evaluateInvariants(candidateLog, {
       system: 'candidate',
@@ -386,7 +401,7 @@ export async function replay(options: ReplayOptions): Promise<Run> {
     verdict,
     inconclusive,
     recording: {
-      path: options.recording,
+      path: options.recording ?? '',
       exchanges: all.length,
       selected: n,
       first_ts: all[0]?.ts ?? null,
@@ -421,6 +436,7 @@ export async function replay(options: ReplayOptions): Promise<Run> {
     exchanges: results,
     candidate_recording: candidateRecording,
     invariants,
+    reproduction: null,
   };
   return run;
 }

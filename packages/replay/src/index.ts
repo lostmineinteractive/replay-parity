@@ -18,6 +18,8 @@ export {
   DEFAULT_BARRIER_TIMEOUT_MS,
   DEFAULT_CONCURRENCY,
   replay,
+  replayExchanges,
+  type ReplayExchangesOptions,
   type ReplayOptions,
   type ReplayProgress,
 } from './engine.js';
