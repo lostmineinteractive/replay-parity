@@ -19,6 +19,7 @@
   ],
   "dependencies": {
     "@replay-parity/core": "workspace:*",
+    "@replay-parity/invariants": "workspace:*",
     "redis": "^6.3.0",
     "undici": "^8.12.2",
     "zod": "^4.6.7"

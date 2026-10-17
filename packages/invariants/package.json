@@ -1,0 +1,23 @@
+{
+  "name": "@replay-parity/invariants",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Independent invariants evaluated against one system's own recording.",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@replay-parity/core": "workspace:*"
+  }
+}

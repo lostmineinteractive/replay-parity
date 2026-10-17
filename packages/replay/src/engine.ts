@@ -15,6 +15,7 @@ import {
   ulid,
   type Diff,
   type DiffRules,
+  type ThresholdMeasurements,
   type Exchange,
   type ExchangeResult,
   type HeaderMap,
@@ -25,8 +26,9 @@ import {
   type Run,
   type Thresholds,
 } from '@replay-parity/core';
+import { evaluateInvariants } from '@replay-parity/invariants';
 import { describeSendError, type Adapter } from './adapter.js';
-import { writeCandidateRecording, type SentExchange } from './candidate-recording.js';
+import { candidateExchanges, writeExchanges, type SentExchange } from './candidate-recording.js';
 import { HttpAdapter } from './http-adapter.js';
 import { buildSchedule, requestedRps, round3, summarizeSlip } from './pacing.js';
 import { DependencyIndex, SubstitutionTable } from './substitutions.js';
@@ -78,6 +80,8 @@ export interface ReplayOptions {
   candidateRecording?: string | null | undefined;
   /** Header names redacted in the candidate recording. Default: the capture list. */
   redactHeaders?: readonly string[] | undefined;
+  /** Evaluate the independent invariants on the reference and the candidate recordings. Default false. */
+  invariants?: boolean | undefined;
   /** Timeout for the default HTTP adapter. Default 30000. */
   timeoutMs?: number | undefined;
   maxBodyBytes?: number | undefined;
@@ -340,7 +344,38 @@ export async function replay(options: ReplayOptions): Promise<Run> {
   }
   const stats = collector.finish();
   const slip = summarizeSlip(slips);
-  const evaluation = evaluateThresholds(thresholds, stats, { slip_max_ms: slip.max_ms });
+
+  const candidateLog = candidateExchanges({
+    sent: sent.filter((s): s is SentExchange => s !== null),
+    adapter: adapter.name,
+    redactHeaders: options.redactHeaders ?? DEFAULT_REDACTED_HEADERS,
+  });
+  const candidateRecording = options.candidateRecording ?? null;
+  if (candidateRecording !== null) await writeExchanges(candidateRecording, candidateLog);
+
+  const measurements: ThresholdMeasurements = { slip_max_ms: slip.max_ms };
+  let invariants: Run['invariants'] = { reference: null, candidate: null };
+  if (options.invariants) {
+    const reference = evaluateInvariants(selected, {
+      system: 'reference',
+      recording: options.recording,
+    });
+    const candidate = evaluateInvariants(candidateLog, {
+      system: 'candidate',
+      recording: candidateRecording ?? '',
+    });
+    invariants = { reference, candidate };
+    for (const report of [reference, candidate]) {
+      for (const c of report.inconclusive) {
+        conditions.push({ kind: c.kind, detail: `${report.system}: ${c.detail}` });
+      }
+    }
+    measurements.invariant_violations = {
+      reference: reference.violations,
+      candidate: candidate.violations,
+    };
+  }
+  const evaluation = evaluateThresholds(thresholds, stats, measurements);
   const inconclusive = [...conditions, ...evaluation.inconclusive];
   const verdict = decideVerdict({ threshold_results: evaluation.results, inconclusive });
 
@@ -384,14 +419,8 @@ export async function replay(options: ReplayOptions): Promise<Run> {
     threshold_results: evaluation.results,
     stats,
     exchanges: results,
+    candidate_recording: candidateRecording,
+    invariants,
   };
-
-  if (options.candidateRecording !== undefined && options.candidateRecording !== null) {
-    await writeCandidateRecording(options.candidateRecording, {
-      sent: sent.filter((s): s is SentExchange => s !== null),
-      adapter: adapter.name,
-      redactHeaders: options.redactHeaders ?? DEFAULT_REDACTED_HEADERS,
-    });
-  }
   return run;
 }

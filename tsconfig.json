@@ -8,6 +8,9 @@
       "path": "packages/capture"
     },
     {
+      "path": "packages/invariants"
+    },
+    {
       "path": "packages/replay"
     },
     {

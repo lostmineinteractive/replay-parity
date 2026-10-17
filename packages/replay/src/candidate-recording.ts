@@ -63,15 +63,23 @@ export function candidateExchanges(options: CandidateRecordingOptions): Exchange
   });
 }
 
-export async function writeCandidateRecording(
+/** Writes exchanges as a new recording file and returns how many were written. */
+export async function writeExchanges(
   path: string,
-  options: CandidateRecordingOptions,
+  exchanges: readonly Exchange[],
 ): Promise<number> {
   const writer = await RecordingWriter.open(path, { append: false });
   try {
-    for (const exchange of candidateExchanges(options)) await writer.write(exchange);
+    for (const exchange of exchanges) await writer.write(exchange);
   } finally {
     await writer.close();
   }
   return writer.count;
+}
+
+export function writeCandidateRecording(
+  path: string,
+  options: CandidateRecordingOptions,
+): Promise<number> {
+  return writeExchanges(path, candidateExchanges(options));
 }

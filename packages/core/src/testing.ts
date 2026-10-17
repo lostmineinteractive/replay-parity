@@ -167,6 +167,8 @@ export function makeRun(over: Partial<Run> = {}): Run {
     threshold_results: evaluation.results,
     stats,
     exchanges,
+    candidate_recording: null,
+    invariants: { reference: null, candidate: null },
     ...over,
   };
 }

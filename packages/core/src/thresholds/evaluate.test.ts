@@ -244,6 +244,41 @@ describe('evaluateThresholds', () => {
     });
   });
 
+  it('gates invariant violations per system unless demoted', () => {
+    const gated = evaluateThresholds(emptyThresholds(), baseline, {
+      invariant_violations: { reference: 0, candidate: 2 },
+    });
+    expect(gated.verdict).toBe('fail');
+    expect(gated.results).toEqual([
+      {
+        id: 'invariants.reference.violations',
+        section: 'invariants',
+        scope: 'reference',
+        metric: 'violations',
+        limit: 0,
+        measured: 0,
+        outcome: 'pass',
+      },
+      {
+        id: 'invariants.candidate.violations',
+        section: 'invariants',
+        scope: 'candidate',
+        metric: 'violations',
+        limit: 0,
+        measured: 2,
+        outcome: 'fail',
+      },
+    ]);
+    const demoted = evaluateThresholds(
+      parseThresholds('invariants:\n  fail_on_violation: false\n'),
+      baseline,
+      { invariant_violations: { reference: 1, candidate: 0 } },
+    );
+    expect(demoted.verdict).toBe('pass');
+    expect(demoted.results[0]).toMatchObject({ outcome: 'pass', detail: 'reported, not gated' });
+    expect(evaluateThresholds(emptyThresholds(), baseline).results).toEqual([]);
+  });
+
   it('reports slip but never triggers when pacing.slip_max_ms is unset', () => {
     const t = parseThresholds('latency:\n  overall: { p99_ms: 100 }\n');
     const evaluation = evaluateThresholds(t, baseline, { slip_max_ms: 5_000 });

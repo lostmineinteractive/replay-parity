@@ -535,9 +535,19 @@
             }
           },
           "additionalProperties": false
+        },
+        "invariants": {
+          "type": "object",
+          "properties": {
+            "fail_on_violation": {
+              "type": "boolean"
+            }
+          },
+          "required": ["fail_on_violation"],
+          "additionalProperties": false
         }
       },
-      "required": ["latency", "correctness", "errors", "pacing"],
+      "required": ["latency", "correctness", "errors", "pacing", "invariants"],
       "additionalProperties": false
     },
     "threshold_results": {
@@ -551,7 +561,7 @@
           },
           "section": {
             "type": "string",
-            "enum": ["latency", "correctness", "errors", "pacing"]
+            "enum": ["latency", "correctness", "errors", "pacing", "invariants"]
           },
           "scope": {
             "type": "string",
@@ -1072,6 +1082,320 @@
         "additionalProperties": false
       }
     },
+    "candidate_recording": {
+      "type": ["string", "null"]
+    },
+    "invariants": {
+      "type": "object",
+      "properties": {
+        "reference": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "system": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "recording": {
+                  "type": "string"
+                },
+                "exchanges": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "commands": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "snapshots": {
+                  "type": "object",
+                  "properties": {
+                    "ledger_reads": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "stock_reads": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "order_reads": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["ledger_reads", "stock_reads", "order_reads"],
+                  "additionalProperties": false
+                },
+                "results": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "statement": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": ["holds", "violated", "not_applicable", "inconclusive"]
+                      },
+                      "checks": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "evidence": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "subject": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "expected": {
+                              "$ref": "#/$defs/__schema0"
+                            },
+                            "observed": {
+                              "$ref": "#/$defs/__schema0"
+                            },
+                            "detail": {
+                              "type": "string"
+                            },
+                            "exchange_id": {
+                              "type": ["string", "null"]
+                            }
+                          },
+                          "required": ["subject", "expected", "observed", "detail", "exchange_id"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["id", "name", "statement", "status", "checks", "evidence"],
+                    "additionalProperties": false
+                  }
+                },
+                "violations": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "inconclusive": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "barrier_timeout",
+                          "snapshot_before_ack",
+                          "schedule_not_held",
+                          "control_failed",
+                          "insufficient_samples"
+                        ]
+                      },
+                      "detail": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": ["kind", "detail"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "system",
+                "recording",
+                "exchanges",
+                "commands",
+                "snapshots",
+                "results",
+                "violations",
+                "inconclusive"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidate": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "system": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "recording": {
+                  "type": "string"
+                },
+                "exchanges": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "commands": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "snapshots": {
+                  "type": "object",
+                  "properties": {
+                    "ledger_reads": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "stock_reads": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "order_reads": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": ["ledger_reads", "stock_reads", "order_reads"],
+                  "additionalProperties": false
+                },
+                "results": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "statement": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": ["holds", "violated", "not_applicable", "inconclusive"]
+                      },
+                      "checks": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "evidence": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "subject": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "expected": {
+                              "$ref": "#/$defs/__schema0"
+                            },
+                            "observed": {
+                              "$ref": "#/$defs/__schema0"
+                            },
+                            "detail": {
+                              "type": "string"
+                            },
+                            "exchange_id": {
+                              "type": ["string", "null"]
+                            }
+                          },
+                          "required": ["subject", "expected", "observed", "detail", "exchange_id"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    },
+                    "required": ["id", "name", "statement", "status", "checks", "evidence"],
+                    "additionalProperties": false
+                  }
+                },
+                "violations": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "inconclusive": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "barrier_timeout",
+                          "snapshot_before_ack",
+                          "schedule_not_held",
+                          "control_failed",
+                          "insufficient_samples"
+                        ]
+                      },
+                      "detail": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": ["kind", "detail"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "system",
+                "recording",
+                "exchanges",
+                "commands",
+                "snapshots",
+                "results",
+                "violations",
+                "inconclusive"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["reference", "candidate"],
+      "additionalProperties": false
+    },
     "agent": {
       "type": "object",
       "properties": {
@@ -1460,7 +1784,9 @@
     "thresholds",
     "threshold_results",
     "stats",
-    "exchanges"
+    "exchanges",
+    "candidate_recording",
+    "invariants"
   ],
   "additionalProperties": false,
   "$defs": {

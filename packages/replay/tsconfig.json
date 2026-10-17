@@ -7,8 +7,17 @@
   },
   "include": ["src", "test"],
   "references": [
-    { "path": "../core" },
-    { "path": "../../demo/candidate-service" },
-    { "path": "../../demo/reference-service" }
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../invariants"
+    },
+    {
+      "path": "../../demo/candidate-service"
+    },
+    {
+      "path": "../../demo/reference-service"
+    }
   ]
 }

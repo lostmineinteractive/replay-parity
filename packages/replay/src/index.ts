@@ -24,6 +24,7 @@ export {
 export {
   candidateExchanges,
   writeCandidateRecording,
+  writeExchanges,
   type CandidateRecordingOptions,
   type SentExchange,
 } from './candidate-recording.js';

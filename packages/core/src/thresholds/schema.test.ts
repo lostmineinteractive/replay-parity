@@ -37,6 +37,7 @@ describe('parseThresholds', () => {
       },
       errors: { rate_max: 0 },
       pacing: { slip_max_ms: 250 },
+      invariants: { fail_on_violation: true },
     });
   });
 
@@ -47,7 +48,12 @@ describe('parseThresholds', () => {
       correctness: { by_tag: {} },
       errors: {},
       pacing: {},
+      invariants: { fail_on_violation: true },
     });
+    expect(parseThresholds('invariants:\n  fail_on_violation: false\n').invariants).toEqual({
+      fail_on_violation: false,
+    });
+    expect(() => parseThresholds('invariants:\n  gate: true\n')).toThrow(/unknown key "gate"/);
   });
 
   it('accepts min_samples at the latency level and inside each block', () => {

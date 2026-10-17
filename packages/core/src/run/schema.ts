@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { DiffSchema } from '../differ/schema.js';
+import { InvariantReportSchema } from '../invariants/schema.js';
 import { isValidPath } from '../jsonpath/index.js';
 import { RecordedRequestSchema } from '../recording/types.js';
 import { DiffRulesSchema } from '../rules/schema.js';
@@ -168,6 +169,15 @@ export const RunSchema = z
     threshold_results: z.array(ThresholdResultSchema),
     stats: RunStatsSchema,
     exchanges: z.array(ExchangeResultSchema),
+    /** Path of the candidate's observed log written by `--candidate-recording`, or null. */
+    candidate_recording: z.string().nullable(),
+    /** Independent invariant results per system. Null when `--invariants` was not given. */
+    invariants: z
+      .object({
+        reference: InvariantReportSchema.nullable(),
+        candidate: InvariantReportSchema.nullable(),
+      })
+      .strict(),
     agent: AgentReportSchema.optional(),
   })
   .strict();

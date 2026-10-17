@@ -14,6 +14,8 @@ export interface ThresholdEvaluation {
 export interface ThresholdMeasurements {
   /** The largest schedule slip observed, in milliseconds. */
   slip_max_ms?: number | undefined;
+  /** Invariant violations per system, when the invariants ran. */
+  invariant_violations?: { reference: number; candidate: number } | undefined;
 }
 
 function result(
@@ -260,6 +262,27 @@ export function evaluateThresholds(
   }
   if (thresholds.pacing.slip_max_ms !== undefined) {
     results.push(pacingRow(thresholds.pacing.slip_max_ms, measurements.slip_max_ms));
+  }
+  if (measurements.invariant_violations !== undefined) {
+    const gate = thresholds.invariants.fail_on_violation;
+    for (const system of ['reference', 'candidate'] as const) {
+      const violations = measurements.invariant_violations[system];
+      const base = {
+        id: `invariants.${system}.violations`,
+        section: 'invariants' as const,
+        scope: system,
+        metric: 'violations',
+        limit: 0,
+        measured: violations,
+      };
+      if (violations === 0) {
+        results.push(result({ ...base, outcome: 'pass' }));
+      } else if (gate) {
+        results.push(result({ ...base, outcome: 'fail' }));
+      } else {
+        results.push(result({ ...base, outcome: 'pass', detail: 'reported, not gated' }));
+      }
+    }
   }
   const inconclusive = conditionsFor(results);
   const verdict = decideVerdict({ threshold_results: results, inconclusive });

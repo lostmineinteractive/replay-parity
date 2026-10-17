@@ -92,11 +92,20 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
 
+  packages/invariants:
+    dependencies:
+      '@replay-parity/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/replay:
     dependencies:
       '@replay-parity/core':
         specifier: workspace:*
         version: link:../core
+      '@replay-parity/invariants':
+        specifier: workspace:*
+        version: link:../invariants
       redis:
         specifier: ^6.3.0
         version: 6.3.0

@@ -6,6 +6,7 @@ import { compileRunValidator, makeExchangeResult, makeRun, type RunValidator } f
 import { parseThresholds } from '../thresholds/schema.js';
 import { ConfigError } from '../yaml.js';
 import { parseRun, readRun, runJsonSchema, serializeRun, writeRun } from './io.js';
+import type { InvariantReport } from '../invariants/schema.js';
 import { GeneratedCaseSchema, RunSchema, type AgentReport } from './schema.js';
 
 let validate: RunValidator;
@@ -118,6 +119,52 @@ describe('run model', () => {
       thresholds: parseThresholds('correctness:\n  mismatch_rate_max: 0\n'),
     });
     expect(failing.verdict).toBe('fail');
+  });
+
+  it('carries the invariants section and the candidate recording path', () => {
+    const report: InvariantReport = {
+      system: 'candidate',
+      recording: 'candidate.jsonl',
+      exchanges: 10,
+      commands: 6,
+      snapshots: { ledger_reads: 2, stock_reads: 3, order_reads: 4 },
+      results: [
+        {
+          id: 1,
+          name: 'shipment-applied-once',
+          statement: 'An accepted shipment event changes stock on hand exactly once.',
+          status: 'violated',
+          checks: 3,
+          evidence: [
+            {
+              subject: 'order o-7',
+              expected: 5,
+              observed: 8,
+              detail: 'shipped counts shp-3 twice',
+              exchange_id: 'abc',
+            },
+          ],
+        },
+      ],
+      violations: 1,
+      inconclusive: [],
+    };
+    const run = makeRun({
+      candidate_recording: 'candidate.jsonl',
+      invariants: { reference: null, candidate: report },
+    });
+    expect(RunSchema.parse(run)).toEqual(run);
+    expect(validate(run), validate.errors ?? '').toBe(true);
+    expect(makeRun().invariants).toEqual({ reference: null, candidate: null });
+    const badStatus = {
+      ...run,
+      invariants: {
+        reference: null,
+        candidate: { ...report, results: [{ ...report.results[0], status: 'maybe' }] },
+      },
+    };
+    expect(RunSchema.safeParse(badStatus).success).toBe(false);
+    expect(validate(badStatus)).toBe(false);
   });
 
   it('records barrier settings, acknowledgement times, and the control flag', () => {

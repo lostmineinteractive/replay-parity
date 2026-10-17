@@ -66,6 +66,13 @@ export const ThresholdsSchema = z
       })
       .strict()
       .prefault({}),
+    invariants: z
+      .object({
+        /** When true, an invariant violation on either system fails the run. Default true. */
+        fail_on_violation: z.boolean().prefault(true),
+      })
+      .strict()
+      .prefault({}),
   })
   .strict();
 
@@ -78,7 +85,7 @@ export const ThresholdOutcomeSchema = z.enum(['pass', 'fail', 'inconclusive']);
 export const ThresholdResultSchema = z
   .object({
     id: z.string().min(1),
-    section: z.enum(['latency', 'correctness', 'errors', 'pacing']),
+    section: z.enum(['latency', 'correctness', 'errors', 'pacing', 'invariants']),
     scope: z.string().min(1),
     metric: z.string().min(1),
     limit: z.number(),
