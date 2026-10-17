@@ -18,6 +18,7 @@ export * from './stats/histogram.js';
 export * from './stats/collector.js';
 export * from './thresholds/schema.js';
 export * from './thresholds/evaluate.js';
+export * from './run/verdict.js';
 export * from './run/schema.js';
 export * from './run/io.js';
 export * from './testing.js';

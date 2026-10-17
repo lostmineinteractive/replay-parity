@@ -4,6 +4,15 @@ All notable changes to this repository are recorded here. The format follows Kee
 
 ## Unreleased
 
+### A2: inconclusive verdict in core (Addendum A2)
+
+- The run verdict is now `pass`, `fail`, or `inconclusive`. A new `inconclusive` array on the run lists the triggering conditions, each with a `kind` (`barrier_timeout`, `snapshot_before_ack`, `schedule_not_held`, `insufficient_samples`) and a `detail` string. `decideVerdict` in `run/verdict.ts` applies the precedence rule: a run level condition makes the run inconclusive even when mismatches were observed, otherwise any failed threshold or invariant violation makes it fail, otherwise any insufficient sample row makes it inconclusive, otherwise it passes. `EXIT_CODES` maps pass to 0, fail to 2, inconclusive to 3, and tool error to 1.
+- Threshold rows carry `outcome` (`pass`, `fail`, `inconclusive`) instead of `pass: true | false`. A latency row with fewer successful candidate samples than its minimum, a `by_tag` entry whose tag is absent, a correctness row with nothing compared, and an error rate row with no samples are inconclusive rather than failed. A ratio row with a zero reference value still fails, since that is a fact about the data.
+- The thresholds file gains `latency.min_samples` (default 1), an optional `min_samples` override inside `overall` and each `by_tag` entry, and a `pacing` section with `slip_max_ms`. When `slip_max_ms` is set and the replay's largest schedule slip exceeds it, the run is inconclusive with `schedule_not_held`. When unset, slip is reported and never triggers.
+- The run model gains `pacing.barrier_tags`, `pacing.barrier_timeout_ms`, `pacing.barrier_waits`, and per exchange `acked_at_ms` and `control`. Step 4 fills them. `control: true` marks a harness control such as a restart, which is replayed in order and shown in sequence but never scored. The fixture builder excludes control exchanges from statistics.
+- `packages/core/schema/run.schema.json` regenerated.
+- Tests: 14 new or changed cases across the evaluator, the verdict rule, the thresholds schema, and the run model. 228 tests pass across the workspace.
+
 ### Step 3b: order lifecycle in the demo services (Addendum A0)
 
 - Both demo services gain `Idempotency-Key` on `POST /v1/orders`, `POST /v1/orders/:id/cancel`, `POST /v1/orders/:id/quantity`, `POST /v1/orders/:id/shipments`, `GET /v1/ledger` with decimal strings, and the admin controls `POST /admin/restart` and `POST /admin/reset`. Orders carry `status` (`OPEN`, `PARTIALLY_SHIPPED`, `SHIPPED`, `CANCELED`, `REJECTED`), `quantity`, `shipped`, `remaining`, and `canceled_unshipped` next to the amount in `total`. Stock on hand changes only on accepted shipments and adjustments. Creation allocates against available stock and a shortfall yields a `REJECTED` order. Cancellation acceptance is the cancel request's own `originated_at`.

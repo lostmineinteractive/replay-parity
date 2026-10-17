@@ -18,12 +18,15 @@ correctness:
     create-order: { mismatch_rate_max: 0 }
 errors:
   rate_max: 0.0
+pacing:
+  slip_max_ms: 250
 `;
 
 describe('parseThresholds', () => {
   it('parses the example from the spec', () => {
     expect(parseThresholds(example)).toEqual({
       latency: {
+        min_samples: 1,
         overall: { p50_ms: 20, p99_ms: 80 },
         by_tag: { 'create-order': { p99_ms: 120 } },
         relative_to_reference: { p99_ratio_max: 1.5 },
@@ -33,16 +36,33 @@ describe('parseThresholds', () => {
         by_tag: { 'create-order': { mismatch_rate_max: 0 } },
       },
       errors: { rate_max: 0 },
+      pacing: { slip_max_ms: 250 },
     });
   });
 
   it('fills every section for an empty file', () => {
     expect(parseThresholds('')).toEqual(emptyThresholds());
     expect(emptyThresholds()).toEqual({
-      latency: { overall: {}, by_tag: {}, relative_to_reference: {} },
+      latency: { min_samples: 1, overall: {}, by_tag: {}, relative_to_reference: {} },
       correctness: { by_tag: {} },
       errors: {},
+      pacing: {},
     });
+  });
+
+  it('accepts min_samples at the latency level and inside each block', () => {
+    const t = parseThresholds(
+      'latency:\n  min_samples: 20\n  overall: { p99_ms: 1, min_samples: 5 }\n  by_tag:\n    a: { p99_ms: 1, min_samples: 2 }\n',
+    );
+    expect(t.latency.min_samples).toBe(20);
+    expect(t.latency.overall.min_samples).toBe(5);
+    expect(t.latency.by_tag.a?.min_samples).toBe(2);
+    expect(() => parseThresholds('latency:\n  min_samples: 0\n')).toThrow(/latency\.min_samples/);
+    expect(() => parseThresholds('latency:\n  overall: { min_samples: 1.5 }\n')).toThrow(
+      /min_samples/,
+    );
+    expect(() => parseThresholds('pacing:\n  slip_max_ms: -1\n')).toThrow(/pacing\.slip_max_ms/);
+    expect(() => parseThresholds('pacing:\n  slip_p50_ms: 1\n')).toThrow(/unknown key/);
   });
 
   it('accepts every metric name', () => {

@@ -20,7 +20,30 @@
     },
     "verdict": {
       "type": "string",
-      "enum": ["pass", "fail"]
+      "enum": ["pass", "fail", "inconclusive"]
+    },
+    "inconclusive": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "barrier_timeout",
+              "snapshot_before_ack",
+              "schedule_not_held",
+              "insufficient_samples"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": ["kind", "detail"],
+        "additionalProperties": false
+      }
     },
     "recording": {
       "type": "object",
@@ -119,6 +142,22 @@
         "slip_max_ms": {
           "type": "number",
           "minimum": 0
+        },
+        "barrier_tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "barrier_timeout_ms": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "barrier_waits": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       },
       "required": [
@@ -128,7 +167,10 @@
         "requested_rps",
         "achieved_rps",
         "slip_p50_ms",
-        "slip_max_ms"
+        "slip_max_ms",
+        "barrier_tags",
+        "barrier_timeout_ms",
+        "barrier_waits"
       ],
       "additionalProperties": false
     },
@@ -301,6 +343,11 @@
         "latency": {
           "type": "object",
           "properties": {
+            "min_samples": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
             "overall": {
               "type": "object",
               "properties": {
@@ -327,6 +374,11 @@
                 "mean_ms": {
                   "type": "number",
                   "minimum": 0
+                },
+                "min_samples": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
                 }
               },
               "additionalProperties": false
@@ -362,6 +414,11 @@
                   "mean_ms": {
                     "type": "number",
                     "minimum": 0
+                  },
+                  "min_samples": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
                   }
                 },
                 "additionalProperties": false
@@ -398,7 +455,7 @@
               "additionalProperties": false
             }
           },
-          "required": ["overall", "by_tag", "relative_to_reference"],
+          "required": ["min_samples", "overall", "by_tag", "relative_to_reference"],
           "additionalProperties": false
         },
         "correctness": {
@@ -441,9 +498,19 @@
             }
           },
           "additionalProperties": false
+        },
+        "pacing": {
+          "type": "object",
+          "properties": {
+            "slip_max_ms": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
         }
       },
-      "required": ["latency", "correctness", "errors"],
+      "required": ["latency", "correctness", "errors", "pacing"],
       "additionalProperties": false
     },
     "threshold_results": {
@@ -457,7 +524,7 @@
           },
           "section": {
             "type": "string",
-            "enum": ["latency", "correctness", "errors"]
+            "enum": ["latency", "correctness", "errors", "pacing"]
           },
           "scope": {
             "type": "string",
@@ -473,14 +540,15 @@
           "measured": {
             "type": ["number", "null"]
           },
-          "pass": {
-            "type": "boolean"
+          "outcome": {
+            "type": "string",
+            "enum": ["pass", "fail", "inconclusive"]
           },
           "detail": {
             "type": "string"
           }
         },
-        "required": ["id", "section", "scope", "metric", "limit", "measured", "pass"],
+        "required": ["id", "section", "scope", "metric", "limit", "measured", "outcome"],
         "additionalProperties": false
       }
     },
@@ -834,6 +902,9 @@
           "warmup": {
             "type": "boolean"
           },
+          "control": {
+            "type": "boolean"
+          },
           "scheduled_at_ms": {
             "type": "number",
             "minimum": 0
@@ -841,6 +912,17 @@
           "sent_at_ms": {
             "type": "number",
             "minimum": 0
+          },
+          "acked_at_ms": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "reference": {
             "type": "object",
@@ -951,8 +1033,10 @@
           "method",
           "path",
           "warmup",
+          "control",
           "scheduled_at_ms",
           "sent_at_ms",
+          "acked_at_ms",
           "reference",
           "candidate",
           "error",
@@ -1336,6 +1420,7 @@
     "run_id",
     "created_at",
     "verdict",
+    "inconclusive",
     "recording",
     "target",
     "adapter",

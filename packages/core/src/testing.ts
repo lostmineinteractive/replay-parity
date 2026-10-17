@@ -7,6 +7,7 @@ import { StatsCollector } from './stats/collector.js';
 import { evaluateThresholds } from './thresholds/evaluate.js';
 import { emptyThresholds } from './thresholds/schema.js';
 import type { ExchangeResult, Run } from './run/schema.js';
+import { decideVerdict } from './run/verdict.js';
 import { encodeTime } from './ulid.js';
 
 /**
@@ -64,8 +65,10 @@ export function makeExchangeResult(over: Partial<ExchangeResult> = {}): Exchange
     method: 'GET',
     path: '/v1/items',
     warmup: false,
+    control: false,
     scheduled_at_ms: 0,
     sent_at_ms: 1,
+    acked_at_ms: 13,
     reference: { status: 200, latency_ms: 10 },
     candidate: { status: 200, latency_ms: 12 },
     error: null,
@@ -77,7 +80,7 @@ export function makeExchangeResult(over: Partial<ExchangeResult> = {}): Exchange
 /** Builds a small, internally consistent run with three exchanges. */
 export function makeRun(over: Partial<Run> = {}): Run {
   const exchanges: ExchangeResult[] = over.exchanges ?? [
-    makeExchangeResult({ id: fixedUlid(0), scheduled_at_ms: 0, sent_at_ms: 1 }),
+    makeExchangeResult({ id: fixedUlid(0), scheduled_at_ms: 0, sent_at_ms: 1, acked_at_ms: 13 }),
     makeExchangeResult({
       id: fixedUlid(1),
       tags: ['create-item'],
@@ -85,6 +88,7 @@ export function makeRun(over: Partial<Run> = {}): Run {
       path: '/v1/items',
       scheduled_at_ms: 100,
       sent_at_ms: 103,
+      acked_at_ms: 128,
       reference: { status: 201, latency_ms: 20 },
       candidate: { status: 201, latency_ms: 25 },
       diff: {
@@ -105,6 +109,7 @@ export function makeRun(over: Partial<Run> = {}): Run {
       id: fixedUlid(2),
       scheduled_at_ms: 200,
       sent_at_ms: 200,
+      acked_at_ms: null,
       candidate: null,
       error: 'connect ECONNREFUSED',
       diff: null,
@@ -112,7 +117,7 @@ export function makeRun(over: Partial<Run> = {}): Run {
   ];
   const collector = new StatsCollector();
   for (const e of exchanges) {
-    if (e.warmup) continue;
+    if (e.warmup || e.control) continue;
     collector.record({
       tags: e.tags,
       verdict: e.diff?.verdict ?? null,
@@ -122,12 +127,27 @@ export function makeRun(over: Partial<Run> = {}): Run {
   }
   const stats = over.stats ?? collector.finish();
   const thresholds = over.thresholds ?? emptyThresholds();
-  const evaluation = evaluateThresholds(thresholds, stats);
+  const pacing: Run['pacing'] = over.pacing ?? {
+    mode: 'as-recorded',
+    rps: null,
+    concurrency: 4,
+    requested_rps: null,
+    achieved_rps: 10,
+    slip_p50_ms: 1,
+    slip_max_ms: 3,
+    barrier_tags: [],
+    barrier_timeout_ms: 10_000,
+    barrier_waits: 0,
+  };
+  const evaluation = evaluateThresholds(thresholds, stats, { slip_max_ms: pacing.slip_max_ms });
+  const inconclusive = over.inconclusive ?? evaluation.inconclusive;
+  const verdict = decideVerdict({ threshold_results: evaluation.results, inconclusive });
   return {
     schema_version: 1,
     run_id: fixedUlid(99),
     created_at: new Date(BASE_TS).toISOString(),
-    verdict: evaluation.verdict,
+    verdict,
+    inconclusive,
     recording: {
       path: 'recording.jsonl',
       exchanges: exchanges.length,
@@ -137,15 +157,7 @@ export function makeRun(over: Partial<Run> = {}): Run {
     },
     target: 'http://localhost:3001',
     adapter: 'http',
-    pacing: {
-      mode: 'as-recorded',
-      rps: null,
-      concurrency: 4,
-      requested_rps: null,
-      achieved_rps: 10,
-      slip_p50_ms: 1,
-      slip_max_ms: 3,
-    },
+    pacing,
     warmup: 0,
     filter: { tag: null },
     limit: null,

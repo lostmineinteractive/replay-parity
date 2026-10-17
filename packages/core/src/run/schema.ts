@@ -5,6 +5,7 @@ import { RecordedRequestSchema } from '../recording/types.js';
 import { DiffRulesSchema } from '../rules/schema.js';
 import { RunStatsSchema } from '../stats/schema.js';
 import { ThresholdResultSchema, ThresholdsSchema } from '../thresholds/schema.js';
+import { InconclusiveConditionSchema, RunVerdictSchema } from './verdict.js';
 
 /**
  * The run file (`run.json`). It is the canonical JSON report. The HTML and
@@ -27,6 +28,11 @@ export const PacingSchema = z
     achieved_rps: nonneg,
     slip_p50_ms: nonneg,
     slip_max_ms: nonneg,
+    /** Tags whose exchanges wait for every earlier exchange to be acknowledged. */
+    barrier_tags: z.array(z.string().min(1)),
+    barrier_timeout_ms: z.number().positive(),
+    /** How many times the engine waited at a barrier. */
+    barrier_waits: count,
   })
   .strict();
 
@@ -44,8 +50,12 @@ export const ExchangeResultSchema = z
     method: z.string().min(1),
     path: z.string().min(1),
     warmup: z.boolean(),
+    /** A harness control such as a restart. Replayed in order, shown in sequence, never scored. */
+    control: z.boolean(),
     scheduled_at_ms: nonneg,
     sent_at_ms: nonneg,
+    /** When the candidate's response was fully received. `null` on error. */
+    acked_at_ms: nonneg.nullable(),
     reference: EndpointResultSchema,
     candidate: EndpointResultSchema.nullable(),
     error: z.string().nullable(),
@@ -134,7 +144,9 @@ export const RunSchema = z
     schema_version: z.literal(RUN_SCHEMA_VERSION),
     run_id: z.string().min(1),
     created_at: z.iso.datetime(),
-    verdict: z.enum(['pass', 'fail']),
+    verdict: RunVerdictSchema,
+    /** Why the run is inconclusive. Empty when it is not. */
+    inconclusive: z.array(InconclusiveConditionSchema),
     recording: z
       .object({
         path: z.string(),

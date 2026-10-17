@@ -2,7 +2,8 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { compileRunValidator, makeRun, type RunValidator } from '../testing.js';
+import { compileRunValidator, makeExchangeResult, makeRun, type RunValidator } from '../testing.js';
+import { parseThresholds } from '../thresholds/schema.js';
 import { ConfigError } from '../yaml.js';
 import { parseRun, readRun, runJsonSchema, serializeRun, writeRun } from './io.js';
 import { GeneratedCaseSchema, RunSchema, type AgentReport } from './schema.js';
@@ -83,6 +84,59 @@ describe('run model', () => {
     expect(validate.errors).toContain('verdict');
     expect(RunSchema.safeParse(broken).success).toBe(false);
     expect(validate({ ...makeRun(), extra: 1 })).toBe(false);
+    const badKind = { ...makeRun(), inconclusive: [{ kind: 'unknown', detail: 'x' }] };
+    expect(validate(badKind)).toBe(false);
+    expect(RunSchema.safeParse(badKind).success).toBe(false);
+  });
+
+  it('carries the three verdicts and the inconclusive conditions', () => {
+    const fixture = makeRun();
+    expect(fixture.verdict).toBe('pass');
+    expect(fixture.inconclusive).toEqual([]);
+
+    const thresholds = parseThresholds('latency:\n  min_samples: 10\n  overall: { p99_ms: 100 }\n');
+    const thin = makeRun({ thresholds });
+    expect(thin.verdict).toBe('inconclusive');
+    expect(thin.threshold_results[0]?.outcome).toBe('inconclusive');
+    expect(thin.inconclusive).toEqual([
+      {
+        kind: 'insufficient_samples',
+        detail: 'latency.overall.p99_ms: 2 successful samples, minimum 10',
+      },
+    ]);
+    expect(validate(thin), validate.errors ?? '').toBe(true);
+
+    const barrier = makeRun({
+      thresholds: parseThresholds('correctness:\n  mismatch_rate_max: 0\n'),
+      inconclusive: [{ kind: 'barrier_timeout', detail: 'list-ledger waited 10000 ms' }],
+    });
+    expect(barrier.threshold_results[0]?.outcome).toBe('fail');
+    expect(barrier.verdict).toBe('inconclusive');
+    expect(validate(barrier), validate.errors ?? '').toBe(true);
+
+    const failing = makeRun({
+      thresholds: parseThresholds('correctness:\n  mismatch_rate_max: 0\n'),
+    });
+    expect(failing.verdict).toBe('fail');
+  });
+
+  it('records barrier settings, acknowledgement times, and the control flag', () => {
+    const run = makeRun();
+    expect(run.pacing).toMatchObject({
+      barrier_tags: [],
+      barrier_timeout_ms: 10_000,
+      barrier_waits: 0,
+    });
+    expect(run.exchanges.map((e) => [e.control, e.acked_at_ms])).toEqual([
+      [false, 13],
+      [false, 128],
+      [false, null],
+    ]);
+    const control = makeRun({
+      exchanges: [makeExchangeResult({ tags: ['admin-restart'], control: true })],
+    });
+    expect(control.stats.overall.count).toBe(0);
+    expect(validate(control), validate.errors ?? '').toBe(true);
   });
 
   it('serializes and parses', () => {
