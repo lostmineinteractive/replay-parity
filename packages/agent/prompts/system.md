@@ -14,7 +14,7 @@ Rules you must follow:
 - Use a single step whenever one request can show the difference. Use two or three steps only when a later request needs a value the first one returns, such as an order id.
 - A header whose name is in the redacted list must have the value `<redacted>` or be left out. Never write a real credential.
 - Vary the inputs that the mismatched paths depend on: quantities, prices, ids, ordering, edge values, missing or extra fields, and ids that do not exist.
-- Make each case different from the kept cases and from the other cases in your answer. Two cases that would mismatch on the same set of paths count as one.
+- Make each case different from the kept cases and from the other cases in your answer. Two cases that would mismatch on the same set of paths count as one, and array positions do not count: two listings whose rows differ in different places or on different fields are the same finding.
 - Keep bodies small and valid for the route. A JSON body is sent with `content-type: application/json`, so you do not need to set that header.
 
 Produce at most the number of cases you are asked for.

@@ -143,6 +143,23 @@ function equivalences(reference: SideResult, candidate: SideResult): ValueEquiva
   return out;
 }
 
+/**
+ * The key a mismatch is deduped on: the sorted set of untolerated paths with
+ * array positions folded into `[*]` and a path inside an array cut at the row.
+ * A divergence that moves rows around therefore counts once, however many
+ * fields differ and however many rows it touches, while two top level fields
+ * stay two findings.
+ */
+export function mismatchKey(paths: readonly string[]): string {
+  const keys = new Set<string>();
+  for (const path of paths) {
+    const folded = path.replace(/\[\d+\]/g, '[*]');
+    const row = folded.lastIndexOf('[*]');
+    keys.add(row === -1 ? folded : folded.slice(0, row + 3));
+  }
+  return `mismatch:${[...keys].sort().join(',')}`;
+}
+
 /** A single sample breaches when it exceeds any configured absolute limit for its tag or overall. */
 export function latencyBreach(
   thresholds: Thresholds,
@@ -195,7 +212,7 @@ export async function executeCase(
   let dedupe_key: string | null = null;
   let revealed = 'no difference';
   if (diff.verdict === 'mismatch') {
-    dedupe_key = `mismatch:${[...new Set(untolerated.map((f) => f.path))].sort().join(',')}`;
+    dedupe_key = mismatchKey(untolerated.map((f) => f.path));
     revealed = untolerated
       .slice(0, 2)
       .map((f) => explainFinding(f))
