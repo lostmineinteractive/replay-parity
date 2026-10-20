@@ -95,7 +95,7 @@ Apple M4 Max, 16 cores, 64 GB, Docker Desktop 29.4.1 with a linux/aarch64 engine
 - The invariants encode the demo's order lifecycle. Another domain needs its own rules, and the package shows the shape.
 - Shrinking needs a way to reset the candidate between attempts. The demo uses `POST /admin/reset`.
 - A latency check on a single agent case is one sample against the configured limits, and the agent cannot reach a divergence that fires on five percent of calls.
-- The Redis Streams bus is exercised only when `REDIS_URL` is set. The in process bus runs in every test.
+- The Redis Streams bus test needs a server at `REDIS_URL`. CI starts one as a service container and sets the variable, so the test runs on every push. Without the variable the test is skipped and the in process bus covers the adapter.
 - The capture proxy and the HTTP adapter speak HTTP/1.1 without client certificates.
 - Everything was measured and run on one machine. CI runs the suite and the demo on Linux, and nothing has been tried on Windows.
 
