@@ -311,13 +311,23 @@ export class CaptureServer {
         path: url.pathname,
         query: parseQuery(url.searchParams),
         headers: redactHeaders(recordedRequestHeaders, this.redacted),
-        ...encodeBody(requestBody, requestHeaders['content-type'], this.maxBodyBytes),
+        ...encodeBody(
+          requestBody,
+          requestHeaders['content-type'],
+          this.maxBodyBytes,
+          requestHeaders['content-encoding'],
+        ),
       },
       response: {
         status: upstream.statusCode,
         headers: redactHeaders(responseHeaders, this.redacted),
         latency_ms: Math.round(latencyMs * 1000) / 1000,
-        ...encodeBody(Buffer.concat(chunks), responseHeaders['content-type'], this.maxBodyBytes),
+        ...encodeBody(
+          Buffer.concat(chunks),
+          responseHeaders['content-type'],
+          this.maxBodyBytes,
+          responseHeaders['content-encoding'],
+        ),
       },
       tags: tagsFor(this.tagRules, method, url.pathname),
     };

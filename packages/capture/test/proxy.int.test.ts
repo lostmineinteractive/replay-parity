@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { REDACTED, parseRecordingText, sha256Hex, type Exchange } from '@replay-parity/core';
 import { buildApp } from '@replay-parity/demo-reference';
 import { request } from 'undici';
@@ -185,6 +186,19 @@ describe('body kinds', () => {
       } else if (req.url === '/empty') {
         res.writeHead(204);
         res.end();
+      } else if (req.url === '/gzip') {
+        res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip' });
+        res.end(gzipSync('{"a":1,"b":[2,3]}'));
+      } else if (req.url === '/gzip-broken') {
+        res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip' });
+        res.end('not gzip at all');
+      } else if (req.url === '/gunzip') {
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(gunzipSync(Buffer.concat(chunks)));
+        });
       } else if (req.url === '/echo') {
         const chunks: Buffer[] = [];
         req.on('data', (c: Buffer) => chunks.push(c));
@@ -251,6 +265,45 @@ describe('body kinds', () => {
     expect(byPath['/empty']?.response.body).toBeUndefined();
     expect(byPath['/empty']?.response.encoding).toBeUndefined();
     expect(byPath['/text']?.tags).toEqual([]);
+  });
+
+  it('streams a compressed response through untouched and records it decoded with the coding noted', async () => {
+    const { capture, out, proxyUrl } = await startCapture();
+    const res = await request(`${proxyUrl}/gzip`);
+    const body = Buffer.from(await res.body.arrayBuffer());
+    expect(res.headers['content-encoding']).toBe('gzip');
+    expect(gunzipSync(body).toString()).toBe('{"a":1,"b":[2,3]}');
+    const broken = await request(`${proxyUrl}/gzip-broken`);
+    expect(await broken.body.text()).toBe('not gzip at all');
+    await capture.close();
+    const [good, bad] = await readRecording(out);
+    expect(good?.response).toMatchObject({
+      status: 200,
+      body: { a: 1, b: [2, 3] },
+      content_encoding: 'gzip',
+    });
+    expect(good?.response.encoding).toBeUndefined();
+    expect(good?.response.headers['content-encoding']).toBe('gzip');
+    expect(bad?.response).toMatchObject({
+      body: Buffer.from('not gzip at all').toString('base64'),
+      encoding: 'base64',
+    });
+    expect(bad?.response.content_encoding).toBeUndefined();
+  });
+
+  it('forwards a compressed request body as received and records it decoded', async () => {
+    const { capture, out, proxyUrl } = await startCapture();
+    const res = await request(`${proxyUrl}/gunzip`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+      body: gzipSync('{"qty":3}'),
+    });
+    expect(await res.body.json()).toEqual({ qty: 3 });
+    await capture.close();
+    const [sent] = await readRecording(out);
+    expect(sent?.request).toMatchObject({ body: { qty: 3 }, content_encoding: 'gzip' });
+    expect(sent?.request.headers['content-encoding']).toBe('gzip');
+    expect(sent?.response.body).toEqual({ qty: 3 });
   });
 
   it('forwards a request body unchanged and records it', async () => {

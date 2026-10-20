@@ -78,6 +78,8 @@ Each row has `id` (such as `latency.by_tag.create-order.p99_ms`), `section` (`la
 
 A finding has `path` (a concrete JSONPath, `status`, or `header:<name>`), `kind` (`status`, `header`, `value`, `type`, `missing`, `unexpected`, `body_too_large`, `body_format`), `tolerated`, and optional `reference`, `candidate`, `rule`, and `detail`.
 
+Bodies in the recording and in the candidate recording follow one rule set. A JSON content type is stored parsed in `body`. Anything else is stored as base64 in `body` with `encoding: "base64"`. A body over the size cap is stored as `truncated: true` with `body_sha256` and `body_size`. A body that arrived with a `content-encoding` of gzip, deflate, or br is decoded first, stored by the same rules, and carries `content_encoding` with the codings undone, in the order they were applied. The cap applies to the decoded size, and a truncated body's hash and size always describe the bytes as received. A coding the harness cannot undo, or data that does not decode, is stored as received with no note.
+
 ## Invariant reports
 
 Each report has `system`, `recording`, `exchanges`, `commands`, `snapshots` (`ledger_reads`, `stock_reads`, `order_reads`), `results`, `violations`, and `inconclusive`. Each result has `id` (1 to 10), `name`, `statement`, `status` (`holds`, `violated`, `not_applicable`, `inconclusive`), `checks`, `evidence`, and an optional `detail`. Evidence entries have `subject`, `expected`, `observed`, `detail`, and `exchange_id`.

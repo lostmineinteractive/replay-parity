@@ -90,7 +90,7 @@ Apple M4 Max, 16 cores, 64 GB, Docker Desktop 29.4.1 with a linux/aarch64 engine
 
 - The diff rules are global. There is no per tag scope, so the demo shows the ordering divergence with two rules files rather than one.
 - The JSONPath subset is `$`, `.name`, `['name']`, `[n]`, `[*]`, and `.*`. Recursive descent, slices, filters, and unions are rejected at load time.
-- Compressed bodies are stored and compared as the bytes received. Two systems that compress differently differ byte for byte.
+- A body with a `content-encoding` of gzip, deflate, or br is decoded before it is stored and compared. Any other coding is stored and compared as the bytes received.
 - The engine never introduces an ordering the recording did not have. Replaying a sequential recording therefore runs one request at a time regardless of `--concurrency`, and the throughput figure above reflects that.
 - The invariants encode the demo's order lifecycle. Another domain needs its own rules, and the package shows the shape.
 - Shrinking needs a way to reset the candidate between attempts. The demo uses `POST /admin/reset`.

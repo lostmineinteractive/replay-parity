@@ -3,9 +3,9 @@ import { performance } from 'node:perf_hooks';
 import {
   DEFAULT_MAX_BODY_BYTES,
   REDACTED,
-  decodeBody,
   encodeBody,
   normalizeHeaders,
+  wireBody,
   type HeaderMap,
   type Query,
   type RecordedRequest,
@@ -68,7 +68,10 @@ function round3(value: number): number {
 
 /**
  * Sends recorded requests over HTTP with a connection pool. Latency is the
- * time from dispatch to the last body byte.
+ * time from dispatch to the last body byte. A request body stored decoded
+ * from a content coding goes out with that coding applied again, and a
+ * response body with a `content-encoding` of gzip, deflate, or br is decoded
+ * before it is stored, with the coding noted on the response.
  */
 export class HttpAdapter implements Adapter {
   readonly name = 'http';
@@ -90,7 +93,7 @@ export class HttpAdapter implements Adapter {
   }
 
   async send(req: RecordedRequest, ctx: ReplayContext): Promise<RecordedResponse> {
-    const body = decodeBody(req);
+    const body = wireBody(req);
     const started = performance.now();
     try {
       const res = await this.pool.request({
@@ -110,7 +113,12 @@ export class HttpAdapter implements Adapter {
         status: res.statusCode,
         headers,
         latency_ms: round3(latency),
-        ...encodeBody(bytes, headers['content-type'], this.maxBodyBytes),
+        ...encodeBody(
+          bytes,
+          headers['content-type'],
+          this.maxBodyBytes,
+          headers['content-encoding'],
+        ),
       };
     } catch (err) {
       throw toSendError(err);

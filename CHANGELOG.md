@@ -4,6 +4,10 @@ All notable changes to this repository are recorded here. The format follows Kee
 
 ## Unreleased
 
+### After Step 9: the deferred items
+
+- Compressed bodies. The capture proxy and the HTTP adapter decode a body that arrived with a `content-encoding` of gzip, deflate (zlib wrapped or raw), or br before storing it, and note the codings in a new optional `content_encoding` field on the request or response. The body is then stored by the existing rules, so a compressed JSON response is stored parsed and two systems that compress differently compare equal when their decoded bodies are equal. The size cap applies to the decoded size, a decoded body over the cap is stored as the hash and size of the bytes as received, and a coding the harness cannot undo or data that does not decode is stored as received with no note. On replay the HTTP adapter puts a request body with `content_encoding` back on the wire with the coding applied again, so the bytes match the recorded `content-encoding` header. The proxy still streams the compressed bytes to the client untouched. The JSON Schema is regenerated. Tests cover each coding, stacked codings, identity, unknown and corrupt input, the cap, the wire round trip, the schema refinement, the proxy with a compressed response and a compressed request body, and the adapter in both directions.
+
 ### Step 9: docs, README, CI, and the OMS mapping (Addendum A5)
 
 - `README.md` in the spec's order: what the tool is and the question it answers, the architecture diagram, the report screenshot, `make demo` and what it produces, the four divergences and how the report shows each, the agent in one paragraph with a link to the transcript, the measured capture overhead and replay throughput with the commands, design notes, and limitations stated plainly.

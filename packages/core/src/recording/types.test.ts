@@ -72,6 +72,31 @@ describe('body refinements', () => {
     ).toBe(true);
   });
 
+  it('accepts a content coding note with a body or a truncated body, and rejects it alone', () => {
+    expect(
+      RecordedResponseSchema.safeParse({
+        status: 200,
+        latency_ms: 1,
+        body: { a: 1 },
+        content_encoding: 'gzip',
+      }).success,
+    ).toBe(true);
+    expect(
+      RecordedResponseSchema.safeParse({
+        status: 200,
+        latency_ms: 1,
+        truncated: true,
+        body_sha256: 'a'.repeat(64),
+        body_size: 9,
+        content_encoding: 'br',
+      }).success,
+    ).toBe(true);
+    expect(
+      RecordedResponseSchema.safeParse({ status: 200, latency_ms: 1, content_encoding: 'gzip' })
+        .success,
+    ).toBe(false);
+  });
+
   it('rejects inconsistent body fields', () => {
     expect(
       RecordedResponseSchema.safeParse({

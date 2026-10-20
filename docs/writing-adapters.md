@@ -19,7 +19,7 @@ export interface Adapter {
 }
 ```
 
-`RecordedRequest` and `RecordedResponse` are the recording's own types from `@replay-parity/core`: method, path, query, headers, and a body that is parsed JSON, a base64 string with `encoding: "base64"`, or absent. The response carries `status`, `headers`, `latency_ms`, and a body in the same form. An adapter measures `latency_ms` from the moment it dispatches to the moment the last byte of the body has arrived.
+`RecordedRequest` and `RecordedResponse` are the recording's own types from `@replay-parity/core`: method, path, query, headers, and a body that is parsed JSON, a base64 string with `encoding: "base64"`, or absent. The response carries `status`, `headers`, `latency_ms`, and a body in the same form. A body that arrived with a `content-encoding` of gzip, deflate, or br is stored decoded and carries `content_encoding` with the coding, so the differ compares what the bytes meant and not how they were compressed. An adapter measures `latency_ms` from the moment it dispatches to the moment the last byte of the body has arrived.
 
 A transport failure is a thrown error. `toSendError` in `@replay-parity/replay` classifies any thrown value as `timeout`, `connection`, `aborted`, `protocol`, or `other`, and the engine records `kind: message` on the exchange, counts it as an error, and does not diff it.
 
@@ -48,7 +48,7 @@ Dependencies are computed before anything is sent, from the reference responses 
 
 ## The HTTP adapter
 
-`new HttpAdapter(target, { timeoutMs, connections, maxBodyBytes })` keeps a connection pool to the target's origin and prefixes the target's path, if any, to every recorded path. The timeout is enforced by an abort signal so the deadline is exact. A response body over `maxBodyBytes` is stored as its hash and size, and the differ reports `body_too_large`.
+`new HttpAdapter(target, { timeoutMs, connections, maxBodyBytes })` keeps a connection pool to the target's origin and prefixes the target's path, if any, to every recorded path. The timeout is enforced by an abort signal so the deadline is exact. A response body over `maxBodyBytes` is stored as its hash and size, and the differ reports `body_too_large`. A request body stored with `content_encoding` goes out with that coding applied again, through `wireBody` from `@replay-parity/core`, so the bytes match the recorded `content-encoding` header. A response with a `content-encoding` of gzip, deflate, or br is decoded before it is stored, the cap applies to the decoded size, and the coding is noted on the response. An adapter over another transport that meets compressed bodies calls `encodeBody(bytes, contentType, maxBytes, contentEncoding)` and gets the same behavior.
 
 ## The bus adapter
 

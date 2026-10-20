@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { REDACTED, makeRequest } from '@replay-parity/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { HttpAdapter } from '../src/index.js';
@@ -21,7 +22,15 @@ beforeAll(async () => {
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
     req.on('end', () => {
-      const body = Buffer.concat(chunks).toString('utf8');
+      const raw = Buffer.concat(chunks);
+      const body = (req.headers['content-encoding'] === 'gzip' ? gunzipSync(raw) : raw).toString(
+        'utf8',
+      );
+      if (req.url === '/gzip') {
+        res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip' });
+        res.end(gzipSync('{"items":[{"sku":"A"}]}'));
+        return;
+      }
       if (req.url === '/slow') {
         setTimeout(() => res.end('late'), 400);
         return;
@@ -109,6 +118,32 @@ describe('HttpAdapter', () => {
     const echo = res.body as unknown as Echo;
     expect(echo.url).toBe('/base/raw');
     expect(echo.body).toBe('hello');
+    await adapter.close();
+  });
+
+  it('sends a decoded request body with its coding applied again and decodes a compressed response', async () => {
+    const adapter = new HttpAdapter(url);
+    const sent = await adapter.send(
+      makeRequest({
+        method: 'POST',
+        path: '/v1/orders',
+        headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' },
+        body: { sku: 'A', qty: 2 },
+        content_encoding: 'gzip',
+      }),
+      ctx,
+    );
+    const echo = sent.body as unknown as Echo;
+    expect(echo.headers['content-encoding']).toBe('gzip');
+    expect(JSON.parse(echo.body)).toEqual({ sku: 'A', qty: 2 });
+    const compressed = await adapter.send(makeRequest({ path: '/gzip' }), ctx);
+    expect(compressed).toMatchObject({
+      status: 200,
+      body: { items: [{ sku: 'A' }] },
+      content_encoding: 'gzip',
+    });
+    expect(compressed.encoding).toBeUndefined();
+    expect(compressed.headers['content-encoding']).toBe('gzip');
     await adapter.close();
   });
 

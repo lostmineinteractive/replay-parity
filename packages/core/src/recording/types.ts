@@ -18,6 +18,8 @@ const bodyFields = {
     .regex(/^[0-9a-f]{64}$/)
     .optional(),
   body_size: z.number().int().nonnegative().optional(),
+  /** Content codings undone before the body was stored, such as `gzip`. */
+  content_encoding: z.string().min(1).optional(),
 };
 
 interface BodyLike {
@@ -26,6 +28,7 @@ interface BodyLike {
   truncated?: true | undefined;
   body_sha256?: string | undefined;
   body_size?: number | undefined;
+  content_encoding?: string | undefined;
 }
 
 function refineBody(value: BodyLike, ctx: z.RefinementCtx): void {
@@ -51,6 +54,13 @@ function refineBody(value: BodyLike, ctx: z.RefinementCtx): void {
   }
   if (value.body === undefined && value.encoding !== undefined) {
     ctx.addIssue({ code: 'custom', path: ['encoding'], message: 'encoding given without a body' });
+  }
+  if (value.body === undefined && value.content_encoding !== undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['content_encoding'],
+      message: 'content_encoding given without a body',
+    });
   }
 }
 

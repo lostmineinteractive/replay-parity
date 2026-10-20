@@ -1,12 +1,16 @@
+import { brotliCompressSync, deflateRawSync, deflateSync, gunzipSync, gzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { sha256Hex } from '../json.js';
 import {
   DEFAULT_MAX_BODY_BYTES,
+  applyContentEncoding,
   bodyFieldsOf,
   bodyKind,
   decodeBody,
   encodeBody,
   isJsonContentType,
+  parseContentEncoding,
+  wireBody,
 } from './body.js';
 
 describe('isJsonContentType', () => {
@@ -87,11 +91,114 @@ describe('bodyKind and decodeBody', () => {
   });
 });
 
+describe('content codings', () => {
+  const json = Buffer.from('{"a":[1,2]}');
+
+  it('parses the header into codings in the order applied', () => {
+    expect(parseContentEncoding(undefined)).toEqual([]);
+    expect(parseContentEncoding('identity')).toEqual([]);
+    expect(parseContentEncoding('GZIP')).toEqual(['gzip']);
+    expect(parseContentEncoding('x-gzip')).toEqual(['gzip']);
+    expect(parseContentEncoding('gzip, br')).toEqual(['gzip', 'br']);
+    expect(parseContentEncoding('zstd')).toBeNull();
+    expect(parseContentEncoding('gzip, compress')).toBeNull();
+  });
+
+  it('undoes gzip, deflate, and brotli before storing and notes the coding', () => {
+    expect(encodeBody(gzipSync(json), 'application/json', 1024, 'gzip')).toEqual({
+      body: { a: [1, 2] },
+      content_encoding: 'gzip',
+    });
+    expect(encodeBody(deflateSync(json), 'application/json', 1024, 'deflate')).toEqual({
+      body: { a: [1, 2] },
+      content_encoding: 'deflate',
+    });
+    expect(encodeBody(deflateRawSync(json), 'application/json', 1024, 'deflate')).toEqual({
+      body: { a: [1, 2] },
+      content_encoding: 'deflate',
+    });
+    expect(encodeBody(brotliCompressSync(json), 'application/json', 1024, 'br')).toEqual({
+      body: { a: [1, 2] },
+      content_encoding: 'br',
+    });
+    expect(encodeBody(gzipSync(Buffer.from('hi')), 'text/plain', 1024, 'X-Gzip')).toEqual({
+      body: 'aGk=',
+      encoding: 'base64',
+      content_encoding: 'gzip',
+    });
+  });
+
+  it('undoes stacked codings last applied first', () => {
+    const stacked = brotliCompressSync(gzipSync(json));
+    expect(encodeBody(stacked, 'application/json', 1024, 'gzip, br')).toEqual({
+      body: { a: [1, 2] },
+      content_encoding: 'gzip, br',
+    });
+  });
+
+  it('treats identity as no coding', () => {
+    expect(encodeBody(json, 'application/json', 1024, 'identity')).toEqual({ body: { a: [1, 2] } });
+  });
+
+  it('keeps the bytes as received, without a note, for an unknown coding or data that does not decode', () => {
+    const bytes = Buffer.from('zzz');
+    expect(encodeBody(bytes, 'text/plain', 1024, 'zstd')).toEqual({
+      body: bytes.toString('base64'),
+      encoding: 'base64',
+    });
+    expect(encodeBody(bytes, 'text/plain', 1024, 'gzip')).toEqual({
+      body: bytes.toString('base64'),
+      encoding: 'base64',
+    });
+    expect(encodeBody(bytes, 'text/plain', 1024, 'br')).toEqual({
+      body: bytes.toString('base64'),
+      encoding: 'base64',
+    });
+  });
+
+  it('applies the cap to the decoded size and hashes the bytes as received when over it', () => {
+    const wire = gzipSync(Buffer.alloc(5000, 'x'));
+    expect(wire.length).toBeLessThan(100);
+    expect(encodeBody(wire, 'text/plain', 1000, 'gzip')).toEqual({
+      truncated: true,
+      body_sha256: sha256Hex(wire),
+      body_size: wire.length,
+      content_encoding: 'gzip',
+    });
+    expect(encodeBody(wire, 'text/plain', 5000, 'gzip')).toMatchObject({
+      encoding: 'base64',
+      content_encoding: 'gzip',
+    });
+  });
+
+  it('stores an empty decoded body as absent', () => {
+    expect(encodeBody(gzipSync(Buffer.alloc(0)), 'application/json', 1024, 'gzip')).toEqual({});
+  });
+
+  it('re-applies the coding for the wire and not for the stored bytes', () => {
+    const fields = encodeBody(gzipSync(json), 'application/json', 1024, 'gzip');
+    expect(decodeBody(fields)?.toString()).toBe('{"a":[1,2]}');
+    const wire = wireBody(fields) as Buffer;
+    expect(gunzipSync(wire).toString()).toBe('{"a":[1,2]}');
+    expect(wireBody({ body: { a: 1 } })?.toString()).toBe('{"a":1}');
+    expect(
+      wireBody({ body: 'aGk=', encoding: 'base64', content_encoding: 'zstd' })?.toString(),
+    ).toBe('hi');
+    expect(wireBody({})).toBeNull();
+    const stacked = applyContentEncoding(json, ['gzip', 'br']);
+    expect(encodeBody(stacked, 'application/json', 1024, 'gzip, br').body).toEqual({ a: [1, 2] });
+  });
+});
+
 describe('bodyFieldsOf', () => {
   it('copies only the body fields that are present', () => {
     expect(bodyFieldsOf({ status: 200, body: 'x', encoding: 'base64' } as never)).toEqual({
       body: 'x',
       encoding: 'base64',
+    });
+    expect(bodyFieldsOf({ body: { a: 1 }, content_encoding: 'gzip' })).toEqual({
+      body: { a: 1 },
+      content_encoding: 'gzip',
     });
     expect(bodyFieldsOf({ truncated: true, body_sha256: 'f'.repeat(64), body_size: 9 })).toEqual({
       truncated: true,
