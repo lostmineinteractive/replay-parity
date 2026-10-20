@@ -22,65 +22,69 @@ The round prompt puts the run summary, the request shapes, and the redacted head
 
 ## A real transcript
 
-From `make demo` on 2026-10-17, against the classic candidate with the four planted divergences, after the first replay. Model `claude-sonnet-5-5`, effort `medium`, two rounds, eight cases per round, two dollar budget. Prompt versions `system.md e08fe4717b9d` and `round.md adcf42890db5`. The full file is `demo/out/agent-transcript.json` after a run.
+From `make demo` on 2026-10-20, against the classic candidate with the four planted divergences, after the first replay. Model `claude-sonnet-5-5`, effort `medium`, two rounds, eight cases per round, two dollar budget. Prompt versions `system.md a67c9bf802c2` and `round.md 6be6f15093c7`. The full file is `demo/out/agent-transcript.json` after a run.
 
 ### Round 1
 
-The round prompt was 4270 characters. Its summary began like this.
+The round prompt was 4269 characters. Its summary began like this.
 
 ```
+## Run summary
+
 Verdict: fail.
-Threshold rows that did not pass: latency.by_tag.adjust-stock.p99_ms (fail, limit 40, measured 73.343); correctness.mismatch_rate_max (fail, limit 0, measured 0.321555); ...
+Threshold rows that did not pass: latency.by_tag.adjust-stock.p99_ms (fail, limit 40, measured 66.879); correctness.mismatch_rate_max (fail, limit 0, measured 0.322695); ...
 Mismatches by tag: create-order: 7 of 48 mismatch, 0 errors; get-order: 31 of 109 mismatch, 0 errors; list-inventory: 53 of 53 mismatch, 0 errors.
 Mismatching paths: $.items[*].name (530), $.items[*].sku (530), $.items[*].unit_price (530), $.items[*].on_hand (499), $.total (30), status (8), $ (8).
 Sample of mismatched exchanges:
 - POST /v1/orders [create-order] status 201 vs 201: $.total 29.99 vs 29.98
+- GET /v1/orders/o-1 [get-order] status 200 vs 200: $.total 29.99 vs 29.98
 - GET /v1/inventory [list-inventory] status 200 vs 200: $.items[0].name "Hex bolt M8" vs "Bracket L"; $.items[0].on_hand 497 vs 500; $.items[0].sku "A-100" vs "C-300"
-- GET /v1/orders/o-9185 [get-order] status 404 vs 200: status 404 vs 200; $ {"error":"not_found"} vs absent
 ```
 
-The model answered with eight cases. 2710 input tokens, 1037 output tokens, $0.0158.
+The model answered with eight cases. 54 fresh input tokens, 2823 tokens written to the cache, 1130 output tokens, $0.0185.
 
-| Case | Tag            | Hypothesis                                                                                                                                | Steps                                                                    | Result                                     |
-| ---- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------ |
-| 1-1  | create-order   | Order total differs by a cent due to rounding; a quantity of 3 of A-100 likely exposes a different rounding or price calculation.         | `POST /v1/orders {"sku":"A-100","qty":3}`                                | kept: `$.total` 29.99 against 29.98        |
-| 1-2  | create-order   | Quantity 1 gives the unit price total directly, showing whether the mismatch comes from the price itself or from multiplication rounding. | `POST /v1/orders {"sku":"A-100","qty":1}`                                | no difference                              |
-| 1-3  | create-order   | A large quantity amplifies the rounding or float multiplication difference in total.                                                      | `POST /v1/orders {"sku":"A-100","qty":1000}`                             | no difference                              |
-| 1-4  | get-order      | Fetching a just-created order shows whether the total differs at read time or only at creation.                                           | create B-200 x7, capture `oid`, then `GET /v1/orders/{{oid}}`            | no difference                              |
-| 1-5  | get-order      | A nonexistent order id returns 404 on one system and 200 on the other, as seen with o-9185.                                               | `GET /v1/orders/o-9185`                                                  | kept: status 404 against 200, body missing |
-| 1-6  | get-order      | A malformed order id may be handled differently.                                                                                          | `GET /v1/orders/does-not-exist`                                          | same key as 1-5                            |
-| 1-7  | list-inventory | Inventory listing order differs, so a plain list exposes different sort order and stock levels.                                           | `GET /v1/inventory`                                                      | kept: every row differs by position        |
-| 1-8  | list-inventory | Adjusting stock then listing inventory shows whether on_hand updates diverge after a mutation.                                            | `POST /v1/inventory/C-300/adjust {"delta":-5}`, then `GET /v1/inventory` | kept: the same rows plus `on_hand`         |
+| Case | Tag            | Hypothesis                                                                                                                           | Steps                                                                    | Result                                                       |
+| ---- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| 1-1  | create-order   | Total is off by one cent on the candidate, likely a rounding or float truncation difference; a fractional cent total will expose it. | `POST /v1/orders {"sku":"A-100","qty":3}`                                | kept: `$.total` 29.99 against 29.98                          |
+| 1-2  | create-order   | Total rounding differs on larger quantities, so qty 7 of a different sku shows a different cent error pattern.                       | `POST /v1/orders {"sku":"C-300","qty":7}`                                | no difference                                                |
+| 1-3  | get-order      | Reading back a created order returns a total that differs by a cent, showing the rounding is also applied on read or stored.         | create A-100 x1, capture `oid`, then `GET /v1/orders/{{oid}}`            | no difference                                                |
+| 1-4  | get-order      | A nonexistent order id returns 404 on the reference but the candidate returns 200, suggesting a differing existence check.           | `GET /v1/orders/o-999999`                                                | kept: status 404 against 200, body missing                   |
+| 1-5  | list-inventory | The inventory listing is ordered differently and on_hand differs, so the sort order or stock state diverges.                         | `GET /v1/inventory`                                                      | kept: every row differs by position, key `$.items[*]`        |
+| 1-6  | list-inventory | After a stock adjustment the listing's on_hand differs because the candidate applies adjustments differently or reads stale stock.   | `POST /v1/inventory/C-300/adjust {"delta":-5}`, then `GET /v1/inventory` | same key as 1-5                                              |
+| 1-7  | adjust-stock   | The adjust-stock endpoint has a latency tail on the candidate (p99 66 ms against a 40 ms limit), visible only over many repeats.     | `POST /v1/inventory/C-300/adjust {"delta":1}`, `repeat` 50               | kept: candidate p99 over 50 runs 71.49 ms, reference 0.98 ms |
+| 1-8  | create-order   | An unknown sku or an oversized quantity yields a different status or error body because validation differs.                          | `POST /v1/orders {"sku":"Z-999","qty":100000}`                           | no difference                                                |
 
 ### Round 2
 
-The round prompt grew to 6305 characters because it now listed the four kept cases. The model answered with eight cases. 3716 input tokens, 1094 output tokens, $0.0184. One case was dropped before execution because it carried an extra key, `note`, that the schema does not allow. None of the other seven revealed anything new, so the loop stopped with `no_new_cases`.
+The round prompt grew to 5023 characters because it now listed the four kept cases below the cache boundary. The model answered with eight cases. 347 fresh input tokens, 2823 tokens read from the cache, 1494 output tokens, $0.0162. None of the eight revealed anything new, so the loop stopped with `no_new_cases`.
 
-| Case | Tag          | Hypothesis                                                                                         | Steps                                               | Result                         |
-| ---- | ------------ | -------------------------------------------------------------------------------------------------- | --------------------------------------------------- | ------------------------------ |
-| 2-1  | cancel-order | Cancelling an existing order exposes differences in canceled_at, remaining and total fields.       | create, capture, cancel                             | no difference                  |
-| 2-2  | ship-order   | Shipping more than ordered quantity may be validated differently.                                  | create x2, capture, ship 5                          | no difference, both answer 409 |
-| 2-3  | create-order | Ordering a quantity of 1 of a different SKU may reveal price calculation differences beyond A-100. | `POST /v1/orders {"sku":"C-300","qty":7}`           | no difference                  |
-| 2-4  | create-order | Ordering an unknown SKU may return different error status or body.                                 | `POST /v1/orders {"sku":"Z-999","qty":1}`           | no difference, both answer 404 |
-| 2-5  | create-order | Zero or negative quantity validation may differ between systems.                                   | `POST /v1/orders {"sku":"A-100","qty":0}`           | no difference, both answer 400 |
-| 2-6  | set-quantity | Setting an order quantity to a large value may produce different 409 handling and totals.          | create, capture, set quantity 1000                  | no difference                  |
-| 2-7  | adjust-stock | Adjusting stock by a large negative delta may be allowed on one system and rejected on the other.  | `POST /v1/inventory/C-300/adjust {"delta":-100000}` | no difference, both answer 409 |
+| Case | Tag          | Hypothesis                                                                                                                     | Steps                                                   | Result          |
+| ---- | ------------ | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- | --------------- |
+| 2-1  | cancel-order | Cancel may differ in total, remaining, or canceled fields, since totals already differ by a cent and cancel returns the order. | create A-100 x3, capture, cancel                        | same key as 1-1 |
+| 2-2  | ship-order   | Shipping more than the ordered quantity is validated differently or yields different remaining values.                         | create A-100 x2, capture, ship 5                        | no difference   |
+| 2-3  | set-quantity | Setting an order quantity to zero or a lower value is handled differently between systems.                                     | create B-200 x5, capture, set quantity 0                | no difference   |
+| 2-4  | create-order | Creating an order for a nonexistent SKU or with qty 0 returns a different status or error body.                                | `POST /v1/orders {"sku":"ZZ-999","qty":0}`              | no difference   |
+| 2-5  | list-ledger  | Ledger receivables likely reflect the rounding difference and stock_on_hand differs after an order is created.                 | create C-300 x7, then `GET /v1/ledger`                  | no difference   |
+| 2-6  | adjust-stock | Adjusting stock with a large negative delta or on an unknown SKU is validated differently.                                     | `POST /v1/inventory/C-300/adjust {"delta":-100000}`     | no difference   |
+| 2-7  | get-order    | Shipping a created order partially then reading it shows differing shipped, remaining, or status values.                       | create A-100 x4, capture, ship 1, then `GET /v1/orders` | no difference   |
+| 2-8  | create-order | A large quantity order produces a different total due to float rounding at scale.                                              | `POST /v1/orders {"sku":"B-200","qty":999}`             | no difference   |
 
-Totals: 16 proposed, 15 valid, 15 executed, 4 kept, 6426 input tokens, 2131 output tokens, $0.0342 of $2.00.
+Totals: 16 proposed, 16 valid, 16 executed, 4 kept, 401 fresh input tokens, 2823 tokens written to the cache and 2823 read back, 2624 output tokens, $0.0347 of $2.00.
 
 ## What the agent is good at
 
 - It turns a mismatching path into a one request reproduction. The three divergences that a single request can reach, the half cent rounding, the unknown id, and the inventory ordering, were each reproduced in the first round by a case the model wrote from the summary alone.
+- It uses `repeat` where it belongs. Told that latency limits are judged on the percentiles of a sample, it set `repeat` to 50 on the one tag whose p99 row had failed, left it at 1 everywhere else, and the case caught a p99 of 71.49 ms against the 40 ms limit, which no single run could show.
 - It writes multi step cases correctly. Every create then act sequence captured the order id and reused it, and the per system resolution of captures kept the two ids out of the diff.
 - It explores validation edges that the recording never exercised: zero quantity, unknown SKU, over shipment, an oversize negative adjustment. In this demo the two systems agree on all of them, which is itself information.
 - It is cheap. Two rounds cost three and a half cents and took a few seconds beyond the model's own latency.
 
 ## Where it is noisy
 
-- It cannot reach the latency divergence. The candidate delays five percent of `adjust-stock` calls, so a single request has one chance in twenty to breach, and the model's adjust cases were about validation rather than timing. A latency case needs volume, which the replay provides and the agent does not.
-- The dedupe key was once the exact set of paths, so cases 1-7 and 1-8 in the run above, which both show the inventory ordering divergence on different fields of the same rows, were both kept. The key now folds array positions and cuts a path inside an array at the row, so the second of two such cases is dropped as the same finding.
-- The agent's own cases mutate both systems. A stock adjustment or a create in one case changes what the next case sees, and the two systems drift apart when a case lands differently on them. In this run the inventory read in case 1-8 showed `on_hand` 508 against 503 for the SKU an earlier case had adjusted. Stateful side effects are the price of exploring mutations, and the report labels every kept case with the round it ran in.
-- Hypotheses are plausible but not grounded. The model wrote that the candidate "truncates rather than rounds" and that the two systems might "go negative" on stock. Neither is true. The harness keeps only what actually differed, so a wrong hypothesis costs one request and nothing else.
+- Volume costs time and stops at 50. The 50 run case sent fifty requests to each system one after another. A tail that fires on one call in a thousand needs more runs than the cap allows, and the replay, with hundreds of recorded calls per tag, remains the better instrument for that.
+- The dedupe key folds array positions and cuts a path inside an array at the row. Case 1-6, a stock adjustment followed by a listing, was dropped as the same finding as 1-5 for that reason, where the first real run, before the fold, kept both. The other side of that coin is that a divergence on one field of the rows, such as a per row price, would merge with an ordering divergence on the same array.
+- The agent's own cases mutate both systems. A stock adjustment or a create in one case changes what the next case sees, and the two systems drift apart when a case lands differently on them. In this run cases 1-6 and 1-7 adjusted the stock of C-300 fifty one times on each system before case 2-5 read the ledger, and the ledger still matched only because every case had landed the same way on both systems. Stateful side effects are the price of exploring mutations, and the report labels every kept case with the round it ran in.
+- Hypotheses are plausible but not grounded. The model wrote that the candidate might have a "float truncation difference" and might "read stale stock". Neither is what the candidate does. The harness keeps only what actually differed, so a wrong hypothesis costs one request and nothing else.
 - The schema is strict on purpose. A case with an extra key is dropped rather than repaired, and the drop and its reason are in the transcript.
 - Order ids line up here because both systems took the same traffic first. Against two systems in different states a single step create differs on `$.order_id` as well, and the mismatch key carries that path. The substitution rules handle this for replays and the capture mechanism handles it inside multi step cases, but a single step case has nothing to substitute.
 
