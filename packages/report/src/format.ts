@@ -51,20 +51,49 @@ export function pacingLine(run: Run): string {
   return parts.join(', ');
 }
 
-/** Untolerated finding paths across mismatched exchanges, most frequent first. */
-export function topMismatchPaths(run: Run, limit = 10): { path: string; count: number }[] {
-  const counts = new Map<string, number>();
+/** Folds array positions into `[*]`, so rows that moved count as one path. */
+export function generalizePath(path: string): string {
+  return path.replace(/\[\d+\]/g, '[*]');
+}
+
+export interface TopPath {
+  /** The finding path with array positions folded into `[*]`. */
+  path: string;
+  /** Untolerated findings on the path. */
+  count: number;
+  /** Mismatched exchanges those findings came from. */
+  exchanges: number;
+}
+
+/**
+ * Untolerated finding paths across mismatched exchanges, most frequent first.
+ * Array positions are folded, so an ordering divergence over forty rows shows
+ * as one line with forty findings instead of forty lines with one each.
+ */
+export function topMismatchPaths(run: Run, limit = 10): TopPath[] {
+  const counts = new Map<string, { count: number; exchanges: Set<string> }>();
   for (const e of run.exchanges) {
     if (e.control || e.diff?.verdict !== 'mismatch') continue;
     for (const f of e.diff.findings) {
       if (f.tolerated) continue;
-      counts.set(f.path, (counts.get(f.path) ?? 0) + 1);
+      const key = generalizePath(f.path);
+      let entry = counts.get(key);
+      if (entry === undefined) {
+        entry = { count: 0, exchanges: new Set() };
+        counts.set(key, entry);
+      }
+      entry.count += 1;
+      entry.exchanges.add(e.id);
     }
   }
   return [...counts.entries()]
-    .map(([path, count]) => ({ path, count }))
+    .map(([path, v]) => ({ path, count: v.count, exchanges: v.exchanges.size }))
     .sort((a, b) => b.count - a.count || (a.path < b.path ? -1 : 1))
     .slice(0, limit);
+}
+
+export function describeTopPath(t: TopPath): string {
+  return `${t.path} x${t.count} in ${t.exchanges} exchange${t.exchanges === 1 ? '' : 's'}`;
 }
 
 export function mismatchedExchanges(run: Run): Run['exchanges'] {

@@ -344,6 +344,52 @@ describe('renderHistogram', () => {
 describe('topMismatchPaths', () => {
   it('counts untolerated findings across mismatched exchanges, most frequent first', () => {
     const run = makeRun();
-    expect(topMismatchPaths(run)).toEqual([{ path: '$.total', count: 1 }]);
+    expect(topMismatchPaths(run)).toEqual([{ path: '$.total', count: 1, exchanges: 1 }]);
+  });
+
+  it('folds array positions so rows that moved count as one path', () => {
+    const finding = (path: string, tolerated = false) => ({
+      path,
+      kind: 'value' as const,
+      tolerated,
+      reference: 'a',
+      candidate: 'b',
+    });
+    const run = makeRun({
+      exchanges: [
+        makeExchangeResult({
+          id: 'x1',
+          diff: {
+            verdict: 'mismatch',
+            findings: [
+              finding('$.items[0].name'),
+              finding('$.items[1].name'),
+              finding('$.items[1].on_hand'),
+              finding('$.items[2].name', true),
+            ],
+          },
+        }),
+        makeExchangeResult({
+          id: 'x2',
+          diff: { verdict: 'mismatch', findings: [finding('$.items[7].name'), finding('$.total')] },
+        }),
+        makeExchangeResult({ id: 'x3', diff: { verdict: 'match', findings: [] } }),
+      ],
+    });
+    expect(topMismatchPaths(run)).toEqual([
+      { path: '$.items[*].name', count: 3, exchanges: 2 },
+      { path: '$.items[*].on_hand', count: 1, exchanges: 1 },
+      { path: '$.total', count: 1, exchanges: 1 },
+    ]);
+    expect(topMismatchPaths(run, 1)).toHaveLength(1);
+    const text = renderTerminal(run);
+    expect(text).toContain(
+      'top mismatching paths: $.items[*].name x3 in 2 exchanges, $.items[*].on_hand x1 in 1 exchange, $.total x1 in 1 exchange',
+    );
+    const html = renderHtml(run);
+    expect(html).toContain(
+      '<code>$.items[*].name</code></td><td class="num">3</td><td class="num">2</td>',
+    );
+    expect(html).toContain('Array positions are folded');
   });
 });

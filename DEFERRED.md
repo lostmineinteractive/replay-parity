@@ -2,10 +2,6 @@
 
 Items noticed during the build that are out of scope for the current step. Each one names the step that raised it and what would change. Nothing here is required for `make demo`.
 
-## From Step 7, the demo
-
-- **Top mismatching paths grouped by array position.** The correctness section counts `$.items[0].name` and `$.items[1].name` as two paths. A grouped view that folds array indices into `[*]`, the way the agent's summary already does, would show the inventory ordering divergence as one line instead of forty.
-
 ## From Step 8, the agent
 
 - **Dedupe granularity.** A mismatch keys on the exact set of untolerated paths, so two cases that show the same divergence on different fields of the same rows count twice, as cases 1-7 and 1-8 did in the demo run. A key that folds array indices and groups paths by their parent would merge them.

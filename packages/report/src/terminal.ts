@@ -8,6 +8,7 @@ import {
   invariantSummary,
   mismatchedExchanges,
   pacingLine,
+  describeTopPath,
   topMismatchPaths,
   verdictLabel,
 } from './format.js';
@@ -111,7 +112,7 @@ export function renderTerminal(run: Run): string {
   );
   const top = topMismatchPaths(run, 5);
   if (top.length > 0) {
-    lines.push(`  top mismatching paths: ${top.map((t) => `${t.path} x${t.count}`).join(', ')}`);
+    lines.push(`  top mismatching paths: ${top.map(describeTopPath).join(', ')}`);
   }
   const mismatched = mismatchedExchanges(run);
   for (const e of mismatched.slice(0, 5)) {

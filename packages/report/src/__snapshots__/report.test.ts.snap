@@ -17,7 +17,7 @@ latency by tag (reference/candidate, ms):
   create-item  1      0       20.0/25.0  20.0/25.0  20.0/25.0  1
   get-items    2      1       10.0/12.0  10.0/12.0  10.0/12.0  0
 correctness: 2 compared, 1 match, 0 tolerated, 1 mismatch (50.00%), 1 errors (33.33%)
-  top mismatching paths: $.total x1
+  top mismatching paths: $.total x1 in 1 exchange
   01M52Z67BM0000000000000001 POST /v1/items [create-item] 201/201: $.total
 "
 `;

@@ -189,9 +189,10 @@ function correctness(run: Run): string {
   const topHtml =
     top.length === 0
       ? '<p class="muted">No untolerated differences.</p>'
-      : `<table><thead><tr><th>Path</th><th class="num">Mismatches</th></tr></thead><tbody>${top
+      : `<p class="muted">Array positions are folded into <code>[*]</code>, so rows that moved count as one path.</p><table><thead><tr><th>Path</th><th class="num">Findings</th><th class="num">Exchanges</th></tr></thead><tbody>${top
           .map(
-            (t) => `<tr><td><code>${esc(t.path)}</code></td><td class="num">${t.count}</td></tr>`,
+            (t) =>
+              `<tr><td><code>${esc(t.path)}</code></td><td class="num">${t.count}</td><td class="num">${t.exchanges}</td></tr>`,
           )
           .join('')}</tbody></table>`;
   const mismatched = mismatchedExchanges(run);
