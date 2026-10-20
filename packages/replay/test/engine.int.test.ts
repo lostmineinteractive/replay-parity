@@ -332,7 +332,10 @@ describe('selection, warmup, and pacing', () => {
     expect(run.pacing.slip_max_ms).toBeLessThan(60);
     expect(run.duration_ms).toBeGreaterThanOrEqual(offsets[24]! - offsets[0]!);
     expect(run.pacing.requested_rps).toBeCloseTo((24 * 1000) / (offsets[24]! - offsets[0]!), 1);
-    const slips = run.exchanges.map((e) => e.sent_at_ms - e.scheduled_at_ms).sort((a, b) => a - b);
+    // The engine clamps a slip at zero: a timer that fires early is not ahead of schedule.
+    const slips = run.exchanges
+      .map((e) => Math.max(0, e.sent_at_ms - e.scheduled_at_ms))
+      .sort((a, b) => a - b);
     expect(run.pacing.slip_max_ms).toBeCloseTo(slips[slips.length - 1]!, 3);
     expect(run.pacing.slip_p50_ms).toBeCloseTo(slips[Math.floor((slips.length - 1) / 2)]!, 3);
   });
