@@ -9,7 +9,12 @@ import {
 } from '@replay-parity/core';
 import { describe, expect, it } from 'vitest';
 import { buildUserPrompt } from './agent.js';
-import { loadPrompts, renderTemplate } from './prompts.js';
+import {
+  ROUND_VARYING_HEADING,
+  cachePrefixLength,
+  loadPrompts,
+  renderTemplate,
+} from './prompts.js';
 import { describeShapes, summarizeRun } from './summary.js';
 
 const ROOT = resolve(import.meta.dirname, '../../..');
@@ -28,6 +33,43 @@ describe('prompts', () => {
 
   it('renders placeholders and leaves unknown ones visible', () => {
     expect(renderTemplate('a {{x}} b {{y}}', { x: '1' })).toBe('a 1 b {{y}}');
+  });
+
+  it('keeps everything that changes between rounds below the kept heading', () => {
+    const prompts = loadPrompts();
+    const template = prompts.round.text;
+    const varying = template.indexOf(ROUND_VARYING_HEADING);
+    expect(varying).toBeGreaterThan(0);
+    const stable = template.slice(0, varying);
+    for (const placeholder of ['{{round}}', '{{max_rounds}}', '{{count}}', '{{kept}}']) {
+      expect(stable).not.toContain(placeholder);
+      expect(template.slice(varying)).toContain(placeholder);
+    }
+    const options = { run: makeRun(), recording: [], maxRounds: 3, casesPerRound: 4 };
+    const first = buildUserPrompt(prompts, options, 1, []);
+    const second = buildUserPrompt(prompts, options, 2, [
+      {
+        id: 'case-1-1',
+        round: 1,
+        hypothesis: 'h',
+        tags: ['create-item'],
+        steps: [{ request: makeRequest() }],
+        dedupe_key: 'mismatch:$.total',
+        reference: null,
+        candidate: null,
+        error: null,
+        diff: null,
+        latency_breach: null,
+        revealed: 'r',
+      },
+    ]);
+    const n = cachePrefixLength(first);
+    expect(n).toBeGreaterThan(0);
+    expect(cachePrefixLength(second)).toBe(n);
+    expect(second.slice(0, n)).toBe(first.slice(0, n));
+    expect(second.slice(n)).toContain('case-1-1');
+    expect(second.slice(n)).toContain('Round 2 of 3');
+    expect(cachePrefixLength('no heading here')).toBe(0);
   });
 });
 

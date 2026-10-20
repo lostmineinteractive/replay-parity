@@ -1,5 +1,3 @@
-Round {{round}} of {{max_rounds}}. Propose at most {{count}} new cases.
-
 ## Run summary
 
 {{summary}}
@@ -16,4 +14,4 @@ Round {{round}} of {{max_rounds}}. Propose at most {{count}} new cases.
 
 {{kept}}
 
-Answer with the JSON object described in your instructions.
+Round {{round}} of {{max_rounds}}. Propose at most {{count}} new cases. Answer with the JSON object described in your instructions.

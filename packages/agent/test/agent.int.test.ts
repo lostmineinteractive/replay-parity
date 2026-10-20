@@ -158,6 +158,13 @@ describe('the agent loop on the mock client', () => {
     expect(client.calls).toHaveLength(2);
     expect(client.calls[1]?.request.user).toContain('case-1-1 [create-order]');
     expect(client.calls[1]?.request.user).toContain('Round 2 of 3');
+    // The stable prefix is identical across rounds, so a caching client reuses it.
+    const prefix = client.calls[0]?.request.cachePrefixLength ?? 0;
+    expect(prefix).toBeGreaterThan(1000);
+    expect(client.calls[1]?.request.cachePrefixLength).toBe(prefix);
+    expect(client.calls[1]?.request.user.slice(0, prefix)).toBe(
+      client.calls[0]?.request.user.slice(0, prefix),
+    );
     expect(report.cost_usd).toBeCloseTo((2 * (5000 * 2 + 1000 * 10)) / 1_000_000, 6);
     expect(report.input_tokens).toBe(10_000);
     for (const c of cases) expect(KeptCaseSchema.safeParse(c).success).toBe(true);

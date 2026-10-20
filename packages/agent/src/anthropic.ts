@@ -4,6 +4,11 @@ import type { ModelClient, ModelRequest, ModelResponse, ModelStopReason } from '
 /**
  * The real client. One `messages.create` per call with adaptive thinking and
  * a fixed effort. The API key comes from the caller, never from a log line.
+ *
+ * Prompt caching: the system prompt and the stable prefix of the user prompt
+ * each carry a cache breakpoint, so every round after the first reads the run
+ * summary and the request shapes from the cache instead of paying for them
+ * again. The usage the API reports says how many tokens were read or written.
  */
 export const DEFAULT_MODEL = 'claude-sonnet-5-5';
 export const DEFAULT_EFFORT = 'medium';
@@ -44,13 +49,25 @@ export class AnthropicModelClient implements ModelClient {
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
+    const prefix = request.cachePrefixLength ?? 0;
+    const content: Anthropic.TextBlockParam[] =
+      prefix > 0 && prefix < request.user.length
+        ? [
+            {
+              type: 'text',
+              text: request.user.slice(0, prefix),
+              cache_control: { type: 'ephemeral' },
+            },
+            { type: 'text', text: request.user.slice(prefix) },
+          ]
+        : [{ type: 'text', text: request.user }];
     const message = await this.client.messages.create({
       model: this.model,
       max_tokens: request.maxTokens,
       thinking: { type: 'adaptive' },
       output_config: { effort: this.effort },
-      system: request.system,
-      messages: [{ role: 'user', content: request.user }],
+      system: [{ type: 'text', text: request.system, cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content }],
     });
     const text = message.content
       .filter((block): block is Anthropic.TextBlock => block.type === 'text')

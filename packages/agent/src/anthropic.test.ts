@@ -47,7 +47,12 @@ describe('AnthropicModelClient', () => {
       fetch: fakeFetch(message(), capture),
       maxRetries: 0,
     });
-    const response = await client.complete({ system: 'sys', user: 'ask', maxTokens: 8192 });
+    const response = await client.complete({
+      system: 'sys',
+      user: 'stable part. varying part.',
+      cachePrefixLength: 13,
+      maxTokens: 8192,
+    });
     expect(capture.url).toContain('/v1/messages');
     expect(capture.headers?.get('x-api-key')).toBe('test-key-not-real');
     expect(capture.request).toEqual({
@@ -55,8 +60,16 @@ describe('AnthropicModelClient', () => {
       max_tokens: 8192,
       thinking: { type: 'adaptive' },
       output_config: { effort: 'medium' },
-      system: 'sys',
-      messages: [{ role: 'user', content: 'ask' }],
+      system: [{ type: 'text', text: 'sys', cache_control: { type: 'ephemeral' } }],
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'stable part. ', cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: 'varying part.' },
+          ],
+        },
+      ],
     });
     expect(response).toEqual({
       text: '{"cases": []}',
@@ -92,6 +105,10 @@ describe('AnthropicModelClient', () => {
     expect((capture.request as { model: string; output_config: { effort: string } }).model).toBe(
       'claude-opus-5-5',
     );
+    // Without a prefix the user prompt is one block with no breakpoint.
+    expect((capture.request as { messages: unknown[] }).messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'u' }] },
+    ]);
     expect((capture.request as { output_config: { effort: string } }).output_config.effort).toBe(
       'high',
     );

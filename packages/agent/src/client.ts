@@ -5,6 +5,12 @@
 export interface ModelRequest {
   system: string;
   user: string;
+  /**
+   * Characters at the start of `user` that are the same from call to call
+   * within one loop. A client with prompt caching puts a cache breakpoint
+   * there. Zero or absent means no breakpoint inside the user prompt.
+   */
+  cachePrefixLength?: number | undefined;
   maxTokens: number;
 }
 

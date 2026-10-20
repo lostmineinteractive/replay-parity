@@ -46,6 +46,20 @@ export function loadPrompts(dir = DEFAULT_PROMPTS_DIR): Prompts {
   };
 }
 
+/**
+ * The round template puts everything that changes from round to round under
+ * this heading: the kept cases, the round number, and the case count. The
+ * text above it is identical across the rounds of one loop and is marked
+ * for prompt caching.
+ */
+export const ROUND_VARYING_HEADING = '## Cases already kept';
+
+/** Length of the stable prefix of a rendered round prompt, or 0 when the heading is missing. */
+export function cachePrefixLength(user: string): number {
+  const index = user.indexOf(ROUND_VARYING_HEADING);
+  return index <= 0 ? 0 : index;
+}
+
 /** Replaces `{{name}}` with the value. Missing names are left in place so they are visible. */
 export function renderTemplate(text: string, values: Record<string, string>): string {
   return text.replace(/\{\{([a-z_]+)\}\}/g, (whole, name: string) => values[name] ?? whole);

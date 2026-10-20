@@ -14,7 +14,7 @@ import type { Adapter } from '@replay-parity/replay';
 import type { ModelClient, ModelUsage } from './client.js';
 import { executeCase } from './execute.js';
 import { costUsd, estimateCostUsd, priceFor } from './pricing.js';
-import { loadPrompts, renderTemplate, type Prompts } from './prompts.js';
+import { cachePrefixLength, loadPrompts, renderTemplate, type Prompts } from './prompts.js';
 import { describeKept, describeShapes, summarizeRun, tagsOf } from './summary.js';
 import { validateCases, type Dropped } from './validate.js';
 
@@ -143,7 +143,12 @@ export async function runAgent(options: AgentOptions): Promise<AgentOutcome> {
     log(`round ${round}: asking ${model} for up to ${options.casesPerRound} cases`);
     let response;
     try {
-      response = await options.client.complete({ system: prompts.system.text, user, maxTokens });
+      response = await options.client.complete({
+        system: prompts.system.text,
+        user,
+        cachePrefixLength: cachePrefixLength(user),
+        maxTokens,
+      });
     } catch (err) {
       log(`round ${round}: model call failed: ${(err as Error).message}`);
       stop = 'error';
@@ -184,7 +189,7 @@ export async function runAgent(options: AgentOptions): Promise<AgentOutcome> {
     };
     rounds.push(entry);
     log(
-      `round ${round}: ${response.usage.input_tokens} in, ${response.usage.output_tokens} out, $${callCost.toFixed(4)}, total $${cost.toFixed(4)}`,
+      `round ${round}: ${response.usage.input_tokens} in, ${response.usage.cache_read_tokens} read from cache, ${response.usage.cache_write_tokens} written to cache, ${response.usage.output_tokens} out, $${callCost.toFixed(4)}, total $${cost.toFixed(4)}`,
     );
 
     if (response.stop_reason === 'refusal') {

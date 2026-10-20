@@ -16,6 +16,10 @@ Each round does seven things.
 
 Without `ANTHROPIC_API_KEY`, in the environment or in a `.env` file at the repository root, the command prints a message and exits 0 without building a client.
 
+## Prompt caching
+
+The round prompt puts the run summary, the request shapes, and the redacted header names first, and everything that changes between rounds, the kept cases and the round line, under the `## Cases already kept` heading. The system prompt and that stable prefix carry cache breakpoints. Rounds after the first read the stable part from the cache at one tenth of the input price, once the stable part is long enough for the model's cache minimum, and the transcript records the tokens read from and written to the cache per round.
+
 ## A real transcript
 
 From `make demo` on 2026-10-17, against the classic candidate with the four planted divergences, after the first replay. Model `claude-sonnet-5-5`, effort `medium`, two rounds, eight cases per round, two dollar budget. Prompt versions `system.md e08fe4717b9d` and `round.md adcf42890db5`. The full file is `demo/out/agent-transcript.json` after a run.
