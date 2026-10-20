@@ -1,7 +1,5 @@
 # Deferred
 
-Items noticed during the build that are out of scope for the current step. Each one names the step that raised it and what would change. Nothing here is required for `make demo`.
+Items noticed during the build that are out of scope for the current step go here, each naming the step that raised it and what would change. Nothing here is required for `make demo`.
 
-## From Step 8, the agent
-
-- **Latency cases need volume.** A single sample cannot find a divergence that fires on five percent of calls. A case could carry a repeat count and the breach could be judged on the sample's percentile.
+Nothing is deferred at the moment. The six items this file held after Step 9 (compressed bodies, Redis Streams in CI, grouped top paths, agent dedupe granularity, prompt caching, and volume for latency cases) were done afterwards and are recorded in `CHANGELOG.md` under the heading for the work after Step 9.

@@ -39,6 +39,30 @@ export function emptySummary(): LatencySummary {
   return { count: 0, p50_ms: 0, p90_ms: 0, p99_ms: 0, p999_ms: 0, max_ms: 0, mean_ms: 0 };
 }
 
+/**
+ * The summary of a small sample by exact nearest rank percentiles, for places
+ * that hold every value and need no histogram. The p-th percentile is the
+ * value at rank `ceil(p / 100 * n)`, so one sample is its own every percentile.
+ */
+export function exactSummary(values: readonly number[]): LatencySummary {
+  if (values.length === 0) return emptySummary();
+  const sorted = [...values].sort((a, b) => a - b);
+  const n = sorted.length;
+  const at = (pct: number): number =>
+    round(sorted[Math.min(n - 1, Math.max(0, Math.ceil((pct / 100) * n) - 1))] as number, 3);
+  let sum = 0;
+  for (const v of sorted) sum += v;
+  return {
+    count: n,
+    p50_ms: at(50),
+    p90_ms: at(90),
+    p99_ms: at(99),
+    p999_ms: at(99.9),
+    max_ms: round(sorted[n - 1] as number, 3),
+    mean_ms: round(sum / n, 3),
+  };
+}
+
 export class LatencyAccumulator {
   private readonly histogram = hdr.build({
     numberOfSignificantValueDigits: 3,

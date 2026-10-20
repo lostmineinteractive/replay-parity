@@ -4,7 +4,7 @@ import { InvariantReportSchema } from '../invariants/schema.js';
 import { isValidPath } from '../jsonpath/index.js';
 import { RecordedRequestSchema } from '../recording/types.js';
 import { DiffRulesSchema } from '../rules/schema.js';
-import { RunStatsSchema } from '../stats/schema.js';
+import { LatencySummarySchema, RunStatsSchema } from '../stats/schema.js';
 import { ThresholdResultSchema, ThresholdsSchema } from '../thresholds/schema.js';
 import { InconclusiveConditionSchema, RunVerdictSchema } from './verdict.js';
 
@@ -79,15 +79,29 @@ export const GeneratedCaseStepSchema = z
   })
   .strict();
 
+/** The most times one case runs on each system. */
+export const MAX_CASE_REPEAT = 50;
+
 /**
  * A case proposed by the agent. One to three steps. Later steps may reference
- * an earlier step's capture as `{{name}}` in the path, query, or body.
+ * an earlier step's capture as `{{name}}` in the path, query, or body. A
+ * `repeat` above 1 runs the whole case that many times on each system, so a
+ * latency limit is judged on the percentiles of a sample and not on one run.
  */
 export const GeneratedCaseSchema = z
   .object({
     hypothesis: z.string().min(1),
     tags: z.array(z.string().min(1)).min(1),
     steps: z.array(GeneratedCaseStepSchema).min(1).max(3),
+    repeat: z.number().int().min(1).max(MAX_CASE_REPEAT).default(1),
+  })
+  .strict();
+
+/** Exact percentiles over the runs of a case on each system. */
+export const CaseLatencySchema = z
+  .object({
+    reference: LatencySummarySchema,
+    candidate: LatencySummarySchema,
   })
   .strict();
 
@@ -98,9 +112,14 @@ export const KeptCaseSchema = z
     hypothesis: z.string().min(1),
     tags: z.array(z.string().min(1)).min(1),
     steps: z.array(GeneratedCaseStepSchema).min(1).max(3),
+    /** How many times the case ran on each system. */
+    repeat: z.number().int().min(1).max(MAX_CASE_REPEAT),
     dedupe_key: z.string().min(1),
+    /** Status and latency of the final step of the first run, or null when the side failed. */
     reference: EndpointResultSchema.nullable(),
     candidate: EndpointResultSchema.nullable(),
+    /** Null when a side failed. */
+    latency: CaseLatencySchema.nullable(),
     error: z.string().nullable(),
     diff: DiffSchema.nullable(),
     latency_breach: z.string().nullable(),
@@ -225,6 +244,7 @@ export type Pacing = z.output<typeof PacingSchema>;
 export type ExchangeResult = z.output<typeof ExchangeResultSchema>;
 export type GeneratedCaseStep = z.output<typeof GeneratedCaseStepSchema>;
 export type GeneratedCase = z.output<typeof GeneratedCaseSchema>;
+export type CaseLatency = z.output<typeof CaseLatencySchema>;
 export type KeptCase = z.output<typeof KeptCaseSchema>;
 export type AgentStopReason = z.output<typeof AgentStopReasonSchema>;
 export type AgentReport = z.output<typeof AgentReportSchema>;

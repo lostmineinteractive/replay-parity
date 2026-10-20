@@ -120,6 +120,22 @@ describe('validateCases', () => {
     expect(validateCases(text, TAGS).cases).toHaveLength(2);
   });
 
+  it('defaults repeat to 1 and drops a repeat outside 1 to 50', () => {
+    const text = JSON.stringify({
+      cases: [
+        ok,
+        { ...ok, repeat: 10 },
+        { ...ok, repeat: 0 },
+        { ...ok, repeat: 51 },
+        { ...ok, repeat: 2.5 },
+      ],
+    });
+    const result = validateCases(text, TAGS);
+    expect(result.cases.map((c) => c.repeat)).toEqual([1, 10]);
+    expect(result.dropped.map((d) => d.index)).toEqual([2, 3, 4]);
+    for (const d of result.dropped) expect(d.reason).toContain('repeat');
+  });
+
   it('reports a parse error for an unreadable answer', () => {
     const result = validateCases('I cannot help with that.', TAGS);
     expect(result.cases).toEqual([]);

@@ -1,16 +1,21 @@
 import {
   LATENCY_METRICS,
   canonicalJson,
+  exactSummary,
   explainFinding,
   get,
   mergeHeaders,
   dropRedactedHeaders,
   isJsonObject,
+  metricValue,
+  type CaseLatency,
   type Diff,
   type Differ,
   type GeneratedCase,
   type HeaderMap,
   type JsonValue,
+  type LatencyMetric,
+  type LatencySummary,
   type RecordedRequest,
   type RecordedResponse,
   type Thresholds,
@@ -21,22 +26,45 @@ import { describeSendError, type Adapter } from '@replay-parity/replay';
 /**
  * Runs one case against one system, step by step, resolving `{{name}}` from
  * that system's own captures. Both systems run independently, so a create
- * then get sequence reads each system's own id.
+ * then get sequence reads each system's own id. A case with `repeat` above 1
+ * runs that many times on each system, one run after another, and the
+ * latency limits are judged on the percentiles of the sample.
  */
 export interface SideResult {
+  /** Responses of the first run. */
   responses: RecordedResponse[];
+  /** Captures of the first run. */
   captures: Map<string, string | number>;
+  /** Final step latency of every run that completed, in order. */
+  latencies: number[];
   error: string | null;
+}
+
+export interface LatencyBreach {
+  /** `latency:<scope>:<metric>_ms`, the dedupe key. */
+  key: string;
+  scope: string;
+  metric: LatencyMetric;
+  limit_ms: number;
+  measured_ms: number;
 }
 
 export interface CaseExecution {
   reference: SideResult;
   candidate: SideResult;
   diff: Diff | null;
+  /** Exact percentiles over the runs of each side, or null when a side failed. */
+  latency: CaseLatency | null;
   error: string | null;
   latency_breach: string | null;
   dedupe_key: string | null;
   revealed: string;
+}
+
+interface Pass {
+  responses: RecordedResponse[];
+  captures: Map<string, string | number>;
+  error: string | null;
 }
 
 const PLACEHOLDER = /\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}/g;
@@ -94,12 +122,12 @@ export function resolveRequest(
   return out;
 }
 
-export async function runSide(
+async function runOnce(
   c: GeneratedCase,
   adapter: Adapter,
   headers: HeaderMap,
   id: string,
-): Promise<SideResult> {
+): Promise<Pass> {
   const captures = new Map<string, string | number>();
   const responses: RecordedResponse[] = [];
   for (let i = 0; i < c.steps.length; i += 1) {
@@ -132,6 +160,28 @@ export async function runSide(
   return { responses, captures, error: null };
 }
 
+/** Runs the case `repeat` times, one run after another, and keeps the first run's responses. */
+export async function runSide(
+  c: GeneratedCase,
+  adapter: Adapter,
+  headers: HeaderMap,
+  id: string,
+): Promise<SideResult> {
+  const latencies: number[] = [];
+  let first: Pass | null = null;
+  for (let run = 1; run <= c.repeat; run += 1) {
+    const pass = await runOnce(c, adapter, headers, c.repeat === 1 ? id : `${id}:run-${run}`);
+    first ??= pass;
+    if (pass.error !== null) {
+      const error = c.repeat === 1 ? pass.error : `run ${run}: ${pass.error}`;
+      return { responses: first.responses, captures: first.captures, latencies, error };
+    }
+    latencies.push(pass.responses[pass.responses.length - 1]!.latency_ms);
+  }
+  const done = first as Pass;
+  return { responses: done.responses, captures: done.captures, latencies, error: null };
+}
+
 /** The pairs of captured values, so the differ treats each system's own id as equivalent. */
 function equivalences(reference: SideResult, candidate: SideResult): ValueEquivalences {
   const out = new Map<string, Map<string, string>>();
@@ -160,12 +210,16 @@ export function mismatchKey(paths: readonly string[]): string {
   return `mismatch:${[...keys].sort().join(',')}`;
 }
 
-/** A single sample breaches when it exceeds any configured absolute limit for its tag or overall. */
+/**
+ * The first configured limit the sample's percentile exceeds, overall first
+ * and then by tag. One run is its own every percentile, so a single sample
+ * breaches when it exceeds any limit for its tag or overall.
+ */
 export function latencyBreach(
   thresholds: Thresholds,
   tags: readonly string[],
-  latencyMs: number,
-): string | null {
+  summary: LatencySummary,
+): LatencyBreach | null {
   const scopes: [string, Partial<Record<string, number>>][] = [
     ['overall', thresholds.latency.overall],
   ];
@@ -176,10 +230,27 @@ export function latencyBreach(
   for (const [scope, limits] of scopes) {
     for (const metric of LATENCY_METRICS) {
       const limit = limits[`${metric}_ms`];
-      if (limit !== undefined && latencyMs > limit) return `latency:${scope}:${metric}_ms`;
+      if (limit === undefined) continue;
+      const measured = metricValue(summary, metric);
+      if (measured > limit) {
+        return {
+          key: `latency:${scope}:${metric}_ms`,
+          scope,
+          metric,
+          limit_ms: limit,
+          measured_ms: measured,
+        };
+      }
     }
   }
   return null;
+}
+
+export function describeBreach(b: LatencyBreach, runs: number): string {
+  const limit = `over the ${b.scope} ${b.metric}_ms limit of ${b.limit_ms} ms`;
+  return runs === 1
+    ? `candidate answered in ${b.measured_ms} ms, ${limit}`
+    : `candidate ${b.metric} over ${runs} runs was ${b.measured_ms} ms, ${limit}`;
 }
 
 export async function executeCase(
@@ -202,12 +273,24 @@ export async function executeCase(
     ]
       .filter((x): x is string => x !== null)
       .join('; ');
-    return { ...base, diff: null, error, latency_breach: null, dedupe_key: null, revealed: error };
+    return {
+      ...base,
+      diff: null,
+      latency: null,
+      error,
+      latency_breach: null,
+      dedupe_key: null,
+      revealed: error,
+    };
   }
   const refFinal = reference.responses[reference.responses.length - 1]!;
   const candFinal = candidate.responses[candidate.responses.length - 1]!;
   const diff = differ.diff(refFinal, candFinal, equivalences(reference, candidate));
-  const breach = latencyBreach(thresholds, c.tags, candFinal.latency_ms);
+  const latency: CaseLatency = {
+    reference: exactSummary(reference.latencies),
+    candidate: exactSummary(candidate.latencies),
+  };
+  const breach = latencyBreach(thresholds, c.tags, latency.candidate);
   const untolerated = diff.findings.filter((f) => !f.tolerated);
   let dedupe_key: string | null = null;
   let revealed = 'no difference';
@@ -218,8 +301,16 @@ export async function executeCase(
       .map((f) => explainFinding(f))
       .join(' ');
   } else if (breach !== null) {
-    dedupe_key = breach;
-    revealed = `candidate answered in ${candFinal.latency_ms} ms, over the ${breach.split(':').slice(1).join(' ')} limit`;
+    dedupe_key = breach.key;
+    revealed = describeBreach(breach, latency.candidate.count);
   }
-  return { ...base, diff, error: null, latency_breach: breach, dedupe_key, revealed };
+  return {
+    ...base,
+    diff,
+    latency,
+    error: null,
+    latency_breach: breach?.key ?? null,
+    dedupe_key,
+    revealed,
+  };
 }

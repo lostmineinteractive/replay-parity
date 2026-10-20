@@ -1,4 +1,5 @@
 import { mkdtemp } from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -184,9 +185,83 @@ describe('the agent loop on the mock client', () => {
     expect(cases[0]?.dedupe_key).toBe('latency:create-order:max_ms');
     expect(cases[0]?.latency_breach).toBe('latency:create-order:max_ms');
     expect(cases[0]?.diff?.verdict).toBe('match');
+    expect(cases[0]?.repeat).toBe(1);
+    expect(cases[0]?.latency?.candidate.count).toBe(1);
     expect(cases[0]?.revealed).toMatch(
-      /^candidate answered in [\d.]+ ms, over the create-order max_ms limit$/,
+      /^candidate answered in [\d.]+ ms, over the create-order max_ms limit of 0.0001 ms$/,
     );
+  });
+
+  it('repeats a latency case and judges the sample percentile, which one run cannot show', async () => {
+    // Two stand ins that answer the same body. The slow one delays every second call by 40 ms,
+    // so a single run sees a fast answer and a sample of ten sees the tail at p90.
+    const servers: Server[] = [];
+    const stub = (slow: boolean): Promise<string> =>
+      new Promise((resolveUrl) => {
+        let calls = 0;
+        const server = createServer((req, res) => {
+          req.resume();
+          req.on('end', () => {
+            calls += 1;
+            const answer = (): void => {
+              res.writeHead(200, { 'content-type': 'application/json' });
+              res.end('{"sku":"F-600","on_hand":12}');
+            };
+            if (slow && calls % 2 === 0) setTimeout(answer, 40);
+            else answer();
+          });
+        });
+        servers.push(server);
+        server.listen(0, '127.0.0.1', () =>
+          resolveUrl(`http://127.0.0.1:${(server.address() as AddressInfo).port}`),
+        );
+      });
+    const fast = new HttpAdapter(await stub(false));
+    const slow = new HttpAdapter(await stub(true));
+    try {
+      const single = {
+        hypothesis: 'one adjustment is slow',
+        tags: ['adjust-stock'],
+        steps: [
+          { request: { method: 'POST', path: '/v1/inventory/F-600/adjust', body: { delta: 1 } } },
+        ],
+      };
+      const repeated = { ...single, hypothesis: 'adjustments have a slow tail', repeat: 10 };
+      const { cases, report, transcript } = await agent(
+        [JSON.stringify({ cases: [single, repeated] }), JSON.stringify({ cases: [repeated] })],
+        {
+          adapters: { reference: fast, candidate: slow },
+          thresholds: parseThresholds('latency:\n  by_tag:\n    adjust-stock: { p90_ms: 20 }\n'),
+        },
+      );
+      expect(report.stop_reason).toBe('no_new_cases');
+      expect(report.executed).toBe(3);
+      expect(cases).toHaveLength(1);
+      const c = cases[0]!;
+      expect(c.id).toBe('case-1-2');
+      expect(c.repeat).toBe(10);
+      expect(c.dedupe_key).toBe('latency:adjust-stock:p90_ms');
+      expect(c.latency?.candidate.count).toBe(10);
+      expect(c.latency?.reference.count).toBe(10);
+      expect(c.latency?.candidate.p90_ms).toBeGreaterThanOrEqual(35);
+      expect(c.latency?.candidate.p50_ms).toBeLessThan(20);
+      expect(c.latency?.reference.p90_ms).toBeLessThan(20);
+      expect(c.diff?.verdict).toBe('match');
+      expect(c.revealed).toMatch(
+        /^candidate p90 over 10 runs was [\d.]+ ms, over the adjust-stock p90_ms limit of 20 ms$/,
+      );
+      expect(transcript.rounds[0]?.not_kept).toEqual([
+        { id: 'case-1-1', reason: 'no difference and no latency breach' },
+      ]);
+      expect(transcript.rounds[1]?.not_kept).toEqual([
+        { id: 'case-2-1', reason: 'same as a kept case (latency:adjust-stock:p90_ms)' },
+      ]);
+      for (const k of cases) expect(KeptCaseSchema.safeParse(k).success).toBe(true);
+    } finally {
+      await fast.close();
+      await slow.close();
+      for (const s of servers) await new Promise<void>((r) => s.close(() => r()));
+    }
   });
 
   it('stops on the budget, on max rounds, on a refusal, and on an unreadable answer', async () => {

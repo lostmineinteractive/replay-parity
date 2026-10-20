@@ -90,7 +90,7 @@ Each report has `system`, `recording`, `exchanges`, `commands`, `snapshots` (`le
 
 ## Agent
 
-`model`, `rounds`, `max_rounds`, `budget_usd`, `cost_usd`, token counts (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`), `proposed`, `valid`, `executed`, `kept`, `stop_reason` (`no_new_cases`, `budget`, `max_rounds`, `no_valid_cases`, `model_refusal`, `error`), `prompt_versions`, `transcript_path`, `cases_path`, and `cases`. Each kept case has `id`, `round`, `hypothesis`, `tags`, `steps`, `dedupe_key`, `reference` and `candidate` (status and latency of the final step, or null), `error`, `diff`, `latency_breach`, and `revealed`.
+`model`, `rounds`, `max_rounds`, `budget_usd`, `cost_usd`, token counts (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`), `proposed`, `valid`, `executed`, `kept`, `stop_reason` (`no_new_cases`, `budget`, `max_rounds`, `no_valid_cases`, `model_refusal`, `error`), `prompt_versions`, `transcript_path`, `cases_path`, and `cases`. Each kept case has `id`, `round`, `hypothesis`, `tags`, `steps`, `repeat` (how many times the case ran on each system, 1 to 50), `dedupe_key`, `reference` and `candidate` (status and latency of the final step of the first run, or null), `latency` (exact nearest rank percentiles over the runs of each side, in the same shape as a latency summary, or null when a side failed), `error`, `diff`, `latency_breach`, and `revealed`.
 
 ## Exit codes
 

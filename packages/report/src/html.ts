@@ -244,7 +244,7 @@ function agent(run: Run): string {
   const rows = a.cases
     .map(
       (c) =>
-        `<tr><td><code>${esc(c.id)}</code></td><td class="num">${c.round}</td><td>${esc(c.hypothesis)}</td><td>${esc(c.tags.join(', '))}</td><td>${c.steps.map((s) => `${esc(s.request.method)} ${esc(s.request.path)}`).join('<br>')}</td><td>${c.reference?.status ?? 'error'} / ${c.candidate?.status ?? 'error'}</td><td>${esc(c.revealed)}</td></tr>`,
+        `<tr><td><code>${esc(c.id)}</code></td><td class="num">${c.round}</td><td>${esc(c.hypothesis)}</td><td>${esc(c.tags.join(', '))}</td><td>${c.steps.map((s) => `${esc(s.request.method)} ${esc(s.request.path)}`).join('<br>')}${c.repeat > 1 ? `<br><span class="muted">${c.repeat} runs on each system</span>` : ''}</td><td>${c.reference?.status ?? 'error'} / ${c.candidate?.status ?? 'error'}</td><td>${esc(c.revealed)}</td></tr>`,
     )
     .join('');
   return `<section id="agent"><h2>Agent</h2><p>${esc(a.model)}: ${a.rounds} of ${a.max_rounds} rounds, ${a.proposed} cases proposed, ${a.valid} valid, ${a.executed} executed, ${a.kept} kept. Stopped on <code>${esc(a.stop_reason)}</code>. Cost $${a.cost_usd.toFixed(2)} of a $${a.budget_usd.toFixed(2)} budget (${a.input_tokens} input tokens, ${a.output_tokens} output tokens, ${a.cache_read_tokens} read from cache).</p><p class="muted">Prompts: ${Object.entries(

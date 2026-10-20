@@ -7,6 +7,7 @@ import {
   LatencyAccumulator,
   binIndex,
   emptySummary,
+  exactSummary,
 } from './histogram.js';
 
 describe('bins', () => {
@@ -38,6 +39,29 @@ describe('LatencyAccumulator', () => {
     expect(acc.count).toBe(0);
     expect(acc.summary()).toEqual(emptySummary());
     expect(acc.binCounts().reduce((a, b) => a + b, 0)).toBe(0);
+  });
+
+  it('summarizes a small sample by exact nearest rank percentiles', () => {
+    expect(exactSummary([])).toEqual(emptySummary());
+    expect(exactSummary([7])).toEqual({
+      count: 1,
+      p50_ms: 7,
+      p90_ms: 7,
+      p99_ms: 7,
+      p999_ms: 7,
+      max_ms: 7,
+      mean_ms: 7,
+    });
+    const ten = [40, 1, 41, 2, 42, 3, 43, 4, 44, 5];
+    expect(exactSummary(ten)).toEqual({
+      count: 10,
+      p50_ms: 5,
+      p90_ms: 43,
+      p99_ms: 44,
+      p999_ms: 44,
+      max_ms: 44,
+      mean_ms: 22.5,
+    });
   });
 
   it('computes percentiles of a uniform distribution within hdr precision', () => {

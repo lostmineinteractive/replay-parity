@@ -50,9 +50,11 @@ const agent: AgentReport = {
           },
         },
       ],
+      repeat: 1,
       dedupe_key: 'mismatch:$.total',
       reference: { status: 201, latency_ms: 3 },
       candidate: { status: 201, latency_ms: 4 },
+      latency: null,
       error: null,
       diff: {
         verdict: 'mismatch',

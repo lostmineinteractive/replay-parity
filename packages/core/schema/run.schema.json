@@ -1700,6 +1700,11 @@
                   "additionalProperties": false
                 }
               },
+              "repeat": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50
+              },
               "dedupe_key": {
                 "type": "string",
                 "minLength": 1
@@ -1743,6 +1748,108 @@
                       }
                     },
                     "required": ["status", "latency_ms"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "latency": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "reference": {
+                        "type": "object",
+                        "properties": {
+                          "count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "p50_ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "p90_ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "p99_ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "p999_ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "max_ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "mean_ms": {
+                            "type": "number",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "count",
+                          "p50_ms",
+                          "p90_ms",
+                          "p99_ms",
+                          "p999_ms",
+                          "max_ms",
+                          "mean_ms"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "candidate": {
+                        "type": "object",
+                        "properties": {
+                          "count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "p50_ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "p90_ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "p99_ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "p999_ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "max_ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "mean_ms": {
+                            "type": "number",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "count",
+                          "p50_ms",
+                          "p90_ms",
+                          "p99_ms",
+                          "p999_ms",
+                          "max_ms",
+                          "mean_ms"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "required": ["reference", "candidate"],
                     "additionalProperties": false
                   },
                   {
@@ -1826,9 +1933,11 @@
               "hypothesis",
               "tags",
               "steps",
+              "repeat",
               "dedupe_key",
               "reference",
               "candidate",
+              "latency",
               "error",
               "diff",
               "latency_breach",
