@@ -12,8 +12,11 @@ export {
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_TIME_BUDGET_MS,
   shrink,
+  verifyRecordingHash,
   type AttemptEvent,
   type AttemptPhase,
+  type RecordingHashCheck,
+  type RecordingHashOptions,
   type ShrinkOptions,
   type ShrinkResult,
 } from './shrink.js';

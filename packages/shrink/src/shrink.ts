@@ -3,11 +3,13 @@ import {
   ConfigError,
   emptyRules,
   emptyThresholds,
+  hashRecordingFile,
   isJsonObject,
   type Exchange,
   type JsonValue,
   type Reproduction,
   type ReproductionStep,
+  type Run,
 } from '@replay-parity/core';
 import {
   replayExchanges,
@@ -79,6 +81,44 @@ export interface ShrinkResult {
 
 export const DEFAULT_MAX_ATTEMPTS = 64;
 export const DEFAULT_TIME_BUDGET_MS = 120_000;
+
+export interface RecordingHashCheck {
+  /** The hash the run recorded, or null when it has none. */
+  expected: string | null;
+  /** The hash of the file given. */
+  actual: string;
+  /** True when the run has a hash and it differs from the file's. */
+  mismatch: boolean;
+}
+
+export interface RecordingHashOptions {
+  run: Run;
+  /** Path of the recording the shrink will replay. */
+  recording: string;
+  /** Report a mismatch instead of refusing. Default false. */
+  allowMismatch?: boolean | undefined;
+}
+
+/**
+ * Compares the hash the run recorded with the hash of the recording file,
+ * so a shrink never replays a different file than the run did. A run with
+ * no hash, from an in memory replay or an older rp, is accepted. A mismatch
+ * is a `ConfigError` naming both hashes unless `allowMismatch` is set, in
+ * which case the check is returned for the caller to report.
+ */
+export async function verifyRecordingHash(
+  options: RecordingHashOptions,
+): Promise<RecordingHashCheck> {
+  const expected = options.run.recording.recording_sha256 ?? null;
+  const { sha256: actual } = await hashRecordingFile(options.recording);
+  const mismatch = expected !== null && expected !== actual;
+  if (mismatch && options.allowMismatch !== true) {
+    throw new ConfigError(
+      `${options.recording} is not the recording the run replayed: the run recorded sha256 ${expected} and the file has ${actual}. Pass --allow-recording-mismatch to shrink it anyway.`,
+    );
+  }
+  return { expected, actual, mismatch };
+}
 
 const QUANTITY_FIELDS = ['qty', 'quantity'] as const;
 
