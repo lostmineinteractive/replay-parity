@@ -5,6 +5,7 @@ import {
   matches,
   parsePath,
   renderPath,
+  rowKeyText,
   type Segment,
 } from '../jsonpath/index.js';
 import { bodyKind } from '../recording/body.js';
@@ -78,13 +79,24 @@ function compile(rules: DiffRules): Compiled {
       return {
         segs: parsePath(u.path),
         key,
-        keyLabel: key === undefined ? '' : renderPath(key).slice(1).replace(/^\./, ''),
+        keyLabel: key === undefined ? '' : keyLabelOf(key),
         name: `unordered[${i}]`,
       };
     }),
     statusClasses: rules.status.equivalent,
     headers: rules.headers.compare.map((h) => h.toLowerCase()),
   };
+}
+
+/**
+ * The name shown in a keyed segment: the key's own name when the key path is
+ * one key, as `sku` for `$.sku` and `a b` for `$['a b']`, else the key path
+ * after `$`. The renderer quotes a name that is not an identifier.
+ */
+function keyLabelOf(key: Segment[]): string {
+  const only = key.length === 1 ? key[0] : undefined;
+  if (only?.type === 'key') return only.name;
+  return renderPath(key).slice(1).replace(/^\./, '');
 }
 
 function findRule<T extends { segs: Segment[] }>(
@@ -310,11 +322,17 @@ class BodyWalker {
   }
 }
 
+/**
+ * Groups rows by their key text, which is the value in the keyed segment of
+ * every finding on the row. A row without the key is grouped by its own
+ * canonical JSON behind `#`, as in `#'{"qty":3}'`. Rows that share a text are
+ * compared in order and told apart by the `#n` suffix.
+ */
 function groupByKey(items: JsonValue[], key: Segment[]): Map<string, JsonValue[]> {
   const groups = new Map<string, JsonValue[]>();
   for (const item of items) {
     const value = get(item, key);
-    const keyText = value === undefined ? `#${canonicalJson(item)}` : keyValueText(value);
+    const keyText = value === undefined ? rowKeyText(item) : keyValueText(value);
     const group = groups.get(keyText);
     if (group) {
       group.push(item);

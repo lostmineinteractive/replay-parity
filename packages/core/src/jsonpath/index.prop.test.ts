@@ -1,7 +1,16 @@
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { deepEqual, isJsonObject, type JsonValue } from '../json.js';
-import { get, matches, parsePath, renderPath, select, type Segment } from './index.js';
+import {
+  get,
+  keyValueText,
+  matches,
+  parsePath,
+  renderPath,
+  rowKeyText,
+  select,
+  type Segment,
+} from './index.js';
 
 /**
  * Property based tests for the JSONPath subset. Fixed seed, see
@@ -25,27 +34,8 @@ const indexSegment: fc.Arbitrary<Segment> = fc
   .map((index) => ({ type: 'index', index }));
 const wildcardSegment: fc.Arbitrary<Segment> = fc.constant({ type: 'wildcard' });
 
-/**
- * Keyed segments as the differ renders them for scalar keys that need no
- * quoting: bare strings without `]`, `=`, `#`, whitespace, or quote marks,
- * numbers, booleans, and null.
- */
-const keyedValue = fc.oneof(
-  identName,
-  fc.constant(''),
-  fc.nat({ max: 999 }).map(String),
-  fc.constantFrom('true', 'false', 'null', 'A-100', 'a[b'),
-);
-const keyedSegment: fc.Arbitrary<Segment> = fc
-  .tuple(identName, keyedValue, fc.nat({ max: 3 }))
-  .map(([name, value, dup]) => ({ type: 'keyed', name, value, dup }));
-
 /** Segments a rule may hold. */
 const ruleSegments = fc.array(fc.oneof(keySegment, indexSegment, wildcardSegment), {
-  maxLength: 5,
-});
-/** Segments a concrete finding path may hold. */
-const concreteSegments = fc.array(fc.oneof(keySegment, indexSegment, keyedSegment), {
   maxLength: 5,
 });
 
@@ -64,6 +54,25 @@ const { value: docArb } = fc.letrec<{ value: JsonValue }>((tie) => ({
     fc.dictionary(fc.constantFrom(...KEYS), tie('value'), { maxKeys: 4 }).map((d) => ({ ...d })),
   ),
 }));
+
+/** Key values and rows, with the strings that once broke the keyed segment syntax. */
+const keyedJson: fc.Arbitrary<JsonValue> = fc.oneof(
+  docArb,
+  fc.constantFrom("it's", 'a"b', 'a b', 'a]b', 'a=b', 'a#1', 'back\\slash', '1', 'true', 'null'),
+);
+/**
+ * Keyed segments as the differ renders them: the name is the key's name, bare
+ * or quoted, and the value is the key text of any JSON value, or the row key
+ * text of a row without the key.
+ */
+const keyedValue = fc.oneof(keyedJson.map(keyValueText), keyedJson.map(rowKeyText));
+const keyedSegment: fc.Arbitrary<Segment> = fc
+  .tuple(keyName, keyedValue, fc.nat({ max: 3 }))
+  .map(([name, value, dup]) => ({ type: 'keyed', name, value, dup }));
+/** Segments a concrete finding path may hold. */
+const concreteSegments = fc.array(fc.oneof(keySegment, indexSegment, keyedSegment), {
+  maxLength: 5,
+});
 
 /** Every concrete path in a document, including the root. */
 function concretePaths(value: JsonValue, prefix: Segment[], out: Segment[][]): void {

@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer';
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { canonicalJson, isJsonObject, type JsonObject, type JsonValue } from '../json.js';
-import { parsePath } from '../jsonpath/index.js';
+import { parsePath, renderPath } from '../jsonpath/index.js';
 import type { RecordedResponse } from '../recording/types.js';
 import { DiffRulesSchema, type DiffRules, type DiffRulesInput } from '../rules/schema.js';
 import { jsonResponse, makeResponse } from '../testing.js';
@@ -67,14 +67,14 @@ const toleranceArb = fc
     return { path, abs, rel };
   });
 
+/** Key paths for unordered rules: one identifier, one bracket form name, deeper paths, and the row itself. */
+const keyPath = fc.oneof(
+  identKey.map((k) => `$.${k}`),
+  fc.constantFrom("$['a b']", '$[""]', '$.a.b', '$[0]', '$'),
+);
+
 const unorderedArb = fc
-  .tuple(
-    rulePath,
-    fc.option(
-      identKey.map((k) => `$.${k}`),
-      { nil: undefined },
-    ),
-  )
+  .tuple(rulePath, fc.option(keyPath, { nil: undefined }))
   .map(([path, key]) => (key === undefined ? { path } : { path, key }));
 
 const rulesArb: fc.Arbitrary<DiffRules> = fc
@@ -259,62 +259,45 @@ describe('differ properties', () => {
     );
   });
 
-  it('every body finding path is a concrete path that parsePath accepts, under keyless rules', () => {
-    const keyless = rulesArb.filter((r) => r.unordered.every((u) => u.key === undefined));
+  it('every body finding path reads back as itself through parsePath and renderPath, under any rules', () => {
     fc.assert(
-      fc.property(keyless, jsonValue, jsonValue, (rules, ref, cand) => {
+      fc.property(rulesArb, jsonValue, jsonValue, (rules, ref, cand) => {
         for (const finding of createDiffer(rules).diffBodies(ref, cand)) {
-          expect(() => parsePath(finding.path), finding.path).not.toThrow();
+          expect(renderPath(parsePath(finding.path)), finding.path).toBe(finding.path);
         }
       }),
       params,
     );
   });
 
-  it('every body finding path parses under a keyed rule whose keys are scalars without quote marks', () => {
-    const safeKey: fc.Arbitrary<JsonValue> = fc.oneof(
-      fc.constantFrom('A', 'B', 'A-1', 'a b', 'a=b', 'a#1', 'a]b', ''),
-      fc.integer({ min: -2, max: 2 }),
-      fc.boolean(),
-      fc.constant(null),
+  it('every body finding path under a keyed rule reads back for any key value and for rows without the key', () => {
+    // The key values and key paths that once rendered paths parsePath rejected: a quote
+    // mark, an array, an object with an array, a row without the key that is an array,
+    // and a key path in bracket form.
+    const key: fc.Arbitrary<JsonValue> = fc.oneof(
+      jsonValue,
+      fc.constantFrom("it's", 'a"b', 'a b', 'a=b', 'a#1', 'a]b', '', 'true', '1'),
     );
-    const rows = fc.array(fc.record({ sku: safeKey, qty: jsonValue }), { maxLength: 5 });
+    const row: fc.Arbitrary<JsonValue> = fc.oneof(
+      fc
+        .record({ sku: key, 'a b': key, v: jsonValue }, { requiredKeys: ['v'] })
+        .map((r) => ({ ...r })),
+      jsonValue,
+    );
+    const rows = fc.array(row, { maxLength: 5 });
     fc.assert(
-      fc.property(rows, rows, (ref, cand) => {
-        const rules = DiffRulesSchema.parse({ unordered: [{ path: '$.items', key: '$.sku' }] });
+      fc.property(rows, rows, fc.constantFrom('$.sku', "$['a b']"), (ref, cand, keyPath) => {
+        const rules = DiffRulesSchema.parse({ unordered: [{ path: '$.items', key: keyPath }] });
+        const name = keyPath === '$.sku' ? 'sku' : 'a b';
         for (const finding of createDiffer(rules).diffBodies({ items: ref }, { items: cand })) {
-          expect(() => parsePath(finding.path), finding.path).not.toThrow();
+          const segments = parsePath(finding.path);
+          expect(renderPath(segments), finding.path).toBe(finding.path);
+          expect(segments[1], finding.path).toMatchObject({ type: 'keyed', name });
         }
       }),
       params,
     );
   });
-
-  it.fails(
-    'every body finding path parses under a keyed rule for any key value (known bug)',
-    () => {
-      // Known bug. A keyed segment is rendered as `[name=value]` with the value unescaped,
-      // so a key value holding a quote mark, an array, or an object with an array, a row
-      // without the key that is an array, or a key path that needs the bracket form,
-      // renders a finding path that parsePath rejects. Exact inputs, each under
-      // `unordered: [{ path: "$.items", key: "$.sku" }]` with the `v` field differing:
-      //   { sku: "it's", v }     -> $.items[sku=it's].v        missing "]"
-      //   { sku: 'a"b', v }      -> $.items[sku=a"b].v         missing "]"
-      //   { sku: [1, 2], v }     -> $.items[sku=[1,2]].v       unexpected character "]"
-      //   { sku: { a: [1] }, v } -> $.items[sku={"a":[1]}].v   unexpected character "}"
-      //   items [[]] against []  -> $.items[sku=#[]]           unexpected character "]"
-      // and with key "$['a b']": $.items[["a b"]=X].v          unsupported bracket content.
-      // The seeded run finds `{ path: "$", key: "$.a" }` with reference [[]] and candidate [].
-      fc.assert(
-        fc.property(rulesArb, jsonValue, jsonValue, (rules, ref, cand) => {
-          for (const finding of createDiffer(rules).diffBodies(ref, cand)) {
-            expect(() => parsePath(finding.path), finding.path).not.toThrow();
-          }
-        }),
-        params,
-      );
-    },
-  );
 
   it.fails(
     'a keyed unordered rule tells a number key from the string of its digits (known bug)',

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { JsonValue } from '../json.js';
+import { parsePath, renderPath } from '../jsonpath/index.js';
 import {
   parseDiffRules,
   emptyRules,
@@ -208,6 +209,46 @@ describe('arrays', () => {
     const d = bodies(ref, cand, rules);
     expect(paths(d.findings)).toEqual(['$.items[sku=A].qty', '$.items[sku=A#1].qty']);
     expect(bodies(ref, ref, rules).verdict).toBe('match');
+  });
+
+  it('renders keyed segments that read back for keys the syntax cannot hold bare', () => {
+    const rules = { unordered: [{ path: '$.items', key: '$.sku' }] };
+    const ref = {
+      items: [
+        { sku: "it's", v: 1 },
+        { sku: 'a"b', v: 1 },
+        { sku: [1, 2], v: 1 },
+        { sku: { a: [1] }, v: 1 },
+        { sku: 'a b', v: 1 },
+        { v: 1 },
+      ],
+    };
+    const cand = { items: ref.items.map((row) => ({ ...row, v: 2 })) };
+    const d = bodies(ref, cand, rules);
+    expect(paths(d.findings)).toEqual([
+      '$.items[sku="a b"].v',
+      '$.items[sku="a\\"b"].v',
+      '$.items[sku="it\'s"].v',
+      '$.items[sku=#\'{"v":1}\']',
+      '$.items[sku=#\'{"v":2}\']',
+      "$.items[sku='[1,2]'].v",
+      '$.items[sku=\'{"a":[1]}\'].v',
+    ]);
+    for (const path of paths(d.findings)) {
+      expect(renderPath(parsePath(path)), path).toBe(path);
+    }
+    const bracket = bodies(
+      { items: [{ 'a b': 'X', v: 1 }] },
+      { items: [{ 'a b': 'X', v: 2 }] },
+      { unordered: [{ path: '$.items', key: "$['a b']" }] },
+    );
+    expect(paths(bracket.findings)).toEqual(['$.items["a b"=X].v']);
+    const deep = bodies(
+      { items: [{ k: { id: 'X' }, v: 1 }] },
+      { items: [{ k: { id: 'X' }, v: 2 }] },
+      { unordered: [{ path: '$.items', key: '$.k.id' }] },
+    );
+    expect(paths(deep.findings)).toEqual(['$.items["k.id"=X].v']);
   });
 
   it('nested tolerance rules still apply inside keyed segments', () => {

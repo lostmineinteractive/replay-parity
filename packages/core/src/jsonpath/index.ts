@@ -4,9 +4,20 @@ import { canonicalJson, isJsonObject, type JsonValue } from '../json.js';
  * A small JSONPath subset.
  *
  * Supported in rule paths: `$`, `.name`, `['name']`, `["name"]`, `[n]`, `[*]`, `.*`.
- * Concrete finding paths may also contain keyed segments such as `[sku=A-100]`
- * produced by unordered array comparison. A wildcard in a rule matches a key,
- * an index, or a keyed segment.
+ * Concrete finding paths may also contain keyed segments produced by unordered
+ * array comparison. A keyed segment is `[name=value]`, with `#n` before the
+ * closing bracket for the nth later row that has the same key, as in
+ * `[sku=A-100]` and `[sku=A-100#1]`. The name is bare when it is an identifier
+ * and a JSON string otherwise, as in `["a b"=X]`. The value is the key text
+ * from `keyValueText`, in one of three forms: bare for a plain token such as
+ * `A-100` or `42`, a JSON string in double quotes for any other string, as in
+ * `[sku="it's"]`, and the canonical JSON of an array or object in single
+ * quotes, as in `[sku='[1,2]']`. A row without the key carries `#` and the
+ * row's canonical JSON in single quotes, as in `[sku=#'{"qty":3}']`. The `#n`
+ * suffix is always outside the quotes. The parser returns the value text as
+ * written, so `parsePath(renderPath(segments))` gives the segments back for
+ * every keyed segment the differ produces. A wildcard in a rule matches a
+ * key, an index, or a keyed segment.
  */
 
 export type Segment =
@@ -23,6 +34,10 @@ export class JsonPathError extends Error {
 }
 
 const IDENT = /^[A-Za-z_$][A-Za-z0-9_$-]*$/;
+/** A string key that renders bare: letters, digits, `_`, `$`, and `-`. */
+const BARE_VALUE = /^[A-Za-z0-9_$-]+$/;
+/** What a bare key value may hold when read back: the characters of plain tokens and JSON numbers. */
+const BARE_TOKEN = /^[A-Za-z0-9_$.+-]+$/;
 const cache = new Map<string, Segment[]>();
 
 export function parsePath(path: string): Segment[] {
@@ -93,40 +108,99 @@ function findClosingBracket(path: string, open: number): number {
   return -1;
 }
 
+/** Returns the index of the quote mark that closes the one at `start`. */
+function quoteEnd(path: string, text: string, start: number): number {
+  const quote = text[start] as string;
+  for (let i = start + 1; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '\\') {
+      i += 1;
+    } else if (ch === quote) {
+      return i;
+    }
+  }
+  throw new JsonPathError(path, `unterminated quote in ${JSON.stringify(text)}`);
+}
+
+/** Decodes a quoted name: a JSON string in double quotes, or `\'` and `\\` escapes in single quotes. */
+function unquote(path: string, quoted: string): string {
+  if (quoted.startsWith('"')) {
+    try {
+      return JSON.parse(quoted) as string;
+    } catch {
+      throw new JsonPathError(path, `bad quoted key ${quoted}`);
+    }
+  }
+  return quoted.slice(1, -1).replace(/\\(['\\])/g, '$1');
+}
+
 function parseBracket(path: string, inner: string): Segment {
   const text = inner.trim();
   if (text === '*') return { type: 'wildcard' };
   if (/^(0|[1-9][0-9]*)$/.test(text)) return { type: 'index', index: Number(text) };
-  if (
-    (text.startsWith("'") && text.endsWith("'")) ||
-    (text.startsWith('"') && text.endsWith('"'))
-  ) {
-    if (text.length < 2) throw new JsonPathError(path, 'empty quoted key');
-    const body = text.slice(1, -1);
-    if (text.startsWith('"')) {
-      try {
-        return { type: 'key', name: JSON.parse(text) as string };
-      } catch {
-        throw new JsonPathError(path, `bad quoted key ${text}`);
-      }
+  if (text.startsWith("'") || text.startsWith('"')) {
+    const end = quoteEnd(path, text, 0) + 1;
+    const name = unquote(path, text.slice(0, end));
+    const rest = text.slice(end);
+    if (rest.length === 0) return { type: 'key', name };
+    if (!rest.startsWith('=')) {
+      throw new JsonPathError(path, `unexpected text ${JSON.stringify(rest)} after a quoted key`);
     }
-    return { type: 'key', name: body.replace(/\\(['\\])/g, '$1') };
+    return parseKeyed(path, name, rest.slice(1));
   }
   const eq = text.indexOf('=');
   if (eq > 0) {
     const name = text.slice(0, eq);
-    let value = text.slice(eq + 1);
-    let dup = 0;
-    const dupMatch = /^(.*)#([1-9][0-9]*)$/.exec(value);
-    if (dupMatch) {
-      value = dupMatch[1] as string;
-      dup = Number(dupMatch[2]);
-    }
-    return { type: 'keyed', name, value, dup };
+    if (!IDENT.test(name))
+      throw new JsonPathError(path, `bad key ${JSON.stringify(name)} before "="`);
+    return parseKeyed(path, name, text.slice(eq + 1));
   }
   if (text.includes(':')) throw new JsonPathError(path, 'slices are not supported');
   if (text.startsWith('?')) throw new JsonPathError(path, 'filters are not supported');
   throw new JsonPathError(path, `unsupported bracket content ${JSON.stringify(inner)}`);
+}
+
+/** Checks that a quoted key value decodes: a JSON string in double quotes, or canonical JSON in single quotes. */
+function checkQuotedValue(path: string, quoted: string): void {
+  try {
+    JSON.parse(quoted.startsWith('"') ? quoted : unquote(path, quoted));
+  } catch {
+    throw new JsonPathError(path, `bad quoted key value ${quoted}`);
+  }
+}
+
+/**
+ * Parses what follows `=` in a keyed segment: a bare token, a JSON string in
+ * double quotes, canonical JSON in single quotes, or `#` and canonical JSON in
+ * single quotes for a row without the key, then an optional `#n`.
+ */
+function parseKeyed(path: string, name: string, rest: string): Segment {
+  const start = rest.startsWith('#') ? 1 : 0;
+  let end: number;
+  if (rest[start] === "'" || (start === 0 && rest[start] === '"')) {
+    end = quoteEnd(path, rest, start) + 1;
+    checkQuotedValue(path, rest.slice(start, end));
+  } else if (start === 1) {
+    throw new JsonPathError(
+      path,
+      `a row without the key needs its JSON in single quotes after "#"`,
+    );
+  } else {
+    const hash = rest.indexOf('#');
+    end = hash === -1 ? rest.length : hash;
+    if (!BARE_TOKEN.test(rest.slice(0, end))) {
+      throw new JsonPathError(path, `bad key value ${JSON.stringify(rest.slice(0, end))}`);
+    }
+  }
+  const value = rest.slice(0, end);
+  const suffix = rest.slice(end);
+  let dup = 0;
+  if (suffix.length > 0) {
+    const match = /^#([1-9][0-9]*)$/.exec(suffix);
+    if (!match) throw new JsonPathError(path, `bad duplicate suffix ${JSON.stringify(suffix)}`);
+    dup = Number(match[1]);
+  }
+  return { type: 'keyed', name, value, dup };
 }
 
 export function isValidPath(path: string): boolean {
@@ -138,6 +212,10 @@ export function isValidPath(path: string): boolean {
   }
 }
 
+function renderName(name: string): string {
+  return IDENT.test(name) ? name : JSON.stringify(name);
+}
+
 export function renderSegment(segment: Segment): string {
   switch (segment.type) {
     case 'key':
@@ -147,7 +225,7 @@ export function renderSegment(segment: Segment): string {
     case 'wildcard':
       return '[*]';
     case 'keyed':
-      return `[${segment.name}=${segment.value}${segment.dup > 0 ? `#${segment.dup}` : ''}]`;
+      return `[${renderName(segment.name)}=${segment.value}${segment.dup > 0 ? `#${segment.dup}` : ''}]`;
   }
 }
 
@@ -155,11 +233,30 @@ export function renderPath(segments: readonly Segment[]): string {
   return `$${segments.map(renderSegment).join('')}`;
 }
 
-/** Renders a key value for use inside a keyed segment. */
+/** Wraps canonical JSON in single quotes, with `\` and `'` escaped as `\\` and `\'`. */
+function quoteJson(text: string): string {
+  return `'${text.replace(/[\\']/g, (ch) => `\\${ch}`)}'`;
+}
+
+/**
+ * Renders a key value as the text of a keyed segment. A string made of
+ * letters, digits, `_`, `$`, and `-` renders bare, so `A-100` stays `A-100`,
+ * and any other string renders as a JSON string in double quotes. A number,
+ * a boolean, and null render as their JSON text. An array or an object
+ * renders as its canonical JSON in single quotes, so the array `[1,2]` and
+ * the string `[1,2]` read differently.
+ */
 export function keyValueText(value: JsonValue | undefined): string {
-  if (typeof value === 'string' && !/[\]=#\s]/.test(value)) return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return canonicalJson(value === undefined ? null : value);
+  if (typeof value === 'string') return BARE_VALUE.test(value) ? value : JSON.stringify(value);
+  if (value === undefined || value === null || typeof value !== 'object') {
+    return JSON.stringify(value ?? null);
+  }
+  return quoteJson(canonicalJson(value));
+}
+
+/** The key text of a row that lacks the key: `#` and the row's canonical JSON in single quotes. */
+export function rowKeyText(row: JsonValue): string {
+  return `#${quoteJson(canonicalJson(row))}`;
 }
 
 export interface Match {

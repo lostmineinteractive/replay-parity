@@ -7,6 +7,7 @@ import {
   matches,
   parsePath,
   renderPath,
+  rowKeyText,
   select,
 } from './index.js';
 
@@ -43,6 +44,51 @@ describe('parsePath', () => {
     ]);
   });
 
+  it('parses quoted names, quoted values, and rows without the key in keyed segments', () => {
+    const keyed = (name: string, value: string, dup = 0) => [{ type: 'keyed', name, value, dup }];
+    expect(parsePath('$[sku="it\'s"]')).toEqual(keyed('sku', '"it\'s"'));
+    expect(parsePath('$[sku="a\\"b"#3]')).toEqual(keyed('sku', '"a\\"b"', 3));
+    expect(parsePath('$[sku="[1,2]"]')).toEqual(keyed('sku', '"[1,2]"'));
+    expect(parsePath('$[sku=""]')).toEqual(keyed('sku', '""'));
+    expect(parsePath("$[sku='[1,2]']")).toEqual(keyed('sku', "'[1,2]'"));
+    expect(parsePath('$[sku=\'{"a":"it\\\'s"}\'#2]')).toEqual(
+      keyed('sku', '\'{"a":"it\\\'s"}\'', 2),
+    );
+    expect(parsePath('$[sku=#\'{"qty":3}\']')).toEqual(keyed('sku', '#\'{"qty":3}\''));
+    expect(parsePath("$[sku=#'[]'#1]")).toEqual(keyed('sku', "#'[]'", 1));
+    expect(parsePath("$[sku=#'5']")).toEqual(keyed('sku', "#'5'"));
+    expect(parsePath('$["a b"=X]')).toEqual(keyed('a b', 'X'));
+    expect(parsePath("$['a b'=X#2]")).toEqual(keyed('a b', 'X', 2));
+    expect(parsePath('$[""="x y"]')).toEqual(keyed('', '"x y"'));
+    expect(parsePath('$[n=-1.5e+21]')).toEqual(keyed('n', '-1.5e+21'));
+    expect(parsePath('$[ sku=A ]')).toEqual(keyed('sku', 'A'));
+  });
+
+  it('rejects keyed segments outside the grammar with a clear message', () => {
+    const bad: [string, RegExp][] = [
+      ["$.items[sku=it's].v", /missing "\]"/],
+      ['$.items[sku=a"b].v', /missing "\]"/],
+      ['$.items[sku=[1,2]].v', /bad key value "\[1,2"/],
+      ['$.items[sku={"a":[1]}].v', /bad key value/],
+      ['$[a=#[]]', /needs its JSON in single quotes after "#"/],
+      ['$[a=#1]', /needs its JSON in single quotes after "#"/],
+      ['$[a=#"x"]', /needs its JSON in single quotes after "#"/],
+      ["$[a='{bad']", /bad quoted key value '\{bad'/],
+      ['$[a=]', /bad key value ""/],
+      ['$[a.b=X]', /bad key "a.b" before "="/],
+      ['$[=X]', /unsupported bracket content/],
+      ['$[sku=A#0]', /bad duplicate suffix "#0"/],
+      ['$[sku="A"x]', /bad duplicate suffix "x"/],
+      ['$[sku="a\\qb"]', /bad quoted key value/],
+      ['$["a b"x]', /unexpected text "x" after a quoted key/],
+      ['$["a\\qb"]', /bad quoted key/],
+    ];
+    for (const [path, pattern] of bad) {
+      expect(() => parsePath(path), path).toThrow(JsonPathError);
+      expect(() => parsePath(path), path).toThrow(pattern);
+    }
+  });
+
   it('rejects unsupported syntax with a clear message', () => {
     const bad: [string, RegExp][] = [
       ['items', /must start with \$/],
@@ -74,11 +120,28 @@ describe('renderPath', () => {
     expect(renderPath(parsePath('$.a[0][*].b'))).toBe('$.a[0][*].b');
     expect(renderPath([{ type: 'key', name: 'a b' }])).toBe('$["a b"]');
     expect(renderPath([{ type: 'keyed', name: 'sku', value: 'X', dup: 1 }])).toBe('$[sku=X#1]');
+    expect(renderPath([{ type: 'keyed', name: 'a b', value: '"x y"', dup: 2 }])).toBe(
+      '$["a b"="x y"#2]',
+    );
     expect(renderPath([])).toBe('$');
   });
 
   it('round trips', () => {
-    for (const p of ['$', '$.a.b', '$.items[2].sku', '$["a b"].c', '$.items[sku=A-1].qty']) {
+    for (const p of [
+      '$',
+      '$.a.b',
+      '$.items[2].sku',
+      '$["a b"].c',
+      '$.items[sku=A-1].qty',
+      '$.items[sku="it\'s"].v',
+      '$.items[sku="a\\"b"#1].v',
+      '$.items[sku="[1,2]"].v',
+      "$.items[sku='[1,2]'].v",
+      '$.items[sku=\'{"a":[1]}\'].v',
+      "$[a=#'[]']",
+      '$.items["a b"=X].v',
+      '$[""=""#2]',
+    ]) {
       expect(renderPath(parsePath(p))).toBe(p);
     }
   });
@@ -145,9 +208,37 @@ describe('keyValueText', () => {
     expect(keyValueText('A-100')).toBe('A-100');
     expect(keyValueText(42)).toBe('42');
     expect(keyValueText(true)).toBe('true');
+    expect(keyValueText(null)).toBe('null');
     expect(keyValueText('has space')).toBe('"has space"');
     expect(keyValueText('a=b')).toBe('"a=b"');
-    expect(keyValueText({ k: 1 })).toBe('{"k":1}');
     expect(keyValueText(undefined)).toBe('null');
+  });
+
+  it('quotes every string the keyed segment syntax cannot hold bare and every non scalar', () => {
+    expect(keyValueText("it's")).toBe('"it\'s"');
+    expect(keyValueText('a"b')).toBe('"a\\"b"');
+    expect(keyValueText('a]b')).toBe('"a]b"');
+    expect(keyValueText('a#1')).toBe('"a#1"');
+    expect(keyValueText('a.b')).toBe('"a.b"');
+    expect(keyValueText('')).toBe('""');
+    expect(keyValueText([1, 2])).toBe("'[1,2]'");
+    expect(keyValueText('[1,2]')).toBe('"[1,2]"');
+    expect(keyValueText({ b: [1], a: 'x' })).toBe('\'{"a":"x","b":[1]}\'');
+    expect(keyValueText({ k: 1 })).toBe('\'{"k":1}\'');
+    expect(keyValueText({ a: "it's" })).toBe('\'{"a":"it\\\'s"}\'');
+    expect(keyValueText({ a: 'q"\\' })).toBe(String.raw`'{"a":"q\\"\\\\"}'`);
+    expect(rowKeyText({ qty: 3 })).toBe('#\'{"qty":3}\'');
+    expect(rowKeyText(5)).toBe("#'5'");
+    expect(rowKeyText('abc')).toBe('#\'"abc"\'');
+    for (const value of ["it's", 'a"b', [1, 2], { a: [1] }, { a: "it's" }, '', 'a b']) {
+      const path = `$[k=${keyValueText(value)}#1]`;
+      expect(parsePath(path), path).toEqual([
+        { type: 'keyed', name: 'k', value: keyValueText(value), dup: 1 },
+      ]);
+      const row = `$[k=${rowKeyText(value)}#1]`;
+      expect(parsePath(row), row).toEqual([
+        { type: 'keyed', name: 'k', value: rowKeyText(value), dup: 1 },
+      ]);
+    }
   });
 });
