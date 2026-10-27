@@ -4,30 +4,30 @@
 
 ## Top level
 
-| Field                 | Type                           | Meaning                                                                                    |
-| --------------------- | ------------------------------ | ------------------------------------------------------------------------------------------ |
-| `schema_version`      | `1`                            | Bumped on an incompatible change.                                                          |
-| `run_id`              | ULID                           | Unique per run.                                                                            |
-| `created_at`          | ISO 8601                       | When the run was written.                                                                  |
-| `verdict`             | `pass`, `fail`, `inconclusive` | The outcome, by the precedence rule below.                                                 |
-| `inconclusive`        | array                          | Why the run is inconclusive. Empty otherwise. Each entry has `kind` and `detail`.          |
-| `recording`           | object                         | `path`, `exchanges` in the file, `selected` after filter and limit, `first_ts`, `last_ts`. |
-| `target`              | string                         | The candidate's base URL.                                                                  |
-| `adapter`             | string                         | `http` or `bus`.                                                                           |
-| `pacing`              | object                         | See below.                                                                                 |
-| `warmup`              | integer                        | Leading exchanges that ran but did not count.                                              |
-| `filter`              | object                         | `tag` or null.                                                                             |
-| `limit`               | integer or null                | The cap applied after filtering.                                                           |
-| `duration_ms`         | number                         | From the first send to the last acknowledgement.                                           |
-| `rules`               | object                         | The diff rules that were applied, in full.                                                 |
-| `thresholds`          | object                         | The thresholds that were applied, in full.                                                 |
-| `threshold_results`   | array                          | One row per configured limit. See below.                                                   |
-| `stats`               | object                         | Latency and correctness statistics overall and per tag. See below.                         |
-| `exchanges`           | array                          | One result per selected exchange. See below.                                               |
-| `candidate_recording` | string or null                 | Path of the candidate's observed log when `--candidate-recording` was given.               |
-| `invariants`          | object                         | `reference` and `candidate`, each an invariant report or null.                             |
-| `reproduction`        | object or null                 | Filled by `rp shrink`.                                                                     |
-| `agent`               | object                         | Present after `rp agent`.                                                                  |
+| Field                 | Type                           | Meaning                                                                                                                                                         |
+| --------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schema_version`      | `1`                            | Bumped on an incompatible change.                                                                                                                               |
+| `run_id`              | ULID                           | Unique per run.                                                                                                                                                 |
+| `created_at`          | ISO 8601                       | When the run was written.                                                                                                                                       |
+| `verdict`             | `pass`, `fail`, `inconclusive` | The outcome, by the precedence rule below.                                                                                                                      |
+| `inconclusive`        | array                          | Why the run is inconclusive. Empty otherwise. Each entry has `kind` and `detail`.                                                                               |
+| `recording`           | object                         | `path`, `exchanges` in the file, `selected` after filter, dependencies, and limit, `first_ts`, `last_ts`.                                                       |
+| `target`              | string                         | The candidate's base URL.                                                                                                                                       |
+| `adapter`             | string                         | `http` or `bus`.                                                                                                                                                |
+| `pacing`              | object                         | See below.                                                                                                                                                      |
+| `warmup`              | integer                        | Leading exchanges that ran but did not count.                                                                                                                   |
+| `filter`              | object                         | `tag` or null, `include_dependencies`, and `dependencies`: how many exchanges were pulled in because a filtered exchange uses a substituted value they produce. |
+| `limit`               | integer or null                | The cap applied after filtering.                                                                                                                                |
+| `duration_ms`         | number                         | From the first send to the last acknowledgement.                                                                                                                |
+| `rules`               | object                         | The diff rules that were applied, in full.                                                                                                                      |
+| `thresholds`          | object                         | The thresholds that were applied, in full.                                                                                                                      |
+| `threshold_results`   | array                          | One row per configured limit. See below.                                                                                                                        |
+| `stats`               | object                         | Latency and correctness statistics overall and per tag. See below.                                                                                              |
+| `exchanges`           | array                          | One result per selected exchange. See below.                                                                                                                    |
+| `candidate_recording` | string or null                 | Path of the candidate's observed log when `--candidate-recording` was given.                                                                                    |
+| `invariants`          | object                         | `reference` and `candidate`, each an invariant report or null.                                                                                                  |
+| `reproduction`        | object or null                 | Filled by `rp shrink`.                                                                                                                                          |
+| `agent`               | object                         | Present after `rp agent`.                                                                                                                                       |
 
 Schema versions. `rp` migrates an older run file when it reads one: before validating against the schema, it applies one migration per version step from the file's `schema_version` up to the current one, so a file written by an earlier `rp` still renders and can still be extended by `rp shrink` and `rp agent`. A file whose `schema_version` is higher than the one this `rp` knows is refused with an error saying it was written by a newer version of `rp`, and a file with no integer `schema_version` is refused with an error naming that. The migrations live in `packages/core/src/run/migrate.ts`, one entry per source version in `RUN_MIGRATIONS`; the table is empty while version 1 is current.
 
@@ -41,21 +41,24 @@ The precedence rule: a run level condition makes the run inconclusive even when 
 | `snapshot_before_ack`  | yes       | The final ledger read was sent while an accepted state changing command was still in flight. Reported by the invariants.                      |
 | `schedule_not_held`    | yes       | The largest schedule slip exceeded `pacing.slip_max_ms`.                                                                                      |
 | `control_failed`       | yes       | A harness control errored or answered a different status.                                                                                     |
+| `aborted`              | yes       | The run was stopped by SIGINT or SIGTERM. The detail says how many of the selected exchanges were sent; the rest are left out of `exchanges`. |
 | `insufficient_samples` | no        | A threshold row could not decide: fewer successful samples than `min_samples`, a tag with no samples, nothing compared, or no samples at all. |
 
 ## Pacing
 
-| Field                        | Meaning                                                                                                                    |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `mode`                       | `as-recorded`, `fixed-rate`, or `max`.                                                                                     |
-| `rps`                        | The requested rate under `fixed-rate`, else null.                                                                          |
-| `concurrency`                | Most exchanges in flight at once.                                                                                          |
-| `requested_rps`              | The rate the schedule asked for: the recording's own rate under `as-recorded`, `rps` under `fixed-rate`, null under `max`. |
-| `achieved_rps`               | Selected exchanges divided by the duration.                                                                                |
-| `slip_p50_ms`, `slip_max_ms` | Median and largest of actual send time minus scheduled send time, over non control exchanges.                              |
-| `barrier_tags`               | The barrier tags in effect.                                                                                                |
-| `barrier_timeout_ms`         | The timeout in effect.                                                                                                     |
-| `barrier_waits`              | How many times a barrier found earlier exchanges still in flight.                                                          |
+| Field                        | Meaning                                                                                                                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `mode`                       | `as-recorded`, `fixed-rate`, or `max`.                                                                                                                       |
+| `rps`                        | The requested rate under `fixed-rate`, else null.                                                                                                            |
+| `concurrency`                | Most exchanges in flight at once.                                                                                                                            |
+| `requested_rps`              | The rate the schedule asked for: the recording's own rate over the capped schedule under `as-recorded`, `rps` under `fixed-rate`, null under `max`.          |
+| `achieved_rps`               | Exchanges sent divided by the duration.                                                                                                                      |
+| `slip_p50_ms`, `slip_max_ms` | Median and largest of actual send time minus scheduled send time, over non control exchanges.                                                                |
+| `barrier_tags`               | The barrier tags in effect.                                                                                                                                  |
+| `barrier_timeout_ms`         | The timeout in effect.                                                                                                                                       |
+| `barrier_waits`              | How many times a barrier found earlier exchanges still in flight.                                                                                            |
+| `max_gap_ms`                 | The cap on a recorded gap under `as-recorded`, from `--max-gap-ms` (default 30000). Null when `--max-gap-ms 0` disabled it or the mode has no recorded gaps. |
+| `gaps_capped`                | How many recorded gaps were longer than the cap and were reduced to it.                                                                                      |
 
 ## Threshold rows
 
@@ -67,16 +70,17 @@ Each row has `id` (such as `latency.by_tag.create-order.p99_ms`), `section` (`la
 
 ## Exchange results
 
-| Field                                          | Meaning                                                                                                            |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `id`, `tags`, `method`, `path`                 | From the recording. The path is the recorded one, before substitution.                                             |
-| `warmup`                                       | True for the leading warmup exchanges.                                                                             |
-| `control`                                      | True for a harness control.                                                                                        |
-| `scheduled_at_ms`, `sent_at_ms`, `acked_at_ms` | Milliseconds since the run started. `acked_at_ms` is null on an error.                                             |
-| `reference`                                    | `status` and `latency_ms` from the recording.                                                                      |
-| `candidate`                                    | `status` and `latency_ms` from the replay, or null on an error.                                                    |
-| `error`                                        | `kind: message` on a transport failure, else null. Kinds: `timeout`, `connection`, `aborted`, `protocol`, `other`. |
-| `diff`                                         | `verdict` (`match`, `tolerated`, `mismatch`) and `findings`, or null when not compared.                            |
+| Field                                          | Meaning                                                                                                                                                                                                                       |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`, `tags`, `method`, `path`                 | From the recording. The path is the recorded one, before substitution.                                                                                                                                                        |
+| `warmup`                                       | True for the leading warmup exchanges.                                                                                                                                                                                        |
+| `control`                                      | True for a harness control.                                                                                                                                                                                                   |
+| `dependency`                                   | True for an exchange selected only because a filtered exchange uses a substituted value it produces. Replayed and acknowledged for ordering and substitution, excluded from statistics and thresholds like a warmup exchange. |
+| `scheduled_at_ms`, `sent_at_ms`, `acked_at_ms` | Milliseconds since the run started. `acked_at_ms` is null on an error.                                                                                                                                                        |
+| `reference`                                    | `status` and `latency_ms` from the recording.                                                                                                                                                                                 |
+| `candidate`                                    | `status` and `latency_ms` from the replay, or null on an error.                                                                                                                                                               |
+| `error`                                        | `kind: message` on a transport failure, else null. Kinds: `timeout`, `connection`, `aborted`, `protocol`, `other`.                                                                                                            |
+| `diff`                                         | `verdict` (`match`, `tolerated`, `mismatch`) and `findings`, or null when not compared.                                                                                                                                       |
 
 A finding has `path` (a concrete JSONPath, `status`, or `header:<name>`), `kind` (`status`, `header`, `value`, `type`, `missing`, `unexpected`, `body_too_large`, `body_format`), `tolerated`, and optional `reference`, `candidate`, `rule`, and `detail`.
 
@@ -92,16 +96,16 @@ Each report has `system`, `recording`, `exchanges`, `commands`, `snapshots` (`le
 
 ## Agent
 
-`model`, `rounds`, `max_rounds`, `budget_usd`, `cost_usd`, token counts (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`), `proposed`, `valid`, `executed`, `kept`, `stop_reason` (`no_new_cases`, `budget`, `max_rounds`, `no_valid_cases`, `model_refusal`, `error`), `prompt_versions`, `transcript_path`, `cases_path`, and `cases`. Each kept case has `id`, `round`, `hypothesis`, `tags`, `steps`, `repeat` (how many times the case ran on each system, 1 to 50), `dedupe_key`, `reference` and `candidate` (status and latency of the final step of the first run, or null), `latency` (exact nearest rank percentiles over the runs of each side, in the same shape as a latency summary, or null when a side failed), `error`, `diff`, `latency_breach`, and `revealed`.
+`model`, `rounds`, `max_rounds`, `budget_usd`, `cost_usd`, token counts (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`), `proposed`, `valid`, `executed`, `kept`, `stop_reason` (`no_new_cases`, `budget`, `max_rounds`, `no_valid_cases`, `model_refusal`, `error`, or `aborted` when SIGINT or SIGTERM stopped the loop at a case boundary), `prompt_versions`, `transcript_path`, `cases_path`, and `cases`. Each kept case has `id`, `round`, `hypothesis`, `tags`, `steps`, `repeat` (how many times the case ran on each system, 1 to 50), `dedupe_key`, `reference` and `candidate` (status and latency of the final step of the first run, or null), `latency` (exact nearest rank percentiles over the runs of each side, in the same shape as a latency summary, or null when a side failed), `error`, `diff`, `latency_breach`, and `revealed`.
 
 ## Exit codes
 
-| Code | Meaning                                                 | Commands                     |
-| ---- | ------------------------------------------------------- | ---------------------------- |
-| 0    | pass, or a render, or the agent without a key           | all                          |
-| 2    | fail                                                    | `rp replay`, `rp invariants` |
-| 3    | inconclusive                                            | `rp replay`, `rp invariants` |
-| 1    | tool error: bad flags, a missing file, a bad rules file | all                          |
+| Code | Meaning                                                 | Commands                                                                  |
+| ---- | ------------------------------------------------------- | ------------------------------------------------------------------------- |
+| 0    | pass, or a render, or the agent without a key           | all                                                                       |
+| 2    | fail                                                    | `rp replay`, `rp invariants`                                              |
+| 3    | inconclusive, or stopped by SIGINT or SIGTERM           | `rp replay`, `rp invariants`, and `rp shrink` and `rp agent` when stopped |
+| 1    | tool error: bad flags, a missing file, a bad rules file | all                                                                       |
 
 ## Output formats
 

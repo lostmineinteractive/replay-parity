@@ -2,12 +2,26 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { compileRunValidator, makeExchangeResult, makeRun, type RunValidator } from '../testing.js';
+import {
+  compileRunValidator,
+  fixedUlid,
+  makeExchangeResult,
+  makeRun,
+  type RunValidator,
+} from '../testing.js';
 import { parseThresholds } from '../thresholds/schema.js';
 import { ConfigError } from '../yaml.js';
 import { parseRun, readRun, runJsonSchema, serializeRun, writeRun } from './io.js';
 import type { InvariantReport } from '../invariants/schema.js';
-import { GeneratedCaseSchema, RUN_SCHEMA_VERSION, RunSchema, type AgentReport } from './schema.js';
+import {
+  AgentStopReasonSchema,
+  ExchangeResultSchema,
+  GeneratedCaseSchema,
+  PacingSchema,
+  RUN_SCHEMA_VERSION,
+  RunSchema,
+  type AgentReport,
+} from './schema.js';
 
 let validate: RunValidator;
 
@@ -224,6 +238,43 @@ describe('run model', () => {
     });
     expect(control.stats.overall.count).toBe(0);
     expect(validate(control), validate.errors ?? '').toBe(true);
+  });
+
+  it('records the gap cap, the dependency flag, and the filter settings', () => {
+    const run = makeRun();
+    expect(run.pacing).toMatchObject({ max_gap_ms: 30_000, gaps_capped: 0 });
+    expect(run.filter).toEqual({ tag: null, include_dependencies: true, dependencies: 0 });
+    expect(run.exchanges.every((e) => e.dependency === false)).toBe(true);
+    expect(validate(run), validate.errors ?? '').toBe(true);
+
+    const capped = makeRun({
+      pacing: { ...run.pacing, max_gap_ms: null, gaps_capped: 0 },
+      filter: { tag: 'get-order', include_dependencies: true, dependencies: 2 },
+      exchanges: [
+        makeExchangeResult({ tags: ['create-order'], dependency: true }),
+        makeExchangeResult({ id: fixedUlid(1), tags: ['get-order'] }),
+      ],
+    });
+    expect(RunSchema.parse(capped)).toEqual(capped);
+    expect(validate(capped), validate.errors ?? '').toBe(true);
+    // A dependency exchange is replayed but not counted, like a warmup exchange.
+    expect(capped.stats.overall.count).toBe(1);
+    expect(capped.stats.by_tag['create-order']).toBeUndefined();
+
+    expect(PacingSchema.safeParse({ ...run.pacing, max_gap_ms: 0 }).success).toBe(false);
+    expect(PacingSchema.safeParse({ ...run.pacing, gaps_capped: -1 }).success).toBe(false);
+    const { dependency: _dependency, ...withoutFlag } = makeExchangeResult();
+    expect(ExchangeResultSchema.safeParse(withoutFlag).success).toBe(false);
+    expect(RunSchema.safeParse({ ...run, filter: { tag: null } }).success).toBe(false);
+    expect(validate({ ...run, filter: { tag: null } })).toBe(false);
+  });
+
+  it('accepts a stop by signal as an agent stop reason', () => {
+    expect(AgentStopReasonSchema.safeParse('aborted').success).toBe(true);
+    expect(AgentStopReasonSchema.safeParse('tired').success).toBe(false);
+    const run = makeRun({ agent: { ...agent, stop_reason: 'aborted' } });
+    expect(RunSchema.parse(run)).toEqual(run);
+    expect(validate(run), validate.errors ?? '').toBe(true);
   });
 
   it('serializes and parses', () => {

@@ -34,6 +34,10 @@ export const PacingSchema = z
     barrier_timeout_ms: z.number().positive(),
     /** How many times the engine waited at a barrier. */
     barrier_waits: count,
+    /** The cap on a recorded gap under `as-recorded`. Null when disabled or when the mode has no recorded gaps. */
+    max_gap_ms: z.number().positive().nullable(),
+    /** How many recorded gaps were reduced to the cap. */
+    gaps_capped: count,
   })
   .strict();
 
@@ -53,6 +57,11 @@ export const ExchangeResultSchema = z
     warmup: z.boolean(),
     /** A harness control such as a restart. Replayed in order, shown in sequence, never scored. */
     control: z.boolean(),
+    /**
+     * Pulled in by `--include-dependencies` because a filtered exchange uses a value it
+     * produces. Replayed and acknowledged, excluded from statistics and thresholds.
+     */
+    dependency: z.boolean(),
     scheduled_at_ms: nonneg,
     sent_at_ms: nonneg,
     /** When the candidate's response was fully received. `null` on error. */
@@ -134,6 +143,8 @@ export const AgentStopReasonSchema = z.enum([
   'no_valid_cases',
   'model_refusal',
   'error',
+  /** Stopped by SIGINT or SIGTERM at a case boundary. */
+  'aborted',
 ]);
 
 export const AgentReportSchema = z
@@ -214,7 +225,15 @@ export const RunSchema = z
     adapter: z.string().min(1),
     pacing: PacingSchema,
     warmup: count,
-    filter: z.object({ tag: z.string().nullable() }).strict(),
+    filter: z
+      .object({
+        tag: z.string().nullable(),
+        /** Whether the producers of substituted values were selected along with the tag. */
+        include_dependencies: z.boolean(),
+        /** How many exchanges were pulled in as dependencies. */
+        dependencies: count,
+      })
+      .strict(),
     limit: z.number().int().positive().nullable(),
     duration_ms: nonneg,
     rules: DiffRulesSchema,

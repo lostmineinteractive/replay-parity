@@ -66,6 +66,7 @@ export function makeExchangeResult(over: Partial<ExchangeResult> = {}): Exchange
     path: '/v1/items',
     warmup: false,
     control: false,
+    dependency: false,
     scheduled_at_ms: 0,
     sent_at_ms: 1,
     acked_at_ms: 13,
@@ -117,7 +118,7 @@ export function makeRun(over: Partial<Run> = {}): Run {
   ];
   const collector = new StatsCollector();
   for (const e of exchanges) {
-    if (e.warmup || e.control) continue;
+    if (e.warmup || e.control || e.dependency) continue;
     collector.record({
       tags: e.tags,
       verdict: e.diff?.verdict ?? null,
@@ -138,6 +139,8 @@ export function makeRun(over: Partial<Run> = {}): Run {
     barrier_tags: [],
     barrier_timeout_ms: 10_000,
     barrier_waits: 0,
+    max_gap_ms: 30_000,
+    gaps_capped: 0,
   };
   const evaluation = evaluateThresholds(thresholds, stats, { slip_max_ms: pacing.slip_max_ms });
   const inconclusive = over.inconclusive ?? evaluation.inconclusive;
@@ -159,7 +162,7 @@ export function makeRun(over: Partial<Run> = {}): Run {
     adapter: 'http',
     pacing,
     warmup: 0,
-    filter: { tag: null },
+    filter: { tag: null, include_dependencies: true, dependencies: 0 },
     limit: null,
     duration_ms: 300,
     rules: emptyRules(),

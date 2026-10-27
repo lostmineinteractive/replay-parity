@@ -22,6 +22,8 @@ export const InconclusiveKindSchema = z.enum([
   'control_failed',
   /** A threshold row had fewer successful samples than its minimum. */
   'insufficient_samples',
+  /** The run was stopped by SIGINT or SIGTERM before every selected exchange was sent. */
+  'aborted',
 ]);
 
 export const InconclusiveConditionSchema = z
@@ -45,6 +47,7 @@ export const RUN_LEVEL_INCONCLUSIVE_KINDS: ReadonlySet<InconclusiveKind> =
     'snapshot_before_ack',
     'schedule_not_held',
     'control_failed',
+    'aborted',
   ]);
 
 export interface VerdictInput {

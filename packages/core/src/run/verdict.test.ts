@@ -72,6 +72,24 @@ describe('decideVerdict', () => {
     expect(EXIT_CODES.error).toBe(1);
   });
 
+  it('treats a stop by signal as a run level condition', () => {
+    expect(InconclusiveConditionSchema.safeParse({ kind: 'aborted', detail: 'x' }).success).toBe(
+      true,
+    );
+    expect(RUN_LEVEL_INCONCLUSIVE_KINDS.has('aborted')).toBe(true);
+    expect(
+      decideVerdict({
+        threshold_results: [row('fail')],
+        inconclusive: [{ kind: 'aborted', detail: 'stopped by signal after 3 of 10 exchanges' }],
+      }),
+    ).toBe('inconclusive');
+    expect(
+      exitCodeFor(
+        decideVerdict({ threshold_results: [], inconclusive: [{ kind: 'aborted', detail: 'x' }] }),
+      ),
+    ).toBe(3);
+  });
+
   it('rejects unknown condition kinds', () => {
     expect(InconclusiveConditionSchema.safeParse({ kind: 'tired', detail: 'x' }).success).toBe(
       false,

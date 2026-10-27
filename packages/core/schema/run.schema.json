@@ -34,7 +34,8 @@
               "snapshot_before_ack",
               "schedule_not_held",
               "control_failed",
-              "insufficient_samples"
+              "insufficient_samples",
+              "aborted"
             ]
           },
           "detail": {
@@ -159,6 +160,22 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
+        },
+        "max_gap_ms": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gaps_capped": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       },
       "required": [
@@ -171,7 +188,9 @@
         "slip_max_ms",
         "barrier_tags",
         "barrier_timeout_ms",
-        "barrier_waits"
+        "barrier_waits",
+        "max_gap_ms",
+        "gaps_capped"
       ],
       "additionalProperties": false
     },
@@ -185,9 +204,17 @@
       "properties": {
         "tag": {
           "type": ["string", "null"]
+        },
+        "include_dependencies": {
+          "type": "boolean"
+        },
+        "dependencies": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       },
-      "required": ["tag"],
+      "required": ["tag", "include_dependencies", "dependencies"],
       "additionalProperties": false
     },
     "limit": {
@@ -942,6 +969,9 @@
           "control": {
             "type": "boolean"
           },
+          "dependency": {
+            "type": "boolean"
+          },
           "scheduled_at_ms": {
             "type": "number",
             "minimum": 0
@@ -1071,6 +1101,7 @@
           "path",
           "warmup",
           "control",
+          "dependency",
           "scheduled_at_ms",
           "sent_at_ms",
           "acked_at_ms",
@@ -1210,7 +1241,8 @@
                           "snapshot_before_ack",
                           "schedule_not_held",
                           "control_failed",
-                          "insufficient_samples"
+                          "insufficient_samples",
+                          "aborted"
                         ]
                       },
                       "detail": {
@@ -1362,7 +1394,8 @@
                           "snapshot_before_ack",
                           "schedule_not_held",
                           "control_failed",
-                          "insufficient_samples"
+                          "insufficient_samples",
+                          "aborted"
                         ]
                       },
                       "detail": {
@@ -1560,7 +1593,8 @@
             "max_rounds",
             "no_valid_cases",
             "model_refusal",
-            "error"
+            "error",
+            "aborted"
           ]
         },
         "prompt_versions": {
