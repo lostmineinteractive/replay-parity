@@ -10,6 +10,7 @@ import {
   encodeBody,
   isJsonContentType,
   parseContentEncoding,
+  truncatedBodyFields,
   wireBody,
 } from './body.js';
 
@@ -69,6 +70,40 @@ describe('encodeBody', () => {
     expect(DEFAULT_MAX_BODY_BYTES).toBe(1_048_576);
     const big = Buffer.alloc(DEFAULT_MAX_BODY_BYTES + 1, 'y');
     expect(encodeBody(big, 'text/plain').truncated).toBe(true);
+  });
+});
+
+describe('truncatedBodyFields', () => {
+  it('notes the codings it could have undone and nothing for an unknown or absent coding', () => {
+    const sha = 'a'.repeat(64);
+    expect(truncatedBodyFields(sha, 9)).toEqual({
+      truncated: true,
+      body_sha256: sha,
+      body_size: 9,
+    });
+    expect(truncatedBodyFields(sha, 9, 'identity')).toEqual({
+      truncated: true,
+      body_sha256: sha,
+      body_size: 9,
+    });
+    expect(truncatedBodyFields(sha, 9, 'zstd')).toEqual({
+      truncated: true,
+      body_sha256: sha,
+      body_size: 9,
+    });
+    expect(truncatedBodyFields(sha, 9, 'x-gzip, BR')).toEqual({
+      truncated: true,
+      body_sha256: sha,
+      body_size: 9,
+      content_encoding: 'gzip, br',
+    });
+  });
+
+  it('matches what encodeBody stores for a compressed body over the cap', () => {
+    const wire = gzipSync(Buffer.alloc(5000, 'x'));
+    expect(encodeBody(wire, 'text/plain', 1000, 'gzip')).toEqual(
+      truncatedBodyFields(sha256Hex(wire), wire.length, 'gzip'),
+    );
   });
 });
 

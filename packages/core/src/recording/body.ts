@@ -132,6 +132,25 @@ function truncatedFields(wire: Buffer): BodyFields {
   return { truncated: true, body_sha256: sha256Hex(wire), body_size: wire.byteLength };
 }
 
+/**
+ * The fields for a body stored as its hash and size. The hash and size
+ * describe the bytes as received. The codings named by `contentEncoding` are
+ * noted when this module could have undone them, which is how `encodeBody`
+ * notes a compressed body over the cap. A recorder that hashes while
+ * streaming and stops keeping bytes past the cap uses this to store what it
+ * saw without holding the body.
+ */
+export function truncatedBodyFields(
+  bodySha256: string,
+  bodySize: number,
+  contentEncoding?: string,
+): BodyFields {
+  const fields: BodyFields = { truncated: true, body_sha256: bodySha256, body_size: bodySize };
+  const codings = parseContentEncoding(contentEncoding);
+  if (codings === null || codings.length === 0) return fields;
+  return { ...fields, content_encoding: codings.join(', ') };
+}
+
 function storeDecoded(bytes: Buffer, contentType: string | undefined): BodyFields {
   if (bytes.byteLength === 0) return {};
   if (isJsonContentType(contentType)) {
@@ -176,10 +195,14 @@ export function encodeBody(
   try {
     decoded = decodeContentEncoding(wire, codings, maxBytes);
   } catch (err) {
-    if (isTooLarge(err)) return { ...truncatedFields(wire), content_encoding: noted };
+    if (isTooLarge(err)) {
+      return truncatedBodyFields(sha256Hex(wire), wire.byteLength, contentEncoding);
+    }
     return storeAsReceived(wire, contentType, maxBytes);
   }
-  if (decoded.byteLength > maxBytes) return { ...truncatedFields(wire), content_encoding: noted };
+  if (decoded.byteLength > maxBytes) {
+    return truncatedBodyFields(sha256Hex(wire), wire.byteLength, contentEncoding);
+  }
   const fields = storeDecoded(decoded, contentType);
   if (fields.body === undefined) return fields;
   return { ...fields, content_encoding: noted };
