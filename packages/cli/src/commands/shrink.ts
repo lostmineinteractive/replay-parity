@@ -12,6 +12,7 @@ import {
   defaultRule,
   parseRule,
   shrink,
+  verifyRecordingHash,
 } from '@replay-parity/shrink';
 import { Command, Option } from 'commander';
 import { err, out, type CliStreams } from '../io.js';
@@ -31,6 +32,7 @@ export interface ShrinkCommandOptions {
   headersFile?: string;
   barrierTag: string[];
   timeoutMs: number;
+  allowRecordingMismatch: boolean;
 }
 
 export async function runShrink(
@@ -39,6 +41,18 @@ export async function runShrink(
   signal?: AbortSignal,
 ): Promise<number> {
   const run = await readRun(options.run);
+  // The run names the file it replayed by hash. A different file is refused unless asked.
+  const check = await verifyRecordingHash({
+    run,
+    recording: options.recording,
+    allowMismatch: options.allowRecordingMismatch,
+  });
+  if (check.mismatch) {
+    err(
+      streams,
+      `warning: ${options.recording} has sha256 ${check.actual}, the run recorded ${check.expected}; shrinking it anyway`,
+    );
+  }
   const exchanges = await readRecording(options.recording);
   const rules = options.rules === undefined ? run.rules : await loadDiffRules(options.rules);
   const rule = options.rule === undefined ? defaultRule(run) : parseRule(options.rule);
@@ -127,6 +141,11 @@ export function shrinkCommand(
     .option('--barrier-tag <tag>', 'barrier tag kept for every attempt, repeatable', collect, [])
     .addOption(
       new Option('--timeout-ms <n>', 'request timeout').default(30_000).argParser(positiveInt),
+    )
+    .option(
+      '--allow-recording-mismatch',
+      'shrink even when the recording hash differs from the one the run recorded',
+      false,
     )
     .action(async (opts: ShrinkCommandOptions) => {
       exit(await runShrink(opts, streams, signal));

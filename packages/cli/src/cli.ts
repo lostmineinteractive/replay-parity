@@ -7,6 +7,7 @@ import { CommanderError, Command, InvalidArgumentError } from 'commander';
 import { agentCommand } from './commands/agent.js';
 import { captureCommand } from './commands/capture.js';
 import { invariantsCommand } from './commands/invariants.js';
+import { recordingCommand } from './commands/recording.js';
 import { replayCommand } from './commands/replay.js';
 import { reportCommand } from './commands/report.js';
 import { shrinkCommand } from './commands/shrink.js';
@@ -59,6 +60,7 @@ export function buildProgram(
   program.addCommand(invariantsCommand(streams, exit));
   program.addCommand(shrinkCommand(streams, signal, exit));
   program.addCommand(agentCommand(streams, signal, exit));
+  program.addCommand(recordingCommand(streams, exit));
   for (const sub of program.commands) {
     sub.configureOutput({
       writeOut: (text) => {
