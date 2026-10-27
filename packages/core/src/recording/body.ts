@@ -19,6 +19,11 @@ import { sha256Hex, type JsonValue } from '../json.js';
  * decoded first and stored by the same rules, with the coding noted in
  * `content_encoding`, so two systems that compress differently compare equal
  * when their decoded bodies are equal. The cap applies to the decoded size.
+ * Under stacked codings such as `gzip, br` it applies to the final decoded
+ * size only: an intermediate layer, such as the gzip inside the br, may be as
+ * large as it needs to be up to a safety limit of 64 times the cap and at
+ * least 16 MiB, so a small body is never truncated for the size of its inner
+ * layer while a decompression bomb still stops and is stored as truncated.
  * A coding this module cannot undo, or data that does not decode, is stored
  * as the bytes received with no note.
  */
@@ -92,19 +97,29 @@ function undo(bytes: Buffer, coding: ContentCoding, maxOutputLength: number): Bu
   }
 }
 
+/** The least room an intermediate coding layer gets, whatever the cap. */
+const MIN_LAYER_BYTES = 16 * 1024 * 1024;
+/** How many times the cap an intermediate coding layer may reach. */
+const LAYER_CAP_FACTOR = 64;
+
 /**
  * Undoes the codings, last applied first. Throws on data that does not
  * decode, and throws an error with code `ERR_BUFFER_TOO_LARGE` when the
- * output would exceed `maxBytes`.
+ * decoded output would exceed `maxBytes`. Only the final layer is held to
+ * `maxBytes`. An intermediate layer may reach 64 times the cap and at least
+ * 16 MiB, so a small body under a stacked coding is not reported as
+ * truncated for the size of its inner layer while a decompression bomb
+ * still stops.
  */
 export function decodeContentEncoding(
   bytes: Buffer,
   codings: readonly ContentCoding[],
   maxBytes: number,
 ): Buffer {
+  const layerLimit = Math.max(maxBytes * LAYER_CAP_FACTOR, MIN_LAYER_BYTES);
   let out = bytes;
   for (let i = codings.length - 1; i >= 0; i -= 1) {
-    out = undo(out, codings[i] as ContentCoding, maxBytes + 1);
+    out = undo(out, codings[i] as ContentCoding, i === 0 ? maxBytes + 1 : layerLimit);
   }
   return out;
 }

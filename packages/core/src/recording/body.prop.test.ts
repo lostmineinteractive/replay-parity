@@ -125,40 +125,44 @@ describe('encodeBody and decodeBody properties', () => {
 
   it('a coded body stores the same body as the plain bytes, with the coding noted', () => {
     fc.assert(
-      fc.property(bytesArb, anyContentType, codingArb, (bytes, contentType, coding) => {
-        // A stacked coding needs room for its inner gzip layer under the cap. See the
-        // known bug below.
-        const cap = bytes.byteLength + (coding === 'gzip, br' ? 64 : 16);
-        const plain = encodeBody(bytes, contentType, cap);
-        const coded = encodeBody(encode(bytes, coding), contentType, cap, coding);
-        expect(withoutNote(coded)).toEqual(plain);
-        expect(coded.content_encoding).toBe(plain.body === undefined ? undefined : coding);
-        if (coded.body !== undefined) {
-          // The wire form carries the coding again and undoes to the stored bytes.
-          const codings = parseContentEncoding(coding) as ContentCoding[];
-          const wire = wireBody(coded) as Buffer;
-          expect(decodeContentEncoding(wire, codings, cap)).toEqual(decodeBody(coded));
-        }
-      }),
+      fc.property(
+        bytesArb,
+        anyContentType,
+        codingArb,
+        fc.nat({ max: 32 }),
+        (bytes, contentType, coding, slack) => {
+          // The cap applies to the decoded size only, so a stacked coding needs no room
+          // for its inner layer: the cap may sit exactly at the byte length.
+          const cap = bytes.byteLength + slack;
+          const plain = encodeBody(bytes, contentType, cap);
+          const coded = encodeBody(encode(bytes, coding), contentType, cap, coding);
+          expect(withoutNote(coded)).toEqual(plain);
+          expect(coded.content_encoding).toBe(plain.body === undefined ? undefined : coding);
+          if (coded.body !== undefined) {
+            // The wire form carries the coding again and undoes to the stored bytes.
+            const codings = parseContentEncoding(coding) as ContentCoding[];
+            const wire = wireBody(coded) as Buffer;
+            expect(decodeContentEncoding(wire, codings, cap)).toEqual(decodeBody(coded));
+          }
+        },
+      ),
       params,
     );
   });
 
-  it.fails(
-    'a stacked coding stores the same body as a single coding at the same cap (known bug)',
-    () => {
-      // Known bug. decodeContentEncoding bounds every layer by the cap, not only the final
-      // decoded size, so a stacked coding whose inner layer is larger than the cap is
-      // truncated although the decoded body fits. Exact input: ten bytes of "x" with cap 10.
-      // Under `gzip` the body is stored; under `gzip, br` the result is truncated with the
-      // hash of the 27 wire bytes. The seeded property finds it with empty bytes and cap 16.
-      const ten = Buffer.alloc(10, 'x');
-      const single = encodeBody(gzipSync(ten), 'text/plain', 10, 'gzip');
-      const stacked = encodeBody(brotliCompressSync(gzipSync(ten)), 'text/plain', 10, 'gzip, br');
-      expect(single.truncated).toBeUndefined();
-      expect(withoutNote(stacked)).toEqual(withoutNote(single));
-    },
-  );
+  it('a stacked coding stores the same body as a single coding at the same cap', () => {
+    // decodeContentEncoding once bounded every layer by the cap, not only the final
+    // decoded size, so a stacked coding whose inner layer was larger than the cap was
+    // truncated although the decoded body fit. Exact input: ten bytes of "x" with cap 10.
+    // Under `gzip` the body was stored; under `gzip, br` the result was truncated with
+    // the hash of the 27 wire bytes. The seeded property found it with empty bytes and
+    // cap 16. Only the final layer is held to the cap now.
+    const ten = Buffer.alloc(10, 'x');
+    const single = encodeBody(gzipSync(ten), 'text/plain', 10, 'gzip');
+    const stacked = encodeBody(brotliCompressSync(gzipSync(ten)), 'text/plain', 10, 'gzip, br');
+    expect(single.truncated).toBeUndefined();
+    expect(withoutNote(stacked)).toEqual(withoutNote(single));
+  });
 
   it('a body over the cap is truncated with the hash and size of the bytes received', () => {
     const cases = nonEmptyBytes.chain((bytes) =>

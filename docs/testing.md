@@ -47,13 +47,15 @@ fc.assert(property, { seed: 20261027, path: '30:0:3:1:1:1:1:2:2:2', endOnFailure
 
 With the path given, fast-check skips straight to the failing case. Add `verbose: true` to see every failing value met during shrinking. The seed is fixed in each file, so the same run on any machine draws the same inputs, and the counterexample can be copied into an example based test once the cause is understood. To search more widely on a local machine, raise `numRuns` or drop the seed for one run and note the seed fast-check prints.
 
-### Known bugs recorded as expected failures
+### Defects the properties found
 
-Three properties found defects that are recorded as `it.fails` tests with the exact inputs in a comment. They pass while the defect is present and fail once it is fixed, which is the signal to turn them into plain tests.
+The first run of the properties found three defects, each recorded as an `it.fails` test with the exact inputs in a comment until it was fixed. All three are fixed and the tests are plain tests now, kept as regression examples beside the widened properties.
 
-- `diff.prop.test.ts`: a keyed unordered rule renders key values unescaped into `[name=value]`, so a key holding a quote mark, an array, or an object with an array, a row without the key that is an array, or a key path in bracket form, produces a finding path `parsePath` rejects. The seeded run finds rule `{ path: "$", key: "$.a" }` with reference `[[]]` and candidate `[]`, which renders `$[a=#[]]`.
-- `diff.prop.test.ts`: `keyValueText` renders the number `1` and the string `"1"` as the same text, so rows `{ sku: 1 }` and `{ sku: "1" }` share a group and a permutation of them is a type mismatch.
-- `body.prop.test.ts`: `decodeContentEncoding` bounds every coding layer by the cap, so ten bytes under `gzip, br` with cap 10 are truncated while the same ten bytes under `gzip` alone are stored.
+- `diff.prop.test.ts`: a keyed unordered rule rendered key names and values unescaped into `[name=value]`, so a key holding a quote mark, an array, or an object produced a finding path `parsePath` rejected. Keyed segments now quote every form that the bare syntax cannot hold, and every finding path reads back as itself.
+- `diff.prop.test.ts`: `keyValueText` rendered the number `1` and the string `"1"` as the same text, so rows keyed by each shared a group. A string now renders bare only when it looks like an identifier, so the two differ.
+- `body.prop.test.ts`: `decodeContentEncoding` bounded every coding layer by the cap, so a small body under `gzip, br` was truncated. Only the final decoded size is held to the cap; inner layers get a generous bound that still stops a decompression bomb.
+
+A property that fails again prints its seed and path; see the section above to reproduce it.
 
 ## Chaos tests
 

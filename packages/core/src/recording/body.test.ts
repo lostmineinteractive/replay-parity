@@ -7,6 +7,7 @@ import {
   bodyFieldsOf,
   bodyKind,
   decodeBody,
+  decodeContentEncoding,
   encodeBody,
   isJsonContentType,
   parseContentEncoding,
@@ -169,6 +170,37 @@ describe('content codings', () => {
       body: { a: [1, 2] },
       content_encoding: 'gzip, br',
     });
+  });
+
+  it('holds only the final decoded size to the cap under stacked codings', () => {
+    // The gzip layer inside `gzip, br` is larger than the ten byte cap; the body is not.
+    const ten = Buffer.alloc(10, 'x');
+    const inner = gzipSync(ten);
+    expect(inner.length).toBeGreaterThan(10);
+    const wire = brotliCompressSync(inner);
+    expect(encodeBody(wire, 'text/plain', 10, 'gzip, br')).toEqual({
+      body: ten.toString('base64'),
+      encoding: 'base64',
+      content_encoding: 'gzip, br',
+    });
+    expect(encodeBody(wire, 'text/plain', 9, 'gzip, br')).toEqual(
+      truncatedBodyFields(sha256Hex(wire), wire.length, 'gzip, br'),
+    );
+  });
+
+  it('stops an intermediate layer over 16 MiB under a small cap and stores the body as truncated', () => {
+    const bomb = Buffer.alloc(16 * 1024 * 1024 + 1);
+    const wire = brotliCompressSync(gzipSync(bomb));
+    let code: unknown;
+    try {
+      decodeContentEncoding(wire, ['gzip', 'br'], 10);
+    } catch (err) {
+      code = (err as { code?: unknown }).code;
+    }
+    expect(code).toBe('ERR_BUFFER_TOO_LARGE');
+    expect(encodeBody(wire, 'text/plain', 10, 'gzip, br')).toEqual(
+      truncatedBodyFields(sha256Hex(wire), wire.length, 'gzip, br'),
+    );
   });
 
   it('treats identity as no coding', () => {
