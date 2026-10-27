@@ -10,6 +10,7 @@ import {
   emptyRules,
   emptyThresholds,
   evaluateThresholds,
+  hashRecordingFile,
   mergeHeaders,
   readRecording,
   ulid,
@@ -216,10 +217,19 @@ export type ReplayExchangesOptions = Omit<ReplayOptions, 'recording'> & {
   recording?: string | undefined;
 };
 
-/** Reads the recording and replays it. */
+/**
+ * Reads the recording and replays it. The file is hashed in a second
+ * streaming pass alongside the read, and the hash is recorded in the run as
+ * `recording.recording_sha256` so `rp shrink` can tell the file apart from
+ * another one.
+ */
 export async function replay(options: ReplayOptions): Promise<Run> {
-  const all = await readRecording(options.recording);
-  return replayExchanges(all, options);
+  const [all, hash] = await Promise.all([
+    readRecording(options.recording),
+    hashRecordingFile(options.recording),
+  ]);
+  const run = await replayExchanges(all, options);
+  return { ...run, recording: { ...run.recording, recording_sha256: hash.sha256 } };
 }
 
 /** Replays exchanges held in memory. Used by `replay` and by shrinking, which replays per attempt. */
