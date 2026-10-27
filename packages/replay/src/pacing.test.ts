@@ -5,17 +5,48 @@ describe('buildSchedule', () => {
   const offsets = [120, 150, 400, 400, 1000];
 
   it('keeps recorded gaps relative to the first selected exchange', () => {
-    expect(buildSchedule(offsets, 'as-recorded', null)).toEqual([0, 30, 280, 280, 880]);
+    expect(buildSchedule(offsets, 'as-recorded', null)).toEqual({
+      times: [0, 30, 280, 280, 880],
+      gapsCapped: 0,
+    });
   });
 
-  it('spaces sends evenly at a fixed rate', () => {
-    expect(buildSchedule(offsets, 'fixed-rate', 50)).toEqual([0, 20, 40, 60, 80]);
+  it('reduces every gap above the cap to the cap and counts them', () => {
+    expect(buildSchedule(offsets, 'as-recorded', null, 100)).toEqual({
+      times: [0, 30, 130, 130, 230],
+      gapsCapped: 2,
+    });
+    // A cap no gap reaches changes nothing.
+    expect(buildSchedule(offsets, 'as-recorded', null, 600)).toEqual({
+      times: [0, 30, 280, 280, 880],
+      gapsCapped: 0,
+    });
+    // A gap equal to the cap is kept.
+    expect(buildSchedule([0, 250, 500], 'as-recorded', null, 250)).toEqual({
+      times: [0, 250, 500],
+      gapsCapped: 0,
+    });
+    expect(buildSchedule([0, 600_000, 600_010], 'as-recorded', null, 30_000)).toEqual({
+      times: [0, 30_000, 30_010],
+      gapsCapped: 1,
+    });
+    expect(() => buildSchedule(offsets, 'as-recorded', null, 0)).toThrow(RangeError);
+  });
+
+  it('spaces sends evenly at a fixed rate and ignores the cap', () => {
+    expect(buildSchedule(offsets, 'fixed-rate', 50, 10)).toEqual({
+      times: [0, 20, 40, 60, 80],
+      gapsCapped: 0,
+    });
     expect(() => buildSchedule(offsets, 'fixed-rate', null)).toThrow(RangeError);
   });
 
   it('has no schedule under max', () => {
-    expect(buildSchedule(offsets, 'max', null)).toEqual([0, 0, 0, 0, 0]);
-    expect(buildSchedule([], 'as-recorded', null)).toEqual([]);
+    expect(buildSchedule(offsets, 'max', null, 10)).toEqual({
+      times: [0, 0, 0, 0, 0],
+      gapsCapped: 0,
+    });
+    expect(buildSchedule([], 'as-recorded', null)).toEqual({ times: [], gapsCapped: 0 });
   });
 });
 
@@ -26,6 +57,12 @@ describe('requestedRps', () => {
     expect(requestedRps([5, 5], 'as-recorded', null)).toBeNull();
     expect(requestedRps([0, 1], 'fixed-rate', 25)).toBe(25);
     expect(requestedRps([0, 1], 'max', null)).toBeNull();
+  });
+
+  it('follows the capped schedule', () => {
+    const { times } = buildSchedule([0, 100, 50_100, 50_200], 'as-recorded', null, 100);
+    expect(times).toEqual([0, 100, 200, 300]);
+    expect(requestedRps(times, 'as-recorded', null)).toBe(10);
   });
 });
 

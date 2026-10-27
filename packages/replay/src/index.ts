@@ -12,11 +12,18 @@ export {
   pathWithQuery,
   type HttpAdapterOptions,
 } from './http-adapter.js';
-export { buildSchedule, requestedRps, summarizeSlip, type SlipSummary } from './pacing.js';
+export {
+  buildSchedule,
+  requestedRps,
+  summarizeSlip,
+  type Schedule,
+  type SlipSummary,
+} from './pacing.js';
 export { DependencyIndex, SubstitutionTable } from './substitutions.js';
 export {
   DEFAULT_BARRIER_TIMEOUT_MS,
   DEFAULT_CONCURRENCY,
+  DEFAULT_MAX_GAP_MS,
   replay,
   replayExchanges,
   type ReplayExchangesOptions,

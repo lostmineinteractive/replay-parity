@@ -13,6 +13,7 @@ import {
   parseDiffRules,
   parseRecordingText,
   parseThresholds,
+  readRecording,
   type Exchange,
   type RecordedRequest,
   type RecordedResponse,
@@ -314,9 +315,72 @@ describe('selection, warmup, and pacing', () => {
       false,
     ]);
     expect(run.stats.overall.count).toBe(7);
-    expect(run.filter).toEqual({ tag: 'list-inventory' });
+    expect(run.filter).toEqual({
+      tag: 'list-inventory',
+      include_dependencies: true,
+      dependencies: 0,
+    });
     expect(run.limit).toBe(10);
     expect(run.warmup).toBe(3);
+  });
+
+  it('pulls in the producers of substituted values under a filter and does not count them', async () => {
+    const { url } = await startCandidate('off');
+    const run = await demoRun(url, { filterTag: 'get-order' });
+    const reads = run.exchanges.filter((e) => !e.dependency);
+    const pulled = run.exchanges.filter((e) => e.dependency);
+    expect(reads).toHaveLength(109);
+    expect(reads.every((e) => e.tags.includes('get-order'))).toBe(true);
+    expect(pulled).toHaveLength(44);
+    expect(pulled.every((e) => e.tags.includes('create-order'))).toBe(true);
+    expect(run.filter).toEqual({ tag: 'get-order', include_dependencies: true, dependencies: 44 });
+    expect(run.recording.selected).toBe(153);
+    expect(run.exchanges).toHaveLength(153);
+    // Recording order is kept across the two groups.
+    const position = new Map((await readRecording(RECORDING)).map((e, i) => [e.id, i]));
+    const positions = run.exchanges.map((e) => position.get(e.id) as number);
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+    // Dependencies are replayed and acknowledged but not counted, like warmup exchanges.
+    expect(run.stats.overall.count).toBe(109);
+    expect(Object.keys(run.stats.by_tag)).toEqual(['get-order']);
+    expect(pulled.every((e) => e.candidate?.status === 201 && e.acked_at_ms !== null)).toBe(true);
+    // Every id the reads use now resolves, so no read mismatches on its id or its status.
+    const findings = reads.flatMap((e) => e.diff?.findings.filter((f) => !f.tolerated) ?? []);
+    expect(findings.some((f) => f.path === 'status' || f.path === '$.order_id')).toBe(false);
+    // The reads that followed a shipment, a cancel, or a quantity change in the recording
+    // still differ on those lifecycle fields, since nothing they use is a substituted value.
+    const lifecycle = new Set([
+      '$.status',
+      '$.shipped',
+      '$.remaining',
+      '$.canceled_at',
+      '$.canceled_unshipped',
+      '$.items[0].qty',
+      '$.quantity',
+      '$.total',
+    ]);
+    expect(findings.every((f) => lifecycle.has(f.path))).toBe(true);
+    expect(run.stats.overall.mismatches).toBe(27);
+    expect(validate(run), validate.errors ?? '').toBe(true);
+
+    // Without the producers every known id is unknown to the candidate.
+    const fresh = await startCandidate('off');
+    const bare = await demoRun(fresh.url, { filterTag: 'get-order', includeDependencies: false });
+    expect(bare.filter).toEqual({ tag: 'get-order', include_dependencies: false, dependencies: 0 });
+    expect(bare.exchanges).toHaveLength(109);
+    expect(bare.exchanges.every((e) => !e.dependency)).toBe(true);
+    const unknownIds = bare.exchanges.filter((e) => e.reference.status === 404).length;
+    expect(
+      bare.exchanges.filter((e) =>
+        e.diff?.findings.some((f) => f.path === 'status' && !f.tolerated),
+      ),
+    ).toHaveLength(109 - unknownIds);
+
+    // A limit applies to the filtered exchanges before their producers are added.
+    const limited = await demoRun(fresh.url, { filterTag: 'get-order', limit: 2 });
+    expect(limited.exchanges.filter((e) => !e.dependency)).toHaveLength(2);
+    expect(limited.filter.dependencies).toBeGreaterThan(0);
+    expect(limited.recording.selected).toBe(2 + limited.filter.dependencies);
   });
 
   it('honors recorded gaps under as-recorded pacing', async () => {
@@ -338,6 +402,68 @@ describe('selection, warmup, and pacing', () => {
       .sort((a, b) => a - b);
     expect(run.pacing.slip_max_ms).toBeCloseTo(slips[slips.length - 1]!, 3);
     expect(run.pacing.slip_p50_ms).toBeCloseTo(slips[Math.floor((slips.length - 1) / 2)]!, 3);
+    // The default cap of thirty seconds leaves the demo recording's gaps alone.
+    expect(run.pacing).toMatchObject({ max_gap_ms: 30_000, gaps_capped: 0 });
+  });
+
+  it('caps recorded gaps above --max-gap-ms under as-recorded pacing and records the cap', async () => {
+    const adapter: Adapter = {
+      name: 'fake',
+      send: (req) => Promise.resolve(jsonResponse({ echo: req.path }, 200, 1)),
+    };
+    const exchanges = [0, 100, 50_100, 50_200].map((offset, i) =>
+      makeExchange({
+        index: i,
+        offset_ms: offset,
+        request: makeRequest({ path: `/c/${i}` }),
+        response: jsonResponse({ echo: `/c/${i}` }, 200, 1),
+      }),
+    );
+    const recording = await writeRecording(exchanges);
+    const run = await replay({
+      recording,
+      target: 'fake://',
+      adapter,
+      pace: 'as-recorded',
+      maxGapMs: 100,
+    });
+    expect(run.exchanges.map((e) => e.scheduled_at_ms)).toEqual([0, 100, 200, 300]);
+    expect(run.pacing).toMatchObject({
+      mode: 'as-recorded',
+      max_gap_ms: 100,
+      gaps_capped: 1,
+      requested_rps: 10,
+    });
+    expect(run.duration_ms).toBeGreaterThanOrEqual(295);
+    expect(run.duration_ms).toBeLessThan(2000);
+    expect(run.stats.overall.matches).toBe(4);
+    expect(validate(run), validate.errors ?? '').toBe(true);
+
+    // Zero disables the cap, and the other modes have no recorded gaps to cap.
+    const short = await writeRecording(exchanges.map((e, i) => ({ ...e, offset_ms: i * 30 })));
+    const uncapped = await replay({
+      recording: short,
+      target: 'fake://',
+      adapter,
+      pace: 'as-recorded',
+      maxGapMs: 0,
+    });
+    expect(uncapped.pacing).toMatchObject({ max_gap_ms: null, gaps_capped: 0 });
+    expect(uncapped.exchanges.map((e) => e.scheduled_at_ms)).toEqual([0, 30, 60, 90]);
+    const fixed = await replay({
+      recording,
+      target: 'fake://',
+      adapter,
+      pace: 'fixed-rate',
+      rps: 200,
+      maxGapMs: 100,
+    });
+    expect(fixed.pacing).toMatchObject({ max_gap_ms: null, gaps_capped: 0, requested_rps: 200 });
+    const max = await replay({ recording, target: 'fake://', adapter, pace: 'max' });
+    expect(max.pacing).toMatchObject({ max_gap_ms: null, gaps_capped: 0 });
+    await expect(
+      replay({ recording, target: 'fake://', adapter, pace: 'max', maxGapMs: -1 }),
+    ).rejects.toThrow(/max gap/);
   });
 
   it('approximates the requested rate under fixed-rate pacing', async () => {
@@ -543,6 +669,98 @@ describe('inconclusive outcomes and errors', () => {
       outcome: 'fail',
       measured: 1,
     });
+  });
+
+  it('stops on a signal, aborts the send in flight, and finishes with the results so far', async () => {
+    const controller = new AbortController();
+    const adapter: Adapter = {
+      name: 'fake',
+      async send(req, ctx) {
+        if (ctx.index === 3) controller.abort();
+        await sleep(20, undefined, { signal: ctx.signal });
+        return jsonResponse({ echo: req.path }, 200, 1);
+      },
+    };
+    // Recorded sequentially, so one exchange is in flight at a time.
+    const exchanges = Array.from({ length: 12 }, (_, i) =>
+      makeExchange({
+        index: i,
+        request: makeRequest({ path: `/s/${i}` }),
+        response: jsonResponse({ echo: `/s/${i}` }, 200, 1),
+      }),
+    );
+    const run = await replay({
+      recording: await writeRecording(exchanges),
+      target: 'fake://',
+      adapter,
+      pace: 'max',
+      concurrency: 4,
+      thresholds: parseThresholds('errors:\n  rate_max: 0\n'),
+      signal: controller.signal,
+    });
+    expect(run.verdict).toBe('inconclusive');
+    expect(run.inconclusive).toEqual([
+      { kind: 'aborted', detail: 'stopped by signal after 4 of 12 exchanges' },
+    ]);
+    expect(run.recording.selected).toBe(12);
+    expect(run.exchanges.map((e) => e.path)).toEqual(['/s/0', '/s/1', '/s/2', '/s/3']);
+    expect(run.exchanges.slice(0, 3).every((e) => e.diff?.verdict === 'match')).toBe(true);
+    expect(run.exchanges[3]).toMatchObject({ candidate: null, acked_at_ms: null, diff: null });
+    expect(run.exchanges[3]?.error).toMatch(/^aborted: /);
+    expect(run.stats.overall.count).toBe(4);
+    expect(run.stats.overall.errors).toBe(1);
+    // The run level condition wins over the failed threshold row.
+    expect(run.threshold_results[0]).toMatchObject({ id: 'errors.rate_max', outcome: 'fail' });
+    expect(run.pacing.achieved_rps).toBeGreaterThan(0);
+    expect(validate(run), validate.errors ?? '').toBe(true);
+  });
+
+  it('ends a long scheduled wait at once when stopped, and sends nothing on a signal already aborted', async () => {
+    const adapter: Adapter = {
+      name: 'fake',
+      send: (req) => Promise.resolve(jsonResponse({ echo: req.path }, 200, 1)),
+    };
+    const exchanges = [0, 1].map((i) =>
+      makeExchange({
+        index: i,
+        offset_ms: i * 5000,
+        request: makeRequest({ path: `/g/${i}` }),
+        response: jsonResponse({ echo: `/g/${i}` }, 200, 1),
+      }),
+    );
+    const recording = await writeRecording(exchanges);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 50);
+    const startedAt = Date.now();
+    const run = await replay({
+      recording,
+      target: 'fake://',
+      adapter,
+      pace: 'as-recorded',
+      maxGapMs: 0,
+      signal: controller.signal,
+    });
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+    expect(run.exchanges.map((e) => e.path)).toEqual(['/g/0']);
+    expect(run.inconclusive).toEqual([
+      { kind: 'aborted', detail: 'stopped by signal after 1 of 2 exchanges' },
+    ]);
+    expect(run.verdict).toBe('inconclusive');
+
+    const none = await replay({
+      recording,
+      target: 'fake://',
+      adapter,
+      pace: 'max',
+      signal: AbortSignal.abort(),
+    });
+    expect(none.exchanges).toEqual([]);
+    expect(none.recording.selected).toBe(2);
+    expect(none.inconclusive).toEqual([
+      { kind: 'aborted', detail: 'stopped by signal after 0 of 2 exchanges' },
+    ]);
+    expect(none.verdict).toBe('inconclusive');
+    expect(validate(none), validate.errors ?? '').toBe(true);
   });
 
   it('never diffs a truncated body and reports body_too_large as a mismatch', async () => {

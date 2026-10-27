@@ -24,6 +24,7 @@ import {
   type RecordedRequest,
   type RecordedResponse,
   type Run,
+  type SubstitutionRule,
   type Thresholds,
 } from '@replay-parity/core';
 import { evaluateInvariants } from '@replay-parity/invariants';
@@ -53,6 +54,9 @@ import { DependencyIndex, SubstitutionTable } from './substitutions.js';
  *   only, excluded from statistics and thresholds, and marked `control: true`.
  *   A control that fails or returns a different status makes the run
  *   inconclusive with `control_failed`.
+ * - When `signal` aborts, no further exchange is sent, the sends in flight are
+ *   aborted, and the run is finished with the results so far plus an
+ *   `aborted` condition. Exchanges that were never sent are left out.
  */
 export interface ReplayOptions {
   /** Path of the recording. */
@@ -72,6 +76,14 @@ export interface ReplayOptions {
   filterTag?: string | null | undefined;
   /** Keep only the first N exchanges after filtering. */
   limit?: number | null | undefined;
+  /**
+   * With a filter and substitution rules, also select the exchanges that produce the
+   * captured values the filtered exchanges use, transitively. They are replayed for
+   * ordering and substitution, marked `dependency: true`, and not counted. Default true.
+   */
+  includeDependencies?: boolean | undefined;
+  /** Longest recorded gap kept under `as-recorded`, in milliseconds. 0 disables. Default 30000. */
+  maxGapMs?: number | undefined;
   rules?: DiffRules | undefined;
   thresholds?: Thresholds | undefined;
   /** Caller supplied headers. Applied to every request over recorded values. */
@@ -91,6 +103,8 @@ export interface ReplayOptions {
   runId?: string | undefined;
   now?: (() => Date) | undefined;
   onProgress?: ((progress: ReplayProgress) => void) | undefined;
+  /** Aborting stops the run early. See the ordering rules above. */
+  signal?: AbortSignal | undefined;
 }
 
 export interface ReplayProgress {
@@ -101,15 +115,55 @@ export interface ReplayProgress {
 
 export const DEFAULT_BARRIER_TIMEOUT_MS = 10_000;
 export const DEFAULT_CONCURRENCY = 8;
+export const DEFAULT_MAX_GAP_MS = 30_000;
 
+interface Selection {
+  selected: Exchange[];
+  /** True at the positions of the exchanges pulled in as dependencies. */
+  dependency: boolean[];
+}
+
+/**
+ * Applies the filter and the limit. With a filter, substitution rules, and
+ * `includeDependencies`, the producers of every captured value the filtered
+ * exchanges use are selected too, transitively, in recording order.
+ */
 function selectExchanges(
   all: readonly Exchange[],
   filterTag: string | null,
   limit: number | null,
-): Exchange[] {
-  let selected = filterTag === null ? [...all] : all.filter((e) => e.tags.includes(filterTag));
-  if (limit !== null) selected = selected.slice(0, limit);
-  return selected;
+  includeDependencies: boolean,
+  rules: readonly SubstitutionRule[],
+): Selection {
+  if (filterTag === null) {
+    const selected = limit === null ? [...all] : all.slice(0, limit);
+    return { selected, dependency: selected.map(() => false) };
+  }
+  let chosen: number[] = [];
+  all.forEach((e, i) => {
+    if (e.tags.includes(filterTag)) chosen.push(i);
+  });
+  if (limit !== null) chosen = chosen.slice(0, limit);
+  const pulled = new Set<number>();
+  if (includeDependencies && rules.length > 0) {
+    const index = new DependencyIndex(all, rules);
+    const seen = new Set(chosen);
+    const queue = [...chosen];
+    while (queue.length > 0) {
+      const i = queue.pop() as number;
+      for (const producer of index.dependenciesOf(i, (all[i] as Exchange).request)) {
+        if (seen.has(producer)) continue;
+        seen.add(producer);
+        pulled.add(producer);
+        queue.push(producer);
+      }
+    }
+  }
+  const order = [...chosen, ...pulled].sort((a, b) => a - b);
+  return {
+    selected: order.map((i) => all[i] as Exchange),
+    dependency: order.map((i) => pulled.has(i)),
+  };
 }
 
 function validate(options: ReplayExchangesOptions): void {
@@ -139,6 +193,10 @@ function validate(options: ReplayExchangesOptions): void {
   const barrierTimeout = options.barrierTimeoutMs ?? DEFAULT_BARRIER_TIMEOUT_MS;
   if (!(barrierTimeout > 0)) {
     throw new ConfigError(`barrier timeout must be positive, got ${barrierTimeout}`);
+  }
+  const maxGap = options.maxGapMs ?? DEFAULT_MAX_GAP_MS;
+  if (!(Number.isFinite(maxGap) && maxGap >= 0)) {
+    throw new ConfigError(`max gap must be a non negative number of milliseconds, got ${maxGap}`);
   }
 }
 
@@ -182,14 +240,26 @@ export async function replayExchanges(
   const barrierTags = new Set(options.barrierTags ?? []);
   const controlTags = new Set(rules.controls.tags);
   const barrierTimeoutMs = options.barrierTimeoutMs ?? DEFAULT_BARRIER_TIMEOUT_MS;
+  const includeDependencies = options.includeDependencies ?? true;
+  const maxGapOption = options.maxGapMs ?? DEFAULT_MAX_GAP_MS;
+  // The cap applies to recorded gaps only, so it is in effect under as-recorded alone.
+  const maxGapMs = pace === 'as-recorded' && maxGapOption > 0 ? maxGapOption : null;
   const now = options.now ?? (() => new Date());
+  const signal = options.signal;
 
-  const selected = selectExchanges(all, filterTag, limit);
+  const { selected, dependency } = selectExchanges(
+    all,
+    filterTag,
+    limit,
+    includeDependencies,
+    rules.substitutions,
+  );
   const n = selected.length;
   const schedule = buildSchedule(
     selected.map((e) => e.offset_ms),
     pace,
     rps,
+    maxGapMs,
   );
   const dependencies = new DependencyIndex(selected, rules.substitutions);
   const table = new SubstitutionTable(rules.substitutions);
@@ -218,8 +288,15 @@ export async function replayExchanges(
   const slotWaiters: (() => void)[] = [];
   let inflight = 0;
   let completed = 0;
+  let dispatched = 0;
   let barrierWaits = 0;
   const shutdown = new AbortController();
+  // A stop request aborts the sends in flight at once. The scheduler loop sees it at its
+  // next step and sends nothing more.
+  const onAbort = (): void => shutdown.abort();
+  if (signal?.aborted) shutdown.abort();
+  else signal?.addEventListener('abort', onAbort, { once: true });
+  const stopped = (): boolean => signal?.aborted === true;
 
   const started = performance.now();
   const rel = (): number => performance.now() - started;
@@ -288,6 +365,7 @@ export async function replayExchanges(
       path: e.request.path,
       warmup: i < warmup,
       control,
+      dependency: dependency[i] === true,
       scheduled_at_ms: round3(scheduledAt),
       sent_at_ms: round3(sentAt),
       acked_at_ms: ackedAt === null ? null : round3(ackedAt),
@@ -306,6 +384,7 @@ export async function replayExchanges(
   const tasks: Promise<void>[] = [];
   try {
     for (let i = 0; i < n; i += 1) {
+      if (stopped()) break;
       const e = selected[i] as Exchange;
       const barrier = isBarrier(e);
       await acquire();
@@ -338,9 +417,15 @@ export async function replayExchanges(
       if (precursors.length > 0) {
         await Promise.all(precursors.map((k) => completion[k] as Promise<void>));
       }
-      const scheduledAt = pace === 'max' ? rel() : (schedule[i] as number);
+      const scheduledAt = pace === 'max' ? rel() : (schedule.times[i] as number);
       const wait = scheduledAt - rel();
-      if (wait > 0) await sleep(wait);
+      // The wait ends early on a stop request, so a long capped gap does not delay the stop.
+      if (wait > 0) await sleep(wait, undefined, { signal }).catch(() => undefined);
+      if (stopped()) {
+        release();
+        break;
+      }
+      dispatched += 1;
       pending.add(i);
       const task = dispatch(i, e, scheduledAt).finally(() => {
         pending.delete(i);
@@ -352,17 +437,26 @@ export async function replayExchanges(
     }
     await Promise.all(tasks);
   } finally {
+    signal?.removeEventListener('abort', onAbort);
     shutdown.abort();
     if (ownAdapter && adapter.close) await adapter.close();
   }
   const durationMs = rel();
+  if (stopped()) {
+    conditions.push({
+      kind: 'aborted',
+      detail: `stopped by signal after ${dispatched} of ${n} exchanges`,
+    });
+  }
+  // The exchanges that were sent, in recording order. After a stop the rest are left out.
+  const replayed = results.filter((r): r is ExchangeResult => r !== undefined);
 
   const collector = new StatsCollector();
   const slips: number[] = [];
-  for (const r of results) {
+  for (const r of replayed) {
     if (r.control) continue;
     slips.push(r.sent_at_ms - r.scheduled_at_ms);
-    if (r.warmup) continue;
+    if (r.warmup || r.dependency) continue;
     collector.record({
       tags: r.tags,
       verdict: r.diff?.verdict ?? null,
@@ -426,27 +520,29 @@ export async function replayExchanges(
       mode: pace,
       rps,
       concurrency,
-      requested_rps: requestedRps(
-        selected.map((e) => e.offset_ms),
-        pace,
-        rps,
-      ),
-      achieved_rps: durationMs > 0 ? round3((n * 1000) / durationMs) : 0,
+      requested_rps: requestedRps(schedule.times, pace, rps),
+      achieved_rps: durationMs > 0 ? round3((replayed.length * 1000) / durationMs) : 0,
       slip_p50_ms: slip.p50_ms,
       slip_max_ms: slip.max_ms,
       barrier_tags: [...barrierTags].sort(),
       barrier_timeout_ms: barrierTimeoutMs,
       barrier_waits: barrierWaits,
+      max_gap_ms: maxGapMs,
+      gaps_capped: schedule.gapsCapped,
     },
     warmup,
-    filter: { tag: filterTag },
+    filter: {
+      tag: filterTag,
+      include_dependencies: includeDependencies,
+      dependencies: dependency.filter((d) => d).length,
+    },
     limit,
     duration_ms: round3(durationMs),
     rules,
     thresholds,
     threshold_results: evaluation.results,
     stats,
-    exchanges: results,
+    exchanges: replayed,
     candidate_recording: candidateRecording,
     invariants,
     reproduction: null,
