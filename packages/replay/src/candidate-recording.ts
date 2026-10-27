@@ -1,7 +1,9 @@
 import {
+  DEFAULT_REDACTED_QUERY,
   RecordingWriter,
   bodyFieldsOf,
   redactHeaders,
+  redactQuery,
   type Exchange,
   type RecordedRequest,
   type RecordedResponse,
@@ -27,6 +29,8 @@ export interface CandidateRecordingOptions {
   sent: readonly SentExchange[];
   adapter: string;
   redactHeaders: readonly string[];
+  /** Query parameter names whose values are replaced. Default `DEFAULT_REDACTED_QUERY`. */
+  redactQuery?: readonly string[] | undefined;
 }
 
 function round3(value: number): number {
@@ -38,6 +42,7 @@ export function candidateExchanges(options: CandidateRecordingOptions): Exchange
     .filter((s) => s.response !== null)
     .sort((a, b) => a.sentAtMs - b.sentAtMs);
   const first = ordered[0]?.sentAtMs ?? 0;
+  const redactedQuery = options.redactQuery ?? DEFAULT_REDACTED_QUERY;
   return ordered.map((s) => {
     const response = s.response as RecordedResponse;
     return {
@@ -48,7 +53,7 @@ export function candidateExchanges(options: CandidateRecordingOptions): Exchange
       request: {
         method: s.request.method,
         path: s.request.path,
-        query: s.request.query,
+        query: redactQuery(s.request.query, redactedQuery),
         headers: redactHeaders(s.request.headers, options.redactHeaders),
         ...bodyFieldsOf(s.request),
       },

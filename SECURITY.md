@@ -19,7 +19,7 @@ The tool writes four kinds of files, all to paths named on the command line, and
 
 ## What redaction covers
 
-Header and query parameter redaction is the only redaction. The capture proxy replaces the value of each header on its list with `<redacted>`. The default list is `authorization`, `cookie`, `set-cookie`, and `x-api-key`, and `--redact-header` replaces it. The list applies to query parameter names by the same rule. Request bodies, response bodies, paths, and every header or parameter not on the list are stored as received.
+Header and query parameter redaction is the only redaction. The capture proxy replaces the value of each header on its list with `<redacted>`. The default header list is `authorization`, `cookie`, `set-cookie`, and `x-api-key`, and `--redact-header` replaces it. Query parameters are redacted by name from a second list, by default `api_key`, `apikey`, `access_token`, `token`, `key`, `secret`, `signature`, and `password`, which `--redact-query` replaces. Request bodies, response bodies, paths, and every header or parameter not on the list are stored as received.
 
 A recording therefore contains every request body it captured, with whatever personal data or credentials those bodies held. Treat it as a copy of that data: store it where the reference system's own data may be stored, share it only with people who may read that data, and delete it when the run that needed it is done. The same holds for a candidate recording and for a run file, because both carry body values.
 

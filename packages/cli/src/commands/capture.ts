@@ -1,6 +1,10 @@
 import { once } from 'node:events';
 import { CaptureServer, parseTagRule } from '@replay-parity/capture';
-import { DEFAULT_MAX_BODY_BYTES, DEFAULT_REDACTED_HEADERS } from '@replay-parity/core';
+import {
+  DEFAULT_MAX_BODY_BYTES,
+  DEFAULT_REDACTED_HEADERS,
+  DEFAULT_REDACTED_QUERY,
+} from '@replay-parity/core';
 import { Command, Option } from 'commander';
 import { err, type CliStreams } from '../io.js';
 import {
@@ -19,6 +23,7 @@ export interface CaptureCommandOptions {
   tagRule: string[];
   sample: number;
   redactHeader: string[];
+  redactQuery: string[];
   maxBodyBytes: number;
   append: boolean;
   upstreamTimeoutMs: number;
@@ -38,6 +43,7 @@ export async function runCapture(
     sample: options.sample,
     redactHeaders:
       options.redactHeader.length === 0 ? DEFAULT_REDACTED_HEADERS : options.redactHeader,
+    redactQuery: options.redactQuery.length === 0 ? DEFAULT_REDACTED_QUERY : options.redactQuery,
     maxBodyBytes: options.maxBodyBytes,
     upstreamTimeoutMs: options.upstreamTimeoutMs,
     onError: (error, context) => err(streams, `capture: ${context}: ${String(error)}`),
@@ -87,6 +93,12 @@ export function captureCommand(
     .option(
       '--redact-header <name>',
       'header to redact, repeatable, replaces the default list',
+      collect,
+      [],
+    )
+    .option(
+      '--redact-query <name>',
+      'query parameter to redact, repeatable, replaces the default list',
       collect,
       [],
     )
