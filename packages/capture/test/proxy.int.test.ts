@@ -1,8 +1,10 @@
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { REDACTED, parseRecordingText, sha256Hex, type Exchange } from '@replay-parity/core';
 import { buildApp } from '@replay-parity/demo-reference';
@@ -157,10 +159,20 @@ describe('pass through', () => {
   });
 });
 
+/** Bytes with a pattern, so a hash of them says something about their order. */
+function patterned(length: number): Buffer {
+  const out = Buffer.alloc(length);
+  for (let i = 0; i < length; i += 1) out[i] = (i * 7 + (i >> 8)) % 251;
+  return out;
+}
+
 describe('body kinds', () => {
   let upstream: Server;
   let upstreamUrl: string;
   const bigBody = Buffer.alloc(2_000_000, 'x');
+  const tripleBody = patterned(300_000);
+  const gzipHuge = gzipSync(randomBytes(300_000));
+  const gzipWide = gzipSync(Buffer.alloc(5000, 'x'));
 
   beforeEach(async () => {
     upstream = createServer((req, res) => {
@@ -206,6 +218,46 @@ describe('body kinds', () => {
           res.writeHead(200, { 'content-type': req.headers['content-type'] ?? 'text/plain' });
           res.end(Buffer.concat(chunks));
         });
+      } else if (req.url === '/sha') {
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          const body = Buffer.concat(chunks);
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              sha256: sha256Hex(body),
+              size: body.length,
+              content_length: req.headers['content-length'] ?? null,
+              transfer_encoding: req.headers['transfer-encoding'] ?? null,
+            }),
+          );
+        });
+      } else if (req.url === '/triple') {
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        let offset = 0;
+        const step = (): void => {
+          if (offset >= tripleBody.length) {
+            res.end();
+            return;
+          }
+          res.write(tripleBody.subarray(offset, offset + 30_000));
+          offset += 30_000;
+          setImmediate(step);
+        };
+        step();
+      } else if (req.url === '/gzip-huge') {
+        res.writeHead(200, {
+          'content-type': 'application/octet-stream',
+          'content-encoding': 'gzip',
+        });
+        res.end(gzipHuge);
+      } else if (req.url === '/gzip-wide') {
+        res.writeHead(200, { 'content-type': 'text/plain', 'content-encoding': 'gzip' });
+        res.end(gzipWide);
+      } else if (req.url?.startsWith('/query')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ url: req.url }));
       } else {
         res.writeHead(404);
         res.end();
@@ -334,6 +386,160 @@ describe('body kinds', () => {
       body_size: bigBody.length,
     });
     expect(big?.response.body).toBeUndefined();
+  });
+
+  it('records a response three times the cap as a hash while the client receives every byte', async () => {
+    const { capture, out, proxyUrl } = await startCapture({ maxBodyBytes: 100_000 });
+    const res = await request(`${proxyUrl}/triple`);
+    const body = Buffer.from(await res.body.arrayBuffer());
+    expect(body.equals(tripleBody)).toBe(true);
+    await capture.close();
+    const [triple] = await readRecording(out);
+    expect(triple?.response).toMatchObject({
+      status: 200,
+      truncated: true,
+      body_sha256: sha256Hex(tripleBody),
+      body_size: tripleBody.length,
+    });
+    expect(triple?.response.body).toBeUndefined();
+    expect(triple?.response.content_encoding).toBeUndefined();
+  });
+
+  it('notes the coding of a compressed response over the wire cap', async () => {
+    const { capture, out, proxyUrl } = await startCapture({ maxBodyBytes: 100_000 });
+    expect(gzipHuge.length).toBeGreaterThan(100_000);
+    const res = await request(`${proxyUrl}/gzip-huge`);
+    const body = Buffer.from(await res.body.arrayBuffer());
+    expect(res.headers['content-encoding']).toBe('gzip');
+    expect(body.equals(gzipHuge)).toBe(true);
+    await capture.close();
+    const [huge] = await readRecording(out);
+    expect(huge?.response).toMatchObject({
+      truncated: true,
+      body_sha256: sha256Hex(gzipHuge),
+      body_size: gzipHuge.length,
+      content_encoding: 'gzip',
+    });
+  });
+
+  it('still caps a compressed response on its decoded size when the wire fits', async () => {
+    const { capture, out, proxyUrl } = await startCapture({ maxBodyBytes: 1000 });
+    expect(gzipWide.length).toBeLessThan(1000);
+    const wide = await request(`${proxyUrl}/gzip-wide`);
+    expect(Buffer.from(await wide.body.arrayBuffer()).equals(gzipWide)).toBe(true);
+    const small = await request(`${proxyUrl}/gzip`);
+    await small.body.arrayBuffer();
+    await capture.close();
+    const [first, second] = await readRecording(out);
+    expect(first?.response).toMatchObject({
+      truncated: true,
+      body_sha256: sha256Hex(gzipWide),
+      body_size: gzipWide.length,
+      content_encoding: 'gzip',
+    });
+    expect(first?.response.body).toBeUndefined();
+    expect(second?.response).toMatchObject({ body: { a: 1, b: [2, 3] }, content_encoding: 'gzip' });
+  });
+
+  it('streams a request body over the cap to the upstream intact and records a hash', async () => {
+    const { capture, out, proxyUrl } = await startCapture();
+    const upload = patterned(2 * 1024 * 1024);
+    const res = await request(`${proxyUrl}/sha`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: upload,
+    });
+    expect(await res.body.json()).toEqual({
+      sha256: sha256Hex(upload),
+      size: upload.length,
+      content_length: String(upload.length),
+      transfer_encoding: null,
+    });
+    await capture.close();
+    const [sent] = await readRecording(out);
+    expect(sent?.request).toMatchObject({
+      method: 'POST',
+      truncated: true,
+      body_sha256: sha256Hex(upload),
+      body_size: upload.length,
+    });
+    expect(sent?.request.body).toBeUndefined();
+    expect(sent?.request.headers['content-length']).toBe(String(upload.length));
+    expect(sent?.response.body).toMatchObject({ size: upload.length });
+    expect(capture.stats).toEqual({ seen: 1, recorded: 1, failed: 0 });
+  });
+
+  it('sends a chunked request body chunked and records the bytes within the cap', async () => {
+    const { capture, out, proxyUrl } = await startCapture();
+    const parts = [patterned(1000), patterned(1000).reverse(), Buffer.from('tail')];
+    const whole = Buffer.concat(parts);
+    const res = await request(`${proxyUrl}/sha`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: Readable.from(parts),
+    });
+    expect(await res.body.json()).toEqual({
+      sha256: sha256Hex(whole),
+      size: whole.length,
+      content_length: null,
+      transfer_encoding: 'chunked',
+    });
+    await capture.close();
+    const [sent] = await readRecording(out);
+    expect(sent?.request).toMatchObject({ body: whole.toString('base64'), encoding: 'base64' });
+    expect(sent?.request.headers['transfer-encoding']).toBeUndefined();
+    expect(sent?.request.headers['content-length']).toBeUndefined();
+  });
+
+  it('records a small JSON request body parsed and an empty body as absent', async () => {
+    const { capture, out, proxyUrl } = await startCapture();
+    const posted = await request(`${proxyUrl}/sha`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"qty":3}',
+    });
+    expect(await posted.body.json()).toMatchObject({ size: 9, content_length: '9' });
+    const got = await request(`${proxyUrl}/sha`);
+    expect(await got.body.json()).toMatchObject({ size: 0, content_length: null });
+    const emptyPost = await request(`${proxyUrl}/sha`, { method: 'POST' });
+    expect(await emptyPost.body.json()).toMatchObject({ size: 0, content_length: '0' });
+    await capture.close();
+    const [json, get, post] = await readRecording(out);
+    expect(json?.request.body).toEqual({ qty: 3 });
+    expect(json?.request.truncated).toBeUndefined();
+    for (const empty of [get, post]) {
+      expect(empty?.request.body).toBeUndefined();
+      expect(empty?.request.encoding).toBeUndefined();
+      expect(empty?.request.truncated).toBeUndefined();
+      expect(empty?.request.body_sha256).toBeUndefined();
+    }
+    expect(post?.request.method).toBe('POST');
+  });
+
+  it('redacts query values by the default list and by a custom one, forwarding them in clear', async () => {
+    const path = '/query?api_key=k-1&Token=t-1&page=2&tag=a&tag=b';
+    const byDefault = await startCapture();
+    const res = await request(`${byDefault.proxyUrl}${path}`);
+    expect(await res.body.json()).toEqual({ url: path });
+    await byDefault.capture.close();
+    const [recorded] = await readRecording(byDefault.out);
+    expect(recorded?.request.query).toEqual({
+      api_key: REDACTED,
+      Token: REDACTED,
+      page: '2',
+      tag: ['a', 'b'],
+    });
+
+    const custom = await startCapture({ redactQuery: ['tag'] });
+    await request(`${custom.proxyUrl}${path}`).then((r) => r.body.text());
+    await custom.capture.close();
+    const [kept] = await readRecording(custom.out);
+    expect(kept?.request.query).toEqual({
+      api_key: 'k-1',
+      Token: 't-1',
+      page: '2',
+      tag: [REDACTED, REDACTED],
+    });
   });
 
   it('honors a custom cap and stores a body exactly at the cap', async () => {

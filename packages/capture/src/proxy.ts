@@ -2,19 +2,22 @@ import { Buffer } from 'node:buffer';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { performance } from 'node:perf_hooks';
+import { Transform } from 'node:stream';
 import {
   DEFAULT_MAX_BODY_BYTES,
   DEFAULT_REDACTED_HEADERS,
+  DEFAULT_REDACTED_QUERY,
   RecordingWriter,
-  encodeBody,
   normalizeHeaders,
   redactHeaders,
+  redactQuery,
   ulid as defaultUlid,
   type Exchange,
   type HeaderMap,
   type Query,
 } from '@replay-parity/core';
 import { Pool, type Dispatcher } from 'undici';
+import { CappedBody } from './capped-body.js';
 import { OrderedSink } from './ordered-sink.js';
 import { tagsFor, type TagRule } from './tag-rules.js';
 
@@ -34,6 +37,9 @@ export interface CaptureOptions {
   /** Fraction of exchanges to record, from 0 to 1. Default 1. */
   sample?: number;
   redactHeaders?: readonly string[];
+  /** Query parameter names whose values are replaced in the recording. Default `DEFAULT_REDACTED_QUERY`. */
+  redactQuery?: readonly string[];
+  /** Bodies above this size, on the wire or once decoded, are stored as a hash. */
   maxBodyBytes?: number;
   /** Upstream headers and body timeout in milliseconds. Default 30000. */
   upstreamTimeoutMs?: number;
@@ -104,10 +110,47 @@ function forwardableResponseHeaders(
   return out;
 }
 
-async function readBody(req: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks);
+/** A request carries a body when it is chunked or announces a length above zero. */
+function hasBody(req: IncomingMessage): boolean {
+  if (req.headers['transfer-encoding'] !== undefined) return true;
+  const length = req.headers['content-length'];
+  return length !== undefined && Number(length) > 0;
+}
+
+interface Upload {
+  /** The client's body, handed to undici as the upstream body. */
+  stream: Transform;
+  /** The bytes as they pass, for the recording. Null when the exchange is not sampled. */
+  body: CappedBody | null;
+  /** Resolves once undici has ended, reset, or failed the stream. */
+  done: Promise<void>;
+}
+
+/**
+ * Pipes the client's request body through a stream that feeds every byte to
+ * `body` on the way to the upstream, so the reference receives the body as
+ * it arrives and the proxy holds at most the cap. A client that goes away
+ * before its body ends fails the stream, which fails the upstream request.
+ */
+function teeUpload(req: IncomingMessage, body: CappedBody | null): Upload {
+  const stream = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      body?.push(chunk);
+      callback(null, chunk);
+    },
+  });
+  // Undici removes its error listener when it is done with the stream. This
+  // one keeps a late client failure from surfacing as an unhandled event.
+  stream.on('error', () => undefined);
+  const done = new Promise<void>((resolve) => stream.once('close', resolve));
+  req.on('error', (err) => stream.destroy(err));
+  req.on('close', () => {
+    if (!req.complete) stream.destroy(new Error('client closed before the request body ended'));
+  });
+  // The pipe starts when undici first reads, so nothing has ended at dispatch
+  // and a chunked body goes upstream chunked instead of gaining a length.
+  stream.once('resume', () => req.pipe(stream));
+  return { stream, body, done };
 }
 
 function isTimeout(error: unknown): boolean {
@@ -145,6 +188,7 @@ export class CaptureServer {
   private readonly tagRules: readonly TagRule[];
   private readonly sample: number;
   private readonly redacted: readonly string[];
+  private readonly redactedQuery: readonly string[];
   private readonly maxBodyBytes: number;
   private readonly now: () => number;
   private readonly random: () => number;
@@ -164,6 +208,7 @@ export class CaptureServer {
       throw new RangeError(`sample must be greater than 0 and at most 1, got ${this.sample}`);
     }
     this.redacted = options.redactHeaders ?? DEFAULT_REDACTED_HEADERS;
+    this.redactedQuery = options.redactQuery ?? DEFAULT_REDACTED_QUERY;
     this.maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
@@ -262,8 +307,17 @@ export class CaptureServer {
   ): Promise<PendingExchange | null> {
     const method = req.method ?? 'GET';
     const url = new URL(req.url ?? '/', 'http://placeholder');
-    const requestBody = await readBody(req);
     const requestHeaders = normalizeHeaders(req.headers);
+    const upload = hasBody(req)
+      ? teeUpload(req, sampled ? new CappedBody(this.maxBodyBytes) : null)
+      : null;
+    // The client's framing is kept: its content-length goes upstream as is,
+    // and a chunked body is sent chunked by undici.
+    const upstreamHeaders = forwardableRequestHeaders(req.headers);
+    const contentLength = requestHeaders['content-length'];
+    if (upload !== null && contentLength !== undefined) {
+      upstreamHeaders['content-length'] = contentLength;
+    }
 
     const startedAt = performance.now();
     let upstream: Dispatcher.ResponseData;
@@ -271,28 +325,32 @@ export class CaptureServer {
       upstream = await this.pool.request({
         method,
         path: `${url.pathname}${url.search}`,
-        headers: forwardableRequestHeaders(req.headers),
-        body: requestBody.length > 0 ? requestBody : null,
+        headers: upstreamHeaders,
+        body: upload?.stream ?? null,
       });
     } catch (err) {
+      upload?.stream.destroy();
       this.counts.failed += 1;
       this.onError(err, `${method} ${url.pathname}`);
       sendError(res, isTimeout(err) ? 504 : 502, 'upstream_unavailable');
       return null;
     }
 
-    const chunks: Buffer[] = [];
+    const responseBody = sampled ? new CappedBody(this.maxBodyBytes) : null;
     let lastByteAt = performance.now();
     res.writeHead(upstream.statusCode, forwardableResponseHeaders(upstream.headers));
     for await (const chunk of upstream.body as AsyncIterable<Buffer>) {
       lastByteAt = performance.now();
-      if (sampled) chunks.push(chunk);
+      responseBody?.push(chunk);
       if (!res.write(chunk) && !res.destroyed) {
         await waitForDrainOrClose(res);
       }
     }
     res.end();
-    if (!sampled) return null;
+    // Undici has ended the upload by now, or reset it when the upstream
+    // answered before reading it all, so this never waits on the client.
+    if (upload !== null) await upload.done;
+    if (responseBody === null) return null;
 
     const latencyMs = Math.max(0, lastByteAt - startedAt);
     const responseHeaders = normalizeHeaders(upstream.headers);
@@ -309,23 +367,16 @@ export class CaptureServer {
       request: {
         method,
         path: url.pathname,
-        query: parseQuery(url.searchParams),
+        query: redactQuery(parseQuery(url.searchParams), this.redactedQuery),
         headers: redactHeaders(recordedRequestHeaders, this.redacted),
-        ...encodeBody(
-          requestBody,
-          requestHeaders['content-type'],
-          this.maxBodyBytes,
-          requestHeaders['content-encoding'],
-        ),
+        ...upload?.body?.fields(requestHeaders['content-type'], requestHeaders['content-encoding']),
       },
       response: {
         status: upstream.statusCode,
         headers: redactHeaders(responseHeaders, this.redacted),
         latency_ms: Math.round(latencyMs * 1000) / 1000,
-        ...encodeBody(
-          Buffer.concat(chunks),
+        ...responseBody.fields(
           responseHeaders['content-type'],
-          this.maxBodyBytes,
           responseHeaders['content-encoding'],
         ),
       },
