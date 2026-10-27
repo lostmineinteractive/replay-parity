@@ -157,6 +157,7 @@ export function makeRun(over: Partial<Run> = {}): Run {
       selected: exchanges.length,
       first_ts: new Date(BASE_TS).toISOString(),
       last_ts: new Date(BASE_TS + 200).toISOString(),
+      recording_sha256: null,
     },
     target: 'http://localhost:3001',
     adapter: 'http',

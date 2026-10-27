@@ -269,6 +269,27 @@ describe('run model', () => {
     expect(validate({ ...run, filter: { tag: null } })).toBe(false);
   });
 
+  it('carries the recording hash, accepts null, and reads a file without the field', () => {
+    const sha256 = 'a'.repeat(64);
+    const run = makeRun();
+    expect(run.recording.recording_sha256).toBeNull();
+    expect(validate(run), validate.errors ?? '').toBe(true);
+    const hashed = makeRun({ recording: { ...run.recording, recording_sha256: sha256 } });
+    expect(RunSchema.parse(hashed)).toEqual(hashed);
+    expect(validate(hashed), validate.errors ?? '').toBe(true);
+    expect(parseRun(serializeRun(hashed)).recording.recording_sha256).toBe(sha256);
+    const { recording_sha256: _hash, ...older } = run.recording;
+    const parsed = parseRun(JSON.stringify({ ...run, recording: older }));
+    expect(parsed.recording.recording_sha256).toBeUndefined();
+    expect(validate({ ...run, recording: older }), validate.errors ?? '').toBe(true);
+    const upper = { ...run, recording: { ...run.recording, recording_sha256: 'A'.repeat(64) } };
+    expect(RunSchema.safeParse(upper).success).toBe(false);
+    expect(validate(upper)).toBe(false);
+    const short = { ...run, recording: { ...run.recording, recording_sha256: 'abc' } };
+    expect(RunSchema.safeParse(short).success).toBe(false);
+    expect(validate(short)).toBe(false);
+  });
+
   it('accepts a stop by signal as an agent stop reason', () => {
     expect(AgentStopReasonSchema.safeParse('aborted').success).toBe(true);
     expect(AgentStopReasonSchema.safeParse('tired').success).toBe(false);

@@ -219,6 +219,17 @@ export const RunSchema = z
         selected: count,
         first_ts: z.iso.datetime().nullable(),
         last_ts: z.iso.datetime().nullable(),
+        /**
+         * SHA-256 of the recording file's bytes, so a run is tied to the exact
+         * file it replayed and `rp shrink` can refuse a different one. Null
+         * when the engine was given exchanges in memory. Absent in a run
+         * written before the field existed; both read as no hash.
+         */
+        recording_sha256: z
+          .string()
+          .regex(/^[0-9a-f]{64}$/)
+          .nullable()
+          .optional(),
       })
       .strict(),
     target: z.string().min(1),

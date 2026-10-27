@@ -8,6 +8,8 @@ export * from './recording/body.js';
 export * from './recording/redact.js';
 export * from './recording/reader.js';
 export * from './recording/writer.js';
+export * from './recording/hash.js';
+export * from './recording/ops.js';
 export * from './jsonpath/index.js';
 export * from './rules/schema.js';
 export * from './differ/schema.js';
