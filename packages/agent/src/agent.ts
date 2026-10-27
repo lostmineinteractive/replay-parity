@@ -41,6 +41,8 @@ export interface AgentOptions {
   transcriptPath: string;
   casesPath: string;
   log?: ((line: string) => void) | undefined;
+  /** Aborting stops the loop at the next case boundary with the stop reason `aborted`. */
+  signal?: AbortSignal | undefined;
 }
 
 export interface TranscriptRound {
@@ -127,8 +129,14 @@ export async function runAgent(options: AgentOptions): Promise<AgentOutcome> {
   let executed = 0;
   let stop: AgentStopReason = 'max_rounds';
   let round = 0;
+  const stopped = (): boolean => options.signal?.aborted === true;
 
   while (round < options.maxRounds) {
+    if (stopped()) {
+      log('stopped by signal before the next round');
+      stop = 'aborted';
+      break;
+    }
     round += 1;
     const user = buildUserPrompt(prompts, options, round, kept);
     const estimate = estimateCostUsd(model, prompts.system.text.length + user.length, maxTokens);
@@ -214,6 +222,13 @@ export async function runAgent(options: AgentOptions): Promise<AgentOutcome> {
 
     let keptThisRound = 0;
     for (let i = 0; i < validation.cases.length; i += 1) {
+      if (stopped()) {
+        log(
+          `round ${round}: stopped by signal after ${entry.executed} of ${validation.cases.length} cases`,
+        );
+        stop = 'aborted';
+        break;
+      }
       const c = validation.cases[i]!;
       const id = `case-${round}-${i + 1}`;
       const result = await executeCase(
@@ -262,6 +277,7 @@ export async function runAgent(options: AgentOptions): Promise<AgentOutcome> {
       });
       log(`round ${round}: kept ${id}: ${result.revealed}`);
     }
+    if (stop === 'aborted') break;
     if (keptThisRound === 0) {
       stop = 'no_new_cases';
       break;

@@ -16,7 +16,7 @@ import {
 } from '@replay-parity/core';
 import { buildApp as buildCandidate } from '@replay-parity/demo-candidate';
 import { buildApp as buildReference } from '@replay-parity/demo-reference';
-import { HttpAdapter, replayExchanges } from '@replay-parity/replay';
+import { HttpAdapter, replayExchanges, type Adapter } from '@replay-parity/replay';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { MockModelClient, runAgent, type AgentOptions, type MockAnswer } from '../src/index.js';
 
@@ -302,6 +302,45 @@ describe('the agent loop on the mock client', () => {
     const failing = await agent([() => Promise.reject(new Error('boom')) as unknown as string]);
     expect(failing.report.stop_reason).toBe('error');
   }, 60_000);
+
+  it('stops at the next case boundary on a signal and reports it', async () => {
+    const controller = new AbortController();
+    // The signal arrives while the first case is in flight, so the case finishes and the
+    // second one is never sent.
+    const tripping: Adapter = {
+      name: candidate.name,
+      send(req, ctx) {
+        controller.abort();
+        return candidate.send(req, ctx);
+      },
+    };
+    const { report, transcript, cases, client } = await agent(
+      [
+        JSON.stringify({ cases: [unknownCase, roundingCase] }),
+        JSON.stringify({ cases: [roundingCase] }),
+      ],
+      { adapters: { reference, candidate: tripping }, signal: controller.signal },
+    );
+    expect(report.stop_reason).toBe('aborted');
+    expect(transcript.stop_reason).toBe('aborted');
+    expect(report.rounds).toBe(1);
+    expect(report.valid).toBe(2);
+    expect(report.executed).toBe(1);
+    expect(cases.map((c) => c.id)).toEqual(['case-1-1']);
+    expect(transcript.rounds).toHaveLength(1);
+    expect(transcript.rounds[0]?.executed).toBe(1);
+    expect(client.calls).toHaveLength(1);
+    const withAgent = { ...run, agent: report };
+    expect(RunSchema.safeParse(withAgent).success).toBe(true);
+    expect(validate(withAgent), validate.errors ?? '').toBe(true);
+
+    // A signal already aborted stops before the first model call.
+    const before = await agent([JSON.stringify({ cases: [unknownCase] })], {
+      signal: AbortSignal.abort(),
+    });
+    expect(before.report).toMatchObject({ stop_reason: 'aborted', rounds: 0, executed: 0 });
+    expect(before.client.calls).toHaveLength(0);
+  });
 
   it('records a case whose capture fails as an error without keeping it', async () => {
     const broken = {
