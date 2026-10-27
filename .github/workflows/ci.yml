@@ -4,6 +4,20 @@ on:
   push:
   pull_request:
 
+# The default token can read the repository and nothing else. A job that
+# needs more asks for it in its own permissions block.
+permissions:
+  contents: read
+
+# One run per ref. A newer push to a pull request or to a feature branch
+# cancels the run in progress for that ref. Pushes to the default branch
+# never cancel each other, so every commit on main gets a complete run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request' ||
+    github.ref != format('refs/heads/{0}', github.event.repository.default_branch) }}
+
 jobs:
   checks:
     name: lint, typecheck, test, guards
@@ -20,12 +34,14 @@ jobs:
           --health-timeout 3s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pnpm at the version in packageManager
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - name: Install Node and restore the pnpm store
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: Enable pnpm through corepack
-        run: corepack enable
+          cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Lint and format check
@@ -46,18 +62,79 @@ jobs:
         if: always()
         run: cat coverage/coverage-summary.json | head -c 2000 || true
 
+  unit-matrix:
+    name: unit tests, ${{ matrix.os }}, Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: 24
+          - os: macos-latest
+            node: 22
+          - os: windows-latest
+            node: 22
+    # The Windows job is informational until the suite is verified there. Its
+    # result is shown on the run but does not fail the workflow.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pnpm at the version in packageManager
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - name: Install Node and restore the pnpm store
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Unit tests
+        run: pnpm test:unit
+
+  supply-chain:
+    name: secrets scan and dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # gitleaks lists the commits of a pull request through the API, which a
+      # private repository only answers with this permission.
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # gitleaks scans every commit of the push or the pull request, so it
+          # needs the history, not only the tip.
+          fetch-depth: 0
+      - name: gitleaks over the tree and the commit history
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The token cannot write to pull requests, so the action is told not
+          # to comment on them. Findings go to the job summary and the log.
+          GITLEAKS_ENABLE_COMMENTS: 'false'
+      - name: OSV scan of pnpm-lock.yaml
+        uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+        with:
+          scan-args: |-
+            --lockfile=pnpm-lock.yaml
+
   demo:
     name: make demo without the agent
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: checks
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pnpm at the version in packageManager
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - name: Install Node and restore the pnpm store
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: Enable pnpm through corepack
-        run: corepack enable
+          cache: pnpm
       - name: Install
         run: pnpm install --frozen-lockfile
       - name: Build the demo images
@@ -71,7 +148,7 @@ jobs:
         run: make demo-down
       - name: Upload the reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: demo-reports
           path: |
