@@ -251,6 +251,35 @@ describe('arrays', () => {
     expect(paths(deep.findings)).toEqual(['$.items["k.id"=X].v']);
   });
 
+  it('tells a string key from the number, boolean, or null it spells', () => {
+    const rules = { unordered: [{ path: '$.items', key: '$.sku' }] };
+    const ref = {
+      items: [
+        { sku: 1, v: 1 },
+        { sku: '1', v: 1 },
+        { sku: true, v: 1 },
+        { sku: 'true', v: 1 },
+        { sku: null, v: 1 },
+        { sku: 'null', v: 1 },
+        { sku: -2.5, v: 1 },
+        { sku: '-2.5', v: 1 },
+      ],
+    };
+    const permuted = { items: [...ref.items].reverse() };
+    expect(bodies(ref, permuted, rules)).toEqual({ verdict: 'match', findings: [] });
+    const changed = { items: ref.items.map((row) => ({ ...row, v: 2 })).reverse() };
+    expect(paths(bodies(ref, changed, rules).findings)).toEqual([
+      '$.items[sku="-2.5"].v',
+      '$.items[sku="1"].v',
+      '$.items[sku="null"].v',
+      '$.items[sku="true"].v',
+      '$.items[sku=-2.5].v',
+      '$.items[sku=1].v',
+      '$.items[sku=null].v',
+      '$.items[sku=true].v',
+    ]);
+  });
+
   it('nested tolerance rules still apply inside keyed segments', () => {
     const rules = {
       unordered: [{ path: '$.items', key: '$.sku' }],

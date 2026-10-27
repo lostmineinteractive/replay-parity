@@ -9,10 +9,11 @@ import { canonicalJson, isJsonObject, type JsonValue } from '../json.js';
  * closing bracket for the nth later row that has the same key, as in
  * `[sku=A-100]` and `[sku=A-100#1]`. The name is bare when it is an identifier
  * and a JSON string otherwise, as in `["a b"=X]`. The value is the key text
- * from `keyValueText`, in one of three forms: bare for a plain token such as
- * `A-100` or `42`, a JSON string in double quotes for any other string, as in
- * `[sku="it's"]`, and the canonical JSON of an array or object in single
- * quotes, as in `[sku='[1,2]']`. A row without the key carries `#` and the
+ * from `keyValueText`, in one of three forms: bare for a string that is an
+ * identifier such as `A-100` and for a number, `true`, `false`, or `null`, a
+ * JSON string in double quotes for any other string, as in `[sku="it's"]` and
+ * `[sku="1"]` for the string `1`, and the canonical JSON of an array or object
+ * in single quotes, as in `[sku='[1,2]']`. A row without the key carries `#` and the
  * row's canonical JSON in single quotes, as in `[sku=#'{"qty":3}']`. The `#n`
  * suffix is always outside the quotes. The parser returns the value text as
  * written, so `parsePath(renderPath(segments))` gives the segments back for
@@ -34,8 +35,8 @@ export class JsonPathError extends Error {
 }
 
 const IDENT = /^[A-Za-z_$][A-Za-z0-9_$-]*$/;
-/** A string key that renders bare: letters, digits, `_`, `$`, and `-`. */
-const BARE_VALUE = /^[A-Za-z0-9_$-]+$/;
+/** The JSON words a bare string key could be mistaken for. */
+const JSON_WORDS = new Set(['true', 'false', 'null']);
 /** What a bare key value may hold when read back: the characters of plain tokens and JSON numbers. */
 const BARE_TOKEN = /^[A-Za-z0-9_$.+-]+$/;
 const cache = new Map<string, Segment[]>();
@@ -239,15 +240,19 @@ function quoteJson(text: string): string {
 }
 
 /**
- * Renders a key value as the text of a keyed segment. A string made of
- * letters, digits, `_`, `$`, and `-` renders bare, so `A-100` stays `A-100`,
- * and any other string renders as a JSON string in double quotes. A number,
- * a boolean, and null render as their JSON text. An array or an object
- * renders as its canonical JSON in single quotes, so the array `[1,2]` and
- * the string `[1,2]` read differently.
+ * Renders a key value as the text of a keyed segment. The text tells the JSON
+ * type apart. A string renders bare when it is an identifier other than
+ * `true`, `false`, and `null`, so `A-100` stays `A-100`, and as a JSON string
+ * in double quotes otherwise. A number, a boolean, and null render as their
+ * JSON text. A bare text therefore starts with a letter, `_`, or `$` exactly
+ * when it is a string, so the string `1` renders `"1"` and the number `1`
+ * renders `1`. An array or an object renders as its canonical JSON in single
+ * quotes, so the array `[1,2]` and the string `[1,2]` read differently too.
  */
 export function keyValueText(value: JsonValue | undefined): string {
-  if (typeof value === 'string') return BARE_VALUE.test(value) ? value : JSON.stringify(value);
+  if (typeof value === 'string') {
+    return IDENT.test(value) && !JSON_WORDS.has(value) ? value : JSON.stringify(value);
+  }
   if (value === undefined || value === null || typeof value !== 'object') {
     return JSON.stringify(value ?? null);
   }

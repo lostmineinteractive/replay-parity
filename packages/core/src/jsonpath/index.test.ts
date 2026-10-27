@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { JsonValue } from '../json.js';
 import {
   JsonPathError,
   get,
@@ -212,6 +213,30 @@ describe('keyValueText', () => {
     expect(keyValueText('has space')).toBe('"has space"');
     expect(keyValueText('a=b')).toBe('"a=b"');
     expect(keyValueText(undefined)).toBe('null');
+  });
+
+  it('tells a string key from the number, word, or JSON it spells', () => {
+    const spelledAlike: [JsonValue, string][] = [
+      [1, '1'],
+      [-2, '-2'],
+      [0.5, '0.5'],
+      [1e21, '1e+21'],
+      [true, 'true'],
+      [false, 'false'],
+      [null, 'null'],
+      [[1, 2], '[1,2]'],
+      [{ a: 1 }, '{"a":1}'],
+    ];
+    for (const [value, text] of spelledAlike) {
+      expect(keyValueText(value), text).not.toBe(keyValueText(text));
+      expect(keyValueText(text), text).toBe(JSON.stringify(text));
+    }
+    expect(keyValueText(1)).toBe('1');
+    expect(keyValueText('1')).toBe('"1"');
+    expect(keyValueText('100A')).toBe('"100A"');
+    expect(keyValueText('-x')).toBe('"-x"');
+    expect(keyValueText('o-1')).toBe('o-1');
+    expect(keyValueText('_x$')).toBe('_x$');
   });
 
   it('quotes every string the keyed segment syntax cannot hold bare and every non scalar', () => {

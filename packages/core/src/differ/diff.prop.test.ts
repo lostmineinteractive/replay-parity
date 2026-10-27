@@ -239,12 +239,17 @@ describe('differ properties', () => {
   });
 
   it('under a keyed unordered rule, a permutation of rows with distinct keys matches', () => {
+    // Keys of any JSON value, with the pairs that spell the same text in different
+    // types, such as 1 and "1". Two keys are distinct when their canonical JSON differs.
     const row = fc.record({
-      sku: fc.constantFrom('A', 'B', 'C', 'D', 'E', 'A-1', 'a b', ''),
+      sku: fc.oneof(
+        jsonValue,
+        fc.constantFrom<JsonValue>(1, '1', true, 'true', null, 'null', [1, 2], '[1,2]'),
+      ),
       qty: jsonValue,
     });
     const rows = fc
-      .uniqueArray(row, { selector: (r) => r.sku, maxLength: 6 })
+      .uniqueArray(row, { selector: (r) => canonicalJson(r.sku), maxLength: 8 })
       .chain((items) => fc.tuple(fc.constant(items), permutationOf(items)));
     fc.assert(
       fc.property(rows, ([items, permuted]) => {
@@ -299,20 +304,41 @@ describe('differ properties', () => {
     );
   });
 
-  it.fails(
-    'a keyed unordered rule tells a number key from the string of its digits (known bug)',
-    () => {
-      // Known bug. keyValueText renders the number 1 and the string "1" as the same text, so
-      // the rows { sku: 1 } and { sku: "1" } share one group, a permutation of them is
-      // compared by position, and the differ reports a type mismatch at $.items[sku=1].sku.
-      const rules = DiffRulesSchema.parse({ unordered: [{ path: '$.items', key: '$.sku' }] });
-      const diff = createDiffer(rules).diff(
-        jsonResponse({ items: [{ sku: 1 }, { sku: '1' }] }),
-        jsonResponse({ items: [{ sku: '1' }, { sku: 1 }] }),
-      );
-      expect(diff).toEqual({ verdict: 'match', findings: [] });
-    },
-  );
+  it('a keyed unordered rule tells a number key from the string of its digits', () => {
+    // keyValueText once rendered the number 1 and the string "1" as the same text, so
+    // the rows { sku: 1 } and { sku: "1" } shared one group, a permutation of them was
+    // compared by position, and the differ reported a type mismatch at $.items[sku=1].sku.
+    // A string key now renders bare only when it is an identifier other than true,
+    // false, and null, so every bare text that spells a number or a word is one.
+    const rules = DiffRulesSchema.parse({ unordered: [{ path: '$.items', key: '$.sku' }] });
+    const diff = createDiffer(rules).diff(
+      jsonResponse({ items: [{ sku: 1 }, { sku: '1' }] }),
+      jsonResponse({ items: [{ sku: '1' }, { sku: 1 }] }),
+    );
+    expect(diff).toEqual({ verdict: 'match', findings: [] });
+    const spelledAlike: [JsonValue, string][] = [
+      [1, '1'],
+      [-2, '-2'],
+      [0.5, '0.5'],
+      [true, 'true'],
+      [false, 'false'],
+      [null, 'null'],
+    ];
+    const rowsAlike = fc
+      .subarray(spelledAlike, { minLength: 1 })
+      .map((pairs) => pairs.flatMap(([a, b]) => [{ sku: a }, { sku: b }]))
+      .chain((items) => fc.tuple(fc.constant(items), permutationOf(items)));
+    fc.assert(
+      fc.property(rowsAlike, ([items, permuted]) => {
+        const shuffled = createDiffer(rules).diff(
+          jsonResponse({ items }),
+          jsonResponse({ items: permuted }),
+        );
+        expect(shuffled).toEqual({ verdict: 'match', findings: [] });
+      }),
+      params,
+    );
+  });
 
   it('is deterministic: two runs on the same inputs give byte identical findings', () => {
     fc.assert(
