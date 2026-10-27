@@ -4,8 +4,14 @@ import {
   AnthropicModelClient,
   DEFAULT_MAX_TOKENS,
   DEFAULT_MODEL,
+  loadPricingFile,
+  pricingStaleness,
+  resetByPost,
+  resolvePrices,
   runAgent,
+  writeCaseRecording,
   type ModelClient,
+  type ResetHooks,
 } from '@replay-parity/agent';
 import {
   EXIT_CODES,
@@ -39,12 +45,32 @@ export interface AgentCommandOptions {
   headersFile?: string;
   timeoutMs: number;
   env: string;
+  /** A JSON table of model id to prices, applied over the built in one. */
+  pricing?: string;
+  /** Retry a declined round on a fallback model inside the same call. `--no-fallbacks` clears it. Default true. */
+  fallbacks?: boolean;
+  /** Write the kept cases as a recording here. */
+  exportRecording?: string;
+  /** URL on the candidate that receives a POST before every case. */
+  resetBetweenCases?: string;
+  /** The same for the reference. */
+  resetReference?: string;
+  /** Cases in flight at once. Applies only without resets. Default 1. */
+  caseConcurrency?: number;
+}
+
+export interface ClientFactoryOptions {
+  fallbacks: boolean;
+  timeoutMs: number;
 }
 
 export interface AgentCommandHooks {
   /** Builds the model client. Tests pass a mock. Default: the Anthropic client on the key. */
-  clientFactory?: ((apiKey: string, model: string) => ModelClient) | undefined;
+  clientFactory?:
+    ((apiKey: string, model: string, options: ClientFactoryOptions) => ModelClient) | undefined;
   env?: NodeJS.ProcessEnv | undefined;
+  /** The clock the pricing staleness warning is judged on. Tests pass a fixed date. */
+  now?: (() => Date) | undefined;
 }
 
 export const NO_KEY_MESSAGE =
@@ -68,18 +94,37 @@ export async function runAgentCommand(
     out(streams, noKeyMessage(dotEnv.tried));
     return 0;
   }
+  const staleness = pricingStaleness(hooks.now?.());
+  if (staleness !== null) err(streams, `agent: ${staleness}`);
+  const prices = resolvePrices(
+    options.pricing === undefined ? undefined : await loadPricingFile(options.pricing),
+  );
   const run = await readRun(options.run);
   const recording = await readRecording(options.recording);
   const rules = options.rules === undefined ? run.rules : await loadDiffRules(options.rules);
   const thresholds =
     options.thresholds === undefined ? run.thresholds : await loadThresholds(options.thresholds);
   const headers = await resolveHeaders(options.header, options.headersFile);
+  const clientOptions: ClientFactoryOptions = {
+    fallbacks: options.fallbacks ?? true,
+    timeoutMs: options.timeoutMs,
+  };
   const client =
     hooks.clientFactory === undefined
-      ? new AnthropicModelClient({ apiKey, model: options.model, timeoutMs: options.timeoutMs })
-      : hooks.clientFactory(apiKey, options.model);
+      ? new AnthropicModelClient({
+          apiKey,
+          model: options.model,
+          timeoutMs: options.timeoutMs,
+          fallbacks: clientOptions.fallbacks,
+        })
+      : hooks.clientFactory(apiKey, options.model, clientOptions);
   const reference = new HttpAdapter(options.reference, { timeoutMs: options.timeoutMs });
   const candidate = new HttpAdapter(options.target, { timeoutMs: options.timeoutMs });
+  const resets: ResetHooks = {};
+  if (options.resetBetweenCases !== undefined) {
+    resets.candidate = resetByPost(options.resetBetweenCases);
+  }
+  if (options.resetReference !== undefined) resets.reference = resetByPost(options.resetReference);
   const transcriptPath = join(dirname(options.out), 'agent-transcript.json');
   try {
     const outcome = await runAgent({
@@ -96,6 +141,10 @@ export async function runAgentCommand(
       maxTokens: DEFAULT_MAX_TOKENS,
       transcriptPath,
       casesPath: options.out,
+      prices,
+      pricingPath: options.pricing,
+      resets,
+      caseConcurrency: options.caseConcurrency ?? 1,
       log: (line) => err(streams, `agent: ${line}`),
       signal,
     });
@@ -107,7 +156,16 @@ export async function runAgentCommand(
     );
     await writeFile(transcriptPath, `${JSON.stringify(outcome.transcript, null, 2)}\n`, 'utf8');
     await writeRun(options.run, { ...run, agent: outcome.report });
+    const lines: string[] = [];
+    if (options.exportRecording !== undefined) {
+      const n = await writeCaseRecording(options.exportRecording, outcome.exchanges);
+      lines.push(
+        `  wrote ${options.exportRecording} with ${n} exchange${n === 1 ? '' : 's'} from the kept cases`,
+      );
+    }
     const r = outcome.report;
+    const t = outcome.transcript;
+    const fallbacks = t.rounds.filter((round) => round.fallback_ran);
     out(
       streams,
       [
@@ -115,8 +173,14 @@ export async function runAgentCommand(
         `  proposed ${r.proposed}, valid ${r.valid}, executed ${r.executed}, kept ${r.kept}`,
         `  tokens: ${r.input_tokens} in, ${r.output_tokens} out, ${r.cache_read_tokens} cache read, ${r.cache_write_tokens} cache write`,
         `  cost: $${r.cost_usd.toFixed(4)} of a $${r.budget_usd.toFixed(2)} budget`,
+        ...fallbacks.map(
+          (round) =>
+            `  round ${round.round} was answered by ${round.answered_by ?? 'a fallback model'}`,
+        ),
+        `  isolation: ${t.isolation.reset_between_cases ? 'reset before every case' : 'no reset'}, ${t.isolation.case_concurrency} case${t.isolation.case_concurrency === 1 ? '' : 's'} at a time`,
         ...r.cases.map((c) => `  ${c.id} [${c.tags.join(', ')}] ${c.hypothesis}: ${c.revealed}`),
         `  wrote ${options.out}, ${transcriptPath}, and the agent section of ${options.run}`,
+        ...lines,
       ].join('\n'),
     );
     if (r.stop_reason === 'aborted') {
@@ -134,6 +198,7 @@ export function agentCommand(
   streams: CliStreams,
   signal: AbortSignal,
   exit: (code: number) => void,
+  hooks: AgentCommandHooks = {},
 ): Command {
   return new Command('agent')
     .description(
@@ -162,6 +227,28 @@ export function agentCommand(
         .argParser(positiveNumber),
     )
     .addOption(new Option('--max-rounds <n>', 'round limit').default(3).argParser(positiveInt))
+    .option(
+      '--pricing <path>',
+      'JSON file of model id to prices per million tokens, applied over the built in table',
+    )
+    .option(
+      '--no-fallbacks',
+      'do not retry a declined round on a fallback model inside the same call',
+    )
+    .option(
+      '--export-recording <path>',
+      'write the kept cases as a recording that rp replay can take',
+    )
+    .option(
+      '--reset-between-cases <url>',
+      'URL on the candidate that receives a POST before every case and returns it to its initial state',
+    )
+    .option('--reset-reference <url>', 'URL on the reference that receives the same POST')
+    .addOption(
+      new Option('--case-concurrency <n>', 'cases in flight at once; applies only without resets')
+        .default(1)
+        .argParser(positiveInt),
+    )
     .option('--header <name: value>', 'header applied to every request, repeatable', collect, [])
     .option('--headers-file <path>', 'file with one "name: value" header per line')
     .addOption(
@@ -175,6 +262,6 @@ export function agentCommand(
       '.env',
     )
     .action(async (opts: AgentCommandOptions) => {
-      exit(await runAgentCommand(opts, streams, {}, signal));
+      exit(await runAgentCommand(opts, streams, hooks, signal));
     });
 }
