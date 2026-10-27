@@ -1,12 +1,38 @@
 {
   "name": "@replay-parity/report",
   "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "license": "MIT",
+  "private": false,
   "description": "Terminal, HTML, and JSON renderers for a replay-parity run.",
+  "keywords": [
+    "replay",
+    "diff",
+    "latency",
+    "parity",
+    "regression",
+    "recording",
+    "shadow-traffic",
+    "html",
+    "junit",
+    "markdown",
+    "report"
+  ],
+  "license": "MIT",
+  "type": "module",
   "engines": {
     "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seesharp15/replay-parity.git",
+    "directory": "packages/report"
+  },
+  "homepage": "https://github.com/seesharp15/replay-parity#readme",
+  "bugs": {
+    "url": "https://github.com/seesharp15/replay-parity/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "exports": {
     ".": {
@@ -15,7 +41,7 @@
     }
   },
   "files": [
-    "dist"
+    "dist/src/**/!(*.test).*"
   ],
   "dependencies": {
     "@replay-parity/core": "workspace:*"

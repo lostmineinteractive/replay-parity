@@ -1,0 +1,31 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@4.0.1/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "fixed": [
+    [
+      "@replay-parity/core",
+      "@replay-parity/capture",
+      "@replay-parity/replay",
+      "@replay-parity/invariants",
+      "@replay-parity/shrink",
+      "@replay-parity/report",
+      "@replay-parity/agent",
+      "@replay-parity/cli"
+    ]
+  ],
+  "linked": [],
+  "ignore": [
+    "@replay-parity/demo-reference",
+    "@replay-parity/demo-candidate",
+    "@replay-parity/demo-load",
+    "@replay-parity/scripts"
+  ],
+  "privatePackages": {
+    "version": false,
+    "tag": false
+  }
+}

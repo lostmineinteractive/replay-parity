@@ -21,9 +21,13 @@
     "check-prose": "sh scripts/check-prose.sh",
     "check-secrets": "sh scripts/check-secrets.sh",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm check-prose && pnpm check-secrets && pnpm check-parallel",
-    "check-parallel": "sh scripts/check-parallel.sh"
+    "check-parallel": "sh scripts/check-parallel.sh",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "pnpm build && changeset publish"
   },
   "devDependencies": {
+    "@changesets/cli": "3.0.3",
     "@eslint/js": "^10.0.0",
     "@types/node": "^22.20.5",
     "@vitest/coverage-v8": "^5.0.5",

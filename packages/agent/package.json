@@ -1,11 +1,37 @@
 {
   "name": "@replay-parity/agent",
   "version": "0.1.0",
-  "private": true,
-  "type": "module",
+  "private": false,
+  "description": "Model driven test case generation for replay-parity.",
+  "keywords": [
+    "replay",
+    "diff",
+    "latency",
+    "parity",
+    "regression",
+    "recording",
+    "shadow-traffic",
+    "anthropic",
+    "test-generation",
+    "agent"
+  ],
   "license": "MIT",
+  "type": "module",
   "engines": {
     "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seesharp15/replay-parity.git",
+    "directory": "packages/agent"
+  },
+  "homepage": "https://github.com/seesharp15/replay-parity#readme",
+  "bugs": {
+    "url": "https://github.com/seesharp15/replay-parity/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "exports": {
     ".": {
@@ -14,9 +40,9 @@
     }
   },
   "files": [
-    "dist"
+    "dist/src/**/!(*.test).*",
+    "prompts"
   ],
-  "description": "Model driven test case generation for replay-parity.",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",
     "@replay-parity/core": "workspace:*",

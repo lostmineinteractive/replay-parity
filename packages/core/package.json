@@ -1,11 +1,36 @@
 {
   "name": "@replay-parity/core",
   "version": "0.1.0",
-  "private": true,
-  "type": "module",
+  "private": false,
+  "description": "Recording format, JSONPath subset, differ, statistics, thresholds, and run model for replay-parity.",
+  "keywords": [
+    "replay",
+    "diff",
+    "latency",
+    "parity",
+    "regression",
+    "recording",
+    "shadow-traffic",
+    "jsonpath",
+    "json-schema"
+  ],
   "license": "MIT",
+  "type": "module",
   "engines": {
     "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seesharp15/replay-parity.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/seesharp15/replay-parity#readme",
+  "bugs": {
+    "url": "https://github.com/seesharp15/replay-parity/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "exports": {
     ".": {
@@ -14,7 +39,7 @@
     }
   },
   "files": [
-    "dist",
+    "dist/src/**/!(*.test).*",
     "schema"
   ],
   "dependencies": {

@@ -1,12 +1,36 @@
 {
   "name": "@replay-parity/cli",
   "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "license": "MIT",
+  "private": false,
   "description": "The rp command line: capture, replay, report, invariants, shrink, agent.",
+  "keywords": [
+    "replay",
+    "diff",
+    "latency",
+    "parity",
+    "regression",
+    "recording",
+    "shadow-traffic",
+    "cli",
+    "rp"
+  ],
+  "license": "MIT",
+  "type": "module",
   "engines": {
     "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seesharp15/replay-parity.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/seesharp15/replay-parity#readme",
+  "bugs": {
+    "url": "https://github.com/seesharp15/replay-parity/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "bin": {
     "rp": "./dist/src/main.js"
@@ -18,7 +42,7 @@
     }
   },
   "files": [
-    "dist"
+    "dist/src/**/!(*.test).*"
   ],
   "dependencies": {
     "@replay-parity/agent": "workspace:*",
