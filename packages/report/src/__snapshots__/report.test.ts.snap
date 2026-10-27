@@ -1,5 +1,124 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`renderJunit > fails the failed rows, the violated rules, and the verdict on a failing run 1`] = `
+"<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="replay-parity 01M52Z67EP0000000000000099" tests="12" failures="4" errors="0" skipped="1" time="0.3">
+  <testsuite name="latency" tests="2" failures="1" errors="0" skipped="0" time="0" timestamp="2026-10-16T18:22:03.123Z">
+    <testcase classname="latency" name="latency.overall.p99_ms" time="0"/>
+    <testcase classname="latency" name="latency.by_tag.get-items.p50_ms" time="0">
+      <failure message="measured 12.007, limit 5" type="latency">latency.by_tag.get-items.p50_ms: p50_ms on get-items measured 12.007, limit 5</failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="correctness" tests="1" failures="1" errors="0" skipped="0" time="0" timestamp="2026-10-16T18:22:03.123Z">
+    <testcase classname="correctness" name="correctness.mismatch_rate_max" time="0">
+      <failure message="measured 0.5, limit 0" type="correctness">correctness.mismatch_rate_max: mismatch_rate_max on overall measured 0.5, limit 0</failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="errors" tests="1" failures="0" errors="0" skipped="0" time="0" timestamp="2026-10-16T18:22:03.123Z">
+    <testcase classname="errors" name="errors.rate_max" time="0"/>
+  </testsuite>
+  <testsuite name="pacing" tests="1" failures="0" errors="0" skipped="0" time="0" timestamp="2026-10-16T18:22:03.123Z">
+    <testcase classname="pacing" name="pacing.slip_max_ms" time="0"/>
+  </testsuite>
+  <testsuite name="invariants.reference" tests="3" failures="0" errors="0" skipped="0" time="0" timestamp="2026-10-16T18:22:03.123Z">
+    <testcase classname="invariants.reference" name="shipment-applied-once" time="0"/>
+    <testcase classname="invariants.reference" name="shipped-within-quantity" time="0"/>
+    <testcase classname="invariants.reference" name="allocation-deterministic" time="0"/>
+  </testsuite>
+  <testsuite name="invariants.candidate" tests="3" failures="1" errors="0" skipped="1" time="0" timestamp="2026-10-16T18:22:03.123Z">
+    <testcase classname="invariants.candidate" name="shipment-applied-once" time="0">
+      <failure message="order o-7: expected 2, observed 4. shp-3 delivered 2 times (exchange x-1)" type="invariants.candidate">1. shipment-applied-once violated after 2 checks
+An accepted shipment event changes stock on hand exactly once.
+order o-7: expected 2, observed 4. shp-3 delivered 2 times (exchange x-1)</failure>
+    </testcase>
+    <testcase classname="invariants.candidate" name="shipped-within-quantity" time="0"/>
+    <testcase classname="invariants.candidate" name="allocation-deterministic" time="0">
+      <skipped message="no stock read fixes a baseline"/>
+    </testcase>
+  </testsuite>
+  <testsuite name="run" tests="1" failures="1" errors="0" skipped="0" time="0.3" timestamp="2026-10-16T18:22:03.123Z">
+    <properties>
+      <property name="run_id" value="01M52Z67EP0000000000000099"/>
+      <property name="verdict" value="fail"/>
+      <property name="recording" value="recording.jsonl"/>
+      <property name="target" value="http://localhost:3001"/>
+      <property name="created_at" value="2026-10-16T18:22:03.123Z"/>
+    </properties>
+    <testcase classname="run" name="verdict" time="0.3">
+      <failure message="verdict fail: 2 threshold rows failed, 1 invariant violation" type="run">latency.by_tag.get-items.p50_ms measured 12.007, limit 5
+correctness.mismatch_rate_max measured 0.5, limit 0</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
+"
+`;
+
+exports[`renderMarkdown > summarizes a failing run in GitHub flavored Markdown without HTML 1`] = `
+"# replay-parity: FAIL (run 01M52Z67EP0000000000000099)
+
+- Recording: \`recording.jsonl\` (4 exchanges, 4 selected)
+- Target: \`http://localhost:3001\` via http
+- Pacing: as-recorded, concurrency 4, requested n/a, achieved 10.0 rps, schedule slip p50 1.00 ms, max 3.00 ms
+- Duration: 300 ms, warmup 0, filter none, limit none
+
+## Thresholds
+
+| Outcome | Row | Limit | Measured | Detail |
+| --- | --- | ---: | ---: | --- |
+| pass | \`latency.overall.p99_ms\` | 100 | 25.007 |  |
+| fail | \`latency.by_tag.get-items.p50_ms\` | 5 | 12.007 |  |
+| fail | \`correctness.mismatch_rate_max\` | 0 | 0.5 |  |
+| pass | \`errors.rate_max\` | 0.5 | 0.3333 |  |
+| pass | \`pacing.slip_max_ms\` | 250 | 3 |  |
+
+## Latency
+
+Reference / candidate in milliseconds. Reference values come from the recording.
+
+| Tag | Count | Errors | p50 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| overall | 3 | 1 | 10.0 / 12.0 | 20.0 / 25.0 | 20.0 / 25.0 |
+| create-item | 1 | 0 | 20.0 / 25.0 | 20.0 / 25.0 | 20.0 / 25.0 |
+| get-items | 2 | 1 | 10.0 / 12.0 | 10.0 / 12.0 | 10.0 / 12.0 |
+
+## Correctness
+
+2 compared, 1 match, 0 tolerated, 1 mismatch (50.00%), 1 errors (33.33%).
+
+Top mismatching paths. Array positions are folded into \`[*]\`, so rows that moved count as one path.
+
+| Path | Findings | Exchanges |
+| --- | ---: | ---: |
+| \`$.total\` | 1 | 1 |
+
+## Invariants
+
+Each system is checked against its own recording. Agreement between the two systems is not evidence of correctness.
+
+- reference: 3 hold
+- candidate: 1 hold, 1 violated, 1 inconclusive
+  - 1. \`shipment-applied-once\` violated (2 checks): order o-7: expected 2, observed 4. shp-3 delivered 2 times
+  - 10. \`allocation-deterministic\` inconclusive (1 check): no stock read fixes a baseline
+
+## Reproduction
+
+**reduced reproduction** for rule \`invariant:candidate:shipment-applied-once\`: 283 recorded steps reduced to 4 in 13 attempts (34.0 ms), written to \`reduced-reproduction.jsonl\`.
+
+| # | Request | Tags | Body |
+| ---: | --- | --- | --- |
+| 1 | POST /v1/orders | create-order | \`{"sku":"H-800","qty":2}\` (quantity reduced) |
+| 2 | GET /v1/orders/o-12 | get-order |  |
+
+## Agent
+
+claude-sonnet-5-5: 1 of 2 rounds, 4 cases proposed, 4 valid, 4 executed, 1 kept. Stopped on \`max_rounds\`. Cost $0.30 of a $2.00 budget (1000 input tokens, 200 output tokens, 0 read from cache).
+
+| Case | Round | Hypothesis | Tags | Status ref / cand | Revealed |
+| --- | ---: | --- | --- | --- | --- |
+| \`case-1\` | 1 | odd quantities round differently | create-item | 201 / 201 | $.total differs by half a cent |
+"
+`;
+
 exports[`renderTerminal > names the verdict, every threshold row, the per tag table, and the pacing line 1`] = `
 "replay-parity run 01M52Z67EP0000000000000099: FAIL
 recording recording.jsonl (3 exchanges, 3 selected) -> http://localhost:3001 via http

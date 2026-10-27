@@ -12,10 +12,16 @@ import {
 } from '@replay-parity/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  DRILL_DOWN_CAP,
+  DRILL_DOWN_NO_PATH,
+  escapeXml,
   fmtNumber,
+  planDrillDown,
   renderHistogram,
   renderHtml,
   renderJson,
+  renderJunit,
+  renderMarkdown,
   renderTerminal,
   topMismatchPaths,
 } from './index.js';
@@ -115,6 +121,60 @@ const agent: AgentReport = {
     },
   ],
 };
+
+/** A run whose mismatched exchanges spread over three paths, one of them an array position. */
+function manyMismatches(count: number): Run {
+  const paths = ['$.a', '$.items[%].name', '$.c'];
+  return makeRun({
+    exchanges: Array.from({ length: count }, (_, i) =>
+      makeExchangeResult({
+        id: `x-${i}`,
+        diff: {
+          verdict: 'mismatch',
+          findings: [
+            {
+              path: (paths[i % 3] as string).replace('%', String(i)),
+              kind: 'value',
+              tolerated: false,
+              reference: 1,
+              candidate: 2,
+            },
+          ],
+        },
+      }),
+    ),
+  });
+}
+
+function passingRun(): Run {
+  const run = makeRun({
+    thresholds: parseThresholds('latency:\n  overall: { p99_ms: 100 }\nerrors:\n  rate_max: 0.5\n'),
+  });
+  expect(run.verdict).toBe('pass');
+  return run;
+}
+
+function inconclusiveRun(): Run {
+  const base = fullRun();
+  return {
+    ...base,
+    verdict: 'inconclusive',
+    inconclusive: [
+      { kind: 'barrier_timeout', detail: 'list-ledger waited 10000 ms' },
+      { kind: 'insufficient_samples', detail: 'get-items: 2 successful samples, minimum 20' },
+    ],
+    threshold_results: base.threshold_results.map((r) =>
+      r.id === 'latency.by_tag.get-items.p50_ms'
+        ? {
+            ...r,
+            measured: null,
+            outcome: 'inconclusive' as const,
+            detail: '2 successful samples, minimum 20',
+          }
+        : r,
+    ),
+  };
+}
 
 function fullRun(): Run {
   const base = makeRun({ thresholds });
@@ -309,6 +369,368 @@ describe('renderHtml', () => {
     expect(html).toContain('a&quot;b');
     expect(html).toContain('it&#39;s &amp; &lt;b&gt;');
     expect(renderTerminal(run)).toContain(hostile);
+  });
+});
+
+describe('planDrillDown', () => {
+  it('groups by the first untolerated path and takes exchanges round robin up to the cap', () => {
+    const plan = planDrillDown(manyMismatches(500));
+    expect(plan.total).toBe(500);
+    expect(plan.shown).toBe(DRILL_DOWN_CAP);
+    expect(plan.groups.map((g) => [g.path, g.exchanges.length, g.shown.length])).toEqual([
+      ['$.a', 167, 67],
+      ['$.items[*].name', 167, 67],
+      ['$.c', 166, 66],
+    ]);
+    for (const g of plan.groups) {
+      expect(g.shown).toEqual(g.exchanges.slice(0, g.shown.length));
+    }
+    expect(plan.groups[0]?.shown.slice(0, 3).map((e) => e.id)).toEqual(['x-0', 'x-3', 'x-6']);
+    expect(plan.groups[1]?.shown.slice(0, 2).map((e) => e.id)).toEqual(['x-1', 'x-4']);
+    const all = planDrillDown(manyMismatches(500), 1000);
+    expect(all.shown).toBe(500);
+    expect(all.groups.every((g) => g.shown.length === g.exchanges.length)).toBe(true);
+    const none = planDrillDown(manyMismatches(5), 0);
+    expect(none.shown).toBe(0);
+    expect(none.groups.every((g) => g.shown.length === 0)).toBe(true);
+  });
+
+  it('orders the groups like the top paths, puts exchanges without an untolerated finding last, and skips controls', () => {
+    const finding = (path: string, tolerated = false) => ({
+      path,
+      kind: 'value' as const,
+      tolerated,
+      reference: 'a',
+      candidate: 'b',
+    });
+    const run = makeRun({
+      exchanges: [
+        makeExchangeResult({
+          id: 'only-tolerated',
+          diff: { verdict: 'mismatch', findings: [finding('$.x', true)] },
+        }),
+        makeExchangeResult({
+          id: 'rare',
+          diff: { verdict: 'mismatch', findings: [finding('$.rare')] },
+        }),
+        makeExchangeResult({
+          id: 'common-1',
+          diff: { verdict: 'mismatch', findings: [finding('$.common'), finding('$.rare')] },
+        }),
+        makeExchangeResult({
+          id: 'common-2',
+          diff: { verdict: 'mismatch', findings: [finding('$.common')] },
+        }),
+        makeExchangeResult({
+          id: 'ctrl',
+          control: true,
+          diff: { verdict: 'mismatch', findings: [finding('$.common')] },
+        }),
+        makeExchangeResult({ id: 'ok', diff: { verdict: 'match', findings: [] } }),
+      ],
+    });
+    const plan = planDrillDown(run);
+    expect(plan.groups.map((g) => [g.path, g.exchanges.map((e) => e.id)])).toEqual([
+      ['$.common', ['common-1', 'common-2']],
+      ['$.rare', ['rare']],
+      [DRILL_DOWN_NO_PATH, ['only-tolerated']],
+    ]);
+    expect(plan.total).toBe(4);
+    expect(planDrillDown(makeRun({ exchanges: [] }))).toEqual({ groups: [], total: 0, shown: 0 });
+  });
+});
+
+describe('renderHtml drill down cap', () => {
+  it('shows at most 200 mismatched exchanges, represents every path, and says what was left out', () => {
+    const html = renderHtml(manyMismatches(500));
+    expect(html.match(/<details class="exchange"/g)).toHaveLength(200);
+    expect(html).toContain('<h3>Mismatched exchanges (500)</h3>');
+    expect(html).toContain(
+      '<h4 data-path="$.a"><code>$.a</code> <span class="muted">showing 67 of 167</span></h4>',
+    );
+    expect(html).toContain(
+      '<h4 data-path="$.items[*].name"><code>$.items[*].name</code> <span class="muted">showing 67 of 167</span></h4>',
+    );
+    expect(html).toContain(
+      '<h4 data-path="$.c"><code>$.c</code> <span class="muted">showing 66 of 166</span></h4>',
+    );
+    expect(html).toContain('Showing 200 of 500, taken round robin across the paths below');
+    expect(html).toContain('The 300 left out are in the run file.');
+    expect(html).toContain('<details class="exchange" data-id="x-0">');
+    expect(html).toContain('<details class="exchange" data-id="x-1">');
+    expect(html).toContain('<details class="exchange" data-id="x-2">');
+    expect(html).not.toContain('<details class="exchange" data-id="x-499">');
+    expect(html).not.toContain('<script');
+    expect(html).not.toMatch(/\s(src|href)=["']https?:/);
+  });
+
+  it('groups a small run under its path with nothing left out', () => {
+    const html = renderHtml(makeRun());
+    expect(html).toContain(
+      '<h4 data-path="$.total"><code>$.total</code> <span class="muted">showing 1 of 1</span></h4>',
+    );
+    expect(html).not.toContain('left out are in the run file');
+    expect(html).toContain('<h3>Mismatched exchanges (1)</h3>');
+    expect(renderHtml(makeRun({ exchanges: [] }))).toContain(
+      '<h3>Mismatched exchanges (0)</h3><p class="muted">None.</p>',
+    );
+  });
+
+  it('lists at most 50 errors and says so', () => {
+    const run = makeRun({
+      exchanges: Array.from({ length: 60 }, (_, i) =>
+        makeExchangeResult({
+          id: `err-${i}`,
+          acked_at_ms: null,
+          candidate: null,
+          error: `timeout: request ${i} timed out`,
+          diff: null,
+        }),
+      ),
+    });
+    const html = renderHtml(run);
+    expect(html).toContain('<h3>Errors (60)</h3>');
+    expect(html).toContain('<p class="muted">Showing 50 of 60. The rest are in the run file.</p>');
+    expect(html.match(/<td><code>err-\d+<\/code><\/td>/g)).toHaveLength(50);
+    expect(html).toContain('err-49');
+    expect(html).not.toContain('err-50');
+    expect(renderHtml(makeRun())).not.toContain('The rest are in the run file');
+  });
+});
+
+describe('renderJunit', () => {
+  it('fails the failed rows, the violated rules, and the verdict on a failing run', () => {
+    const run = fullRun();
+    const xml = renderJunit(run);
+    expect(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?>\n<testsuites ')).toBe(true);
+    expect(xml.endsWith('</testsuites>\n')).toBe(true);
+    expect(xml).toContain(
+      '<testsuite name="latency" tests="2" failures="1" errors="0" skipped="0" time="0" timestamp="2026-10-16T18:22:03.123Z">',
+    );
+    expect(xml).toContain('<testcase classname="latency" name="latency.overall.p99_ms" time="0"/>');
+    expect(xml).toContain(
+      '<testcase classname="latency" name="latency.by_tag.get-items.p50_ms" time="0">\n      <failure message="measured 12.007, limit 5" type="latency">latency.by_tag.get-items.p50_ms: p50_ms on get-items measured 12.007, limit 5</failure>',
+    );
+    expect(xml).toContain('<testsuite name="correctness" tests="1" failures="1"');
+    expect(xml).toContain('<testsuite name="errors" tests="1" failures="0"');
+    expect(xml).toContain('<testsuite name="pacing" tests="1" failures="0"');
+    expect(xml).toContain(
+      '<testsuite name="invariants.reference" tests="3" failures="0" errors="0" skipped="0"',
+    );
+    expect(xml).toContain(
+      '<testsuite name="invariants.candidate" tests="3" failures="1" errors="0" skipped="1"',
+    );
+    expect(xml).toContain(
+      '<testcase classname="invariants.candidate" name="shipment-applied-once" time="0">\n      <failure message="order o-7: expected 2, observed 4. shp-3 delivered 2 times (exchange x-1)" type="invariants.candidate">1. shipment-applied-once violated after 2 checks\nAn accepted shipment event changes stock on hand exactly once.\norder o-7: expected 2, observed 4. shp-3 delivered 2 times (exchange x-1)</failure>',
+    );
+    expect(xml).toContain(
+      '<testcase classname="invariants.candidate" name="shipped-within-quantity" time="0"/>',
+    );
+    expect(xml).toContain(
+      '<testcase classname="invariants.candidate" name="allocation-deterministic" time="0">\n      <skipped message="no stock read fixes a baseline"/>',
+    );
+    expect(xml).toContain(`<property name="run_id" value="${run.run_id}"/>`);
+    expect(xml).toContain('<property name="verdict" value="fail"/>');
+    expect(xml).toContain(
+      '<testcase classname="run" name="verdict" time="0.3">\n      <failure message="verdict fail: 2 threshold rows failed, 1 invariant violation" type="run">latency.by_tag.get-items.p50_ms measured 12.007, limit 5\ncorrectness.mismatch_rate_max measured 0.5, limit 0</failure>',
+    );
+    const cases = xml.match(/<testcase /g)?.length ?? 0;
+    expect(cases).toBe(run.threshold_results.length + 3 + 3 + 1);
+    expect(xml).toContain(
+      `<testsuites name="replay-parity ${run.run_id}" tests="${cases}" failures="4" errors="0" skipped="1" time="0.3">`,
+    );
+    expect(xml).not.toContain('<testsuite name="invariants" ');
+    expect(renderJunit(run)).toBe(xml);
+    expect(xml).toMatchSnapshot();
+  });
+
+  it('passes every case on a passing run and omits sections without rows', () => {
+    const xml = renderJunit(passingRun());
+    expect(xml).not.toContain('<failure');
+    expect(xml).not.toContain('<skipped');
+    expect(xml).toContain('<testsuite name="latency" tests="1" failures="0"');
+    expect(xml).toContain('<testsuite name="errors" tests="1" failures="0"');
+    expect(xml).not.toContain('<testsuite name="correctness"');
+    expect(xml).not.toContain('<testsuite name="pacing"');
+    expect(xml).not.toContain('<testsuite name="invariants');
+    expect(xml).toContain('<testcase classname="run" name="verdict" time="0.3"/>');
+    expect(xml).toContain('<property name="verdict" value="pass"/>');
+    expect(xml).toContain('tests="3" failures="0" errors="0" skipped="0"');
+  });
+
+  it('skips the rows that could not decide and the verdict with the conditions on an inconclusive run', () => {
+    const xml = renderJunit(inconclusiveRun());
+    expect(xml).toContain(
+      '<testcase classname="latency" name="latency.by_tag.get-items.p50_ms" time="0">\n      <skipped message="2 successful samples, minimum 20"/>',
+    );
+    expect(xml).toContain(
+      '<testcase classname="run" name="verdict" time="0.3">\n      <skipped message="barrier_timeout: list-ledger waited 10000 ms; insufficient_samples: get-items: 2 successful samples, minimum 20"/>',
+    );
+    expect(xml).toContain('<property name="verdict" value="inconclusive"/>');
+    expect(xml).toContain('<testsuite name="run" tests="1" failures="0" errors="0" skipped="1"');
+    const thin = makeRun({
+      thresholds: parseThresholds('latency:\n  min_samples: 20\n  overall: { p99_ms: 100 }\n'),
+    });
+    expect(thin.verdict).toBe('inconclusive');
+    expect(renderJunit(thin)).toContain('<skipped message="insufficient_samples: ');
+  });
+
+  it('escapes every recorded string and drops characters XML cannot carry', () => {
+    const hostile = '<script>alert("1")</script> & \'x\' ]]>';
+    const violated = candidateReport.results[0] as InvariantReport['results'][number];
+    const run = makeRun({
+      target: `http://cand/${hostile}`,
+      inconclusive: [{ kind: 'control_failed', detail: `restart ${hostile}\u0000\u0007` }],
+      verdict: 'inconclusive',
+      invariants: {
+        reference: null,
+        candidate: {
+          ...candidateReport,
+          results: [
+            {
+              ...violated,
+              name: `rule-${hostile}`,
+              evidence: violated.evidence.map((e) => ({ ...e, subject: hostile })),
+            },
+          ],
+        },
+      },
+    });
+    const xml = renderJunit(run);
+    expect(xml).not.toContain(hostile);
+    expect(xml).not.toContain('<script');
+    expect(xml).not.toContain(']]>');
+    expect(xml).not.toContain('\u0000');
+    expect(xml).not.toContain('\u0007');
+    expect(xml).toContain(
+      '&lt;script&gt;alert(&quot;1&quot;)&lt;/script&gt; &amp; &apos;x&apos; ]]&gt;',
+    );
+    expect(xml).toContain('name="rule-&lt;script&gt;');
+    expect(xml).toContain('<skipped message="control_failed: restart &lt;script&gt;');
+    expect(escapeXml('a\tb\nc')).toBe('a\tb\nc');
+    expect(escapeXml('\u{1F600}')).toBe('\u{1F600}');
+    expect(escapeXml('\u0001x\u001fy')).toBe('xy');
+  });
+});
+
+describe('renderMarkdown', () => {
+  it('summarizes a failing run in GitHub flavored Markdown without HTML', () => {
+    const run = fullRun();
+    const md = renderMarkdown(run);
+    expect(md.startsWith(`# replay-parity: FAIL (run ${run.run_id})\n`)).toBe(true);
+    expect(md).toContain('- Recording: `recording.jsonl` (4 exchanges, 4 selected)');
+    expect(md).toContain('- Target: `http://localhost:3001` via http');
+    expect(md).toContain('schedule slip p50 1.00 ms, max 3.00 ms');
+    expect(md).not.toContain('Inconclusive because');
+    expect(md).toContain('| Outcome | Row | Limit | Measured | Detail |');
+    expect(md).toContain('| --- | --- | ---: | ---: | --- |');
+    expect(md).toContain('| fail | `latency.by_tag.get-items.p50_ms` | 5 | 12.007 |  |');
+    expect(md).toContain('| pass | `errors.rate_max` | 0.5 | 0.3333 |  |');
+    expect(md).toContain('| Tag | Count | Errors | p50 | p99 | max |');
+    expect(md).toContain('| overall | 3 | 1 | 10.0 / 12.0 | 20.0 / 25.0 | 20.0 / 25.0 |');
+    expect(md).toContain('| get-items | 2 | 1 | 10.0 / 12.0 | 10.0 / 12.0 | 10.0 / 12.0 |');
+    expect(md).toContain(
+      '2 compared, 1 match, 0 tolerated, 1 mismatch (50.00%), 1 errors (33.33%).',
+    );
+    expect(md).toContain('| `$.total` | 1 | 1 |');
+    expect(md).toContain('- reference: 3 hold');
+    expect(md).toContain('- candidate: 1 hold, 1 violated, 1 inconclusive');
+    expect(md).toContain(
+      '  - 1. `shipment-applied-once` violated (2 checks): order o-7: expected 2, observed 4. shp-3 delivered 2 times',
+    );
+    expect(md).toContain(
+      '  - 10. `allocation-deterministic` inconclusive (1 check): no stock read fixes a baseline',
+    );
+    expect(md).toContain(
+      '**reduced reproduction** for rule `invariant:candidate:shipment-applied-once`: 283 recorded steps reduced to 4 in 13 attempts (34.0 ms), written to `reduced-reproduction.jsonl`.',
+    );
+    expect(md).toContain(
+      '| 1 | POST /v1/orders | create-order | `{"sku":"H-800","qty":2}` (quantity reduced) |',
+    );
+    expect(md).toContain('| 2 | GET /v1/orders/o-12 | get-order |  |');
+    expect(md).toContain(
+      'claude-sonnet-5-5: 1 of 2 rounds, 4 cases proposed, 4 valid, 4 executed, 1 kept. Stopped on `max_rounds`. Cost $0.30 of a $2.00 budget',
+    );
+    expect(md).toContain(
+      '| `case-1` | 1 | odd quantities round differently | create-item | 201 / 201 | $.total differs by half a cent |',
+    );
+    expect(md).not.toMatch(/<[a-z!/][^>]*>/i);
+    expect(md).not.toContain('—');
+    expect(md).not.toContain('minimal');
+    expect(md.split('\n').length).toBeLessThan(150);
+    expect(md.endsWith('\n')).toBe(true);
+    expect(renderMarkdown(run)).toBe(md);
+    expect(md).toMatchSnapshot();
+  });
+
+  it('keeps a passing run short and leaves out the sections that have nothing', () => {
+    const run = makeRun({
+      thresholds: parseThresholds('latency:\n  overall: { p99_ms: 100 }\n'),
+      exchanges: [makeExchangeResult({ id: 'ok-1' }), makeExchangeResult({ id: 'ok-2' })],
+    });
+    expect(run.verdict).toBe('pass');
+    const md = renderMarkdown(run);
+    expect(md.startsWith(`# replay-parity: PASS (run ${run.run_id})\n`)).toBe(true);
+    expect(md).toContain('| pass | `latency.overall.p99_ms` | 100 | 12.007 |  |');
+    expect(md).toContain('No untolerated differences.');
+    expect(md).not.toContain('## Invariants');
+    expect(md).not.toContain('## Reproduction');
+    expect(md).not.toContain('## Agent');
+    expect(md).not.toContain('Inconclusive because');
+    expect(md.split('\n').length).toBeLessThan(30);
+    expect(renderMarkdown(makeRun({ exchanges: [] }))).toContain('No thresholds configured.');
+  });
+
+  it('names the inconclusive conditions under the heading', () => {
+    const md = renderMarkdown(inconclusiveRun());
+    expect(md).toContain('# replay-parity: INCONCLUSIVE (run ');
+    expect(md).toContain(
+      '**Inconclusive because**\n\n- `barrier_timeout`: list-ledger waited 10000 ms\n- `insufficient_samples`: get-items: 2 successful samples, minimum 20\n',
+    );
+    expect(md).toContain(
+      '| inconclusive | `latency.by_tag.get-items.p50_ms` | 5 | n/a | 2 successful samples, minimum 20 |',
+    );
+  });
+
+  it('escapes Markdown punctuation in recorded strings so a cell or a line cannot be broken', () => {
+    const hostile = 'a|b <x> *y* _z_ [l](u) `q` ~s~ \\ end';
+    const kept = agent.cases[0] as AgentReport['cases'][number];
+    const run = makeRun({
+      target: `http://cand/${hostile}`,
+      exchanges: [
+        makeExchangeResult({
+          id: 'h',
+          path: `/v1/${hostile}`,
+          tags: ['t|u'],
+          diff: {
+            verdict: 'mismatch',
+            findings: [
+              {
+                path: '$.items[0].na|me',
+                kind: 'value',
+                tolerated: false,
+                reference: hostile,
+                candidate: 'b',
+              },
+            ],
+          },
+        }),
+      ],
+      agent: {
+        ...agent,
+        cases: [{ ...kept, hypothesis: hostile, revealed: hostile, tags: ['t|u'] }],
+      },
+    });
+    const md = renderMarkdown(run);
+    expect(md).not.toContain(hostile);
+    expect(md).toContain(
+      '| a\\|b \\<x\\> \\*y\\* \\_z\\_ \\[l\\](u) \\`q\\` \\~s\\~ \\\\ end | t\\|u |',
+    );
+    expect(md).toContain('| `$.items[*].na\\|me` | 1 | 1 |');
+    expect(md).toContain('- Target: `` http://cand/a\\|b <x> *y* _z_ [l](u) `q` ~s~ \\ end ``');
+    for (const line of md.split('\n').filter((l) => l.startsWith('| '))) {
+      expect(line.endsWith(' |'), line).toBe(true);
+    }
   });
 });
 

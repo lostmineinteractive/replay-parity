@@ -1,4 +1,4 @@
-import type { Run } from '@replay-parity/core';
+import type { ExchangeResult, Run } from '@replay-parity/core';
 
 /** Number formatting shared by the renderers. Deterministic, locale free. */
 
@@ -98,6 +98,69 @@ export function describeTopPath(t: TopPath): string {
 
 export function mismatchedExchanges(run: Run): Run['exchanges'] {
   return run.exchanges.filter((e) => !e.control && e.diff?.verdict === 'mismatch');
+}
+
+/** The most mismatched exchanges the HTML drill down renders inline. */
+export const DRILL_DOWN_CAP = 200;
+
+/** The group key for a mismatched exchange with no untolerated finding. */
+export const DRILL_DOWN_NO_PATH = '(no untolerated finding)';
+
+export interface DrillDownGroup {
+  /** The generalized path of the first untolerated finding of every exchange in the group. */
+  path: string;
+  /** Every mismatched exchange in the group, in run order. */
+  exchanges: ExchangeResult[];
+  /** The exchanges chosen for the drill down, a prefix of `exchanges`. */
+  shown: ExchangeResult[];
+}
+
+export interface DrillDownPlan {
+  /** Groups in the order of `topMismatchPaths`, so the most frequent path comes first. */
+  groups: DrillDownGroup[];
+  /** Mismatched exchanges in the run. */
+  total: number;
+  /** Exchanges chosen across every group. */
+  shown: number;
+}
+
+/**
+ * Chooses which mismatched exchanges the drill down renders. Exchanges are
+ * grouped by the generalized path of their first untolerated finding and
+ * taken round robin across the groups, in run order within a group, until
+ * the cap is reached. Every path is therefore represented even when one
+ * path accounts for nearly every mismatch.
+ */
+export function planDrillDown(run: Run, cap = DRILL_DOWN_CAP): DrillDownPlan {
+  const byPath = new Map<string, ExchangeResult[]>();
+  for (const e of mismatchedExchanges(run)) {
+    const first = e.diff?.findings.find((f) => !f.tolerated);
+    const key = first === undefined ? DRILL_DOWN_NO_PATH : generalizePath(first.path);
+    const list = byPath.get(key);
+    if (list === undefined) byPath.set(key, [e]);
+    else list.push(e);
+  }
+  const order = topMismatchPaths(run, Number.POSITIVE_INFINITY).map((t) => t.path);
+  const rank = (path: string): number => {
+    const i = order.indexOf(path);
+    return i === -1 ? order.length : i;
+  };
+  const groups: DrillDownGroup[] = [...byPath.entries()]
+    .sort(([a], [b]) => rank(a) - rank(b) || (a < b ? -1 : 1))
+    .map(([path, exchanges]) => ({ path, exchanges, shown: [] }));
+  const total = groups.reduce((n, g) => n + g.exchanges.length, 0);
+  const shown = Math.min(Math.max(0, cap), total);
+  let remaining = shown;
+  while (remaining > 0) {
+    for (const g of groups) {
+      if (remaining === 0) break;
+      const next = g.exchanges[g.shown.length];
+      if (next === undefined) continue;
+      g.shown.push(next);
+      remaining -= 1;
+    }
+  }
+  return { groups, total, shown };
 }
 
 export function controlExchanges(run: Run): Run['exchanges'] {

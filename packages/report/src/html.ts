@@ -6,8 +6,8 @@ import {
   fmtNumber,
   fmtPercent,
   invariantSummary,
-  mismatchedExchanges,
   pacingLine,
+  planDrillDown,
   topMismatchPaths,
   verdictLabel,
 } from './format.js';
@@ -45,6 +45,7 @@ dl.meta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; 
 dl.meta dt { color: #666; } dl.meta dd { margin: 0; word-break: break-all; }
 section { margin: 28px 0; } h2 { font-size: 18px; margin: 0 0 10px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
 h3 { font-size: 15px; margin: 18px 0 6px; }
+h4 { font-size: 14px; margin: 14px 0 4px; font-weight: 600; }
 table { border-collapse: collapse; width: 100%; background: #fff; }
 th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid #e6e6e6; vertical-align: top; }
 th { background: #f0f0f0; font-weight: 600; } td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -167,6 +168,9 @@ function latency(run: Run): string {
   return `<section id="latency"><h2>Latency</h2><p class="muted">Reference values come from the recording, candidate values from this replay. Percentiles in milliseconds, reference / candidate.</p><table><thead><tr><th>Tag</th><th class="num">Count</th><th class="num">Errors</th><th class="num">p50</th><th class="num">p90</th><th class="num">p99</th><th class="num">p999</th><th class="num">max</th><th class="num">mean</th></tr></thead><tbody>${rows}</tbody></table><p id="pacing" class="muted">Pacing: ${esc(pacingLine(run))}.</p><p class="legend"><span style="background:${SVG_REFERENCE_COLOR}"></span>reference <span style="background:${SVG_CANDIDATE_COLOR}"></span>candidate. Log spaced bins from ${fmtNumber(run.stats.histogram_edges_ms[0] ?? 0)} ms to ${fmtNumber(run.stats.histogram_edges_ms[run.stats.histogram_edges_ms.length - 1] ?? 0)} ms.</p><div class="charts">${charts}</div></section>`;
 }
 
+/** The most errored exchanges the errors table lists. */
+const ERRORS_CAP = 50;
+
 function drillDown(e: ExchangeResult): string {
   const findings = (e.diff?.findings ?? [])
     .map(
@@ -195,20 +199,35 @@ function correctness(run: Run): string {
               `<tr><td><code>${esc(t.path)}</code></td><td class="num">${t.count}</td><td class="num">${t.exchanges}</td></tr>`,
           )
           .join('')}</tbody></table>`;
-  const mismatched = mismatchedExchanges(run);
+  const plan = planDrillDown(run);
+  const leftOut = plan.total - plan.shown;
+  const capNote =
+    leftOut === 0
+      ? ''
+      : `<p class="muted">Showing ${plan.shown} of ${plan.total}, taken round robin across the paths below so every path is represented. The ${leftOut} left out are in the run file.</p>`;
+  const groups = plan.groups
+    .map(
+      (g) =>
+        `<h4 data-path="${esc(g.path)}"><code>${esc(g.path)}</code> <span class="muted">showing ${g.shown.length} of ${g.exchanges.length}</span></h4>${g.shown.map(drillDown).join('')}`,
+    )
+    .join('');
   const errors = run.exchanges.filter((e) => e.error !== null);
+  const errorNote =
+    errors.length <= ERRORS_CAP
+      ? ''
+      : `<p class="muted">Showing ${ERRORS_CAP} of ${errors.length}. The rest are in the run file.</p>`;
   const errorHtml =
     errors.length === 0
       ? ''
-      : `<h3>Errors (${errors.length})</h3><table><thead><tr><th>Exchange</th><th>Request</th><th>Error</th></tr></thead><tbody>${errors
-          .slice(0, 50)
+      : `<h3>Errors (${errors.length})</h3>${errorNote}<table><thead><tr><th>Exchange</th><th>Request</th><th>Error</th></tr></thead><tbody>${errors
+          .slice(0, ERRORS_CAP)
           .map(
             (e) =>
               `<tr><td><code>${esc(e.id)}</code></td><td>${esc(e.method)} ${esc(e.path)}</td><td>${esc(e.error ?? '')}</td></tr>`,
           )
           .join('')}</tbody></table>`;
-  return `<section id="correctness"><h2>Correctness</h2><h3>By tag</h3><table><thead><tr><th>Tag</th><th class="num">Compared</th><th class="num">Match</th><th class="num">Tolerated</th><th class="num">Mismatch</th><th class="num">Rate</th><th class="num">Errors</th></tr></thead><tbody>${rows}</tbody></table><h3>Top mismatching paths</h3>${topHtml}<h3>Mismatched exchanges (${mismatched.length})</h3>${
-    mismatched.length === 0 ? '<p class="muted">None.</p>' : mismatched.map(drillDown).join('')
+  return `<section id="correctness"><h2>Correctness</h2><h3>By tag</h3><table><thead><tr><th>Tag</th><th class="num">Compared</th><th class="num">Match</th><th class="num">Tolerated</th><th class="num">Mismatch</th><th class="num">Rate</th><th class="num">Errors</th></tr></thead><tbody>${rows}</tbody></table><h3>Top mismatching paths</h3>${topHtml}<h3>Mismatched exchanges (${plan.total})</h3>${
+    plan.total === 0 ? '<p class="muted">None.</p>' : `${capNote}${groups}`
   }${errorHtml}</section>`;
 }
 
