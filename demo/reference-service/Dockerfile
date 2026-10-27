@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Built from the repository root so the workspace lockfile is shared:
 #   docker build -f demo/reference-service/Dockerfile .
-FROM node:22-slim AS build
+FROM node:26-slim AS build
 WORKDIR /repo
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json tsconfig.base.json ./
@@ -12,7 +12,7 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm exec tsc -b demo/reference-service
 RUN pnpm --filter @replay-parity/demo-reference deploy --prod --legacy /out
 
-FROM node:22-slim
+FROM node:26-slim
 ENV NODE_ENV=production
 ENV PORT=3000
 WORKDIR /app
