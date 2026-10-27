@@ -6,3 +6,4 @@ demo/out/
 .env
 .env.*
 .DS_Store
+.claude/worktrees/

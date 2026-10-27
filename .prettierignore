@@ -5,3 +5,4 @@ demo/out/
 pnpm-lock.yaml
 SPEC.md
 *.jsonl
+.claude/worktrees/

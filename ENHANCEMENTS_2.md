@@ -250,7 +250,7 @@ Sizes are for one engineer: S is up to three days, M is one to two weeks, L is t
 
 ### E13. Security and compliance
 
-**Today.** Redaction covers headers only, so an `api_key` query parameter or a body field is recorded in clear. `scripts/check-secrets.sh` matches the `sk-ant-` prefix. The CI workflow has no `permissions` block, pins actions by major version, and runs no dependency audit. There is no `SECURITY.md`, no threat model, and no statement about what a recording contains and how long it should be kept.
+**Today.** Redaction covers headers only, so an `api_key` query parameter or a body field is recorded in clear. `scripts/check-secrets.sh` matches one key prefix. The CI workflow has no `permissions` block, pins actions by major version, and runs no dependency audit. There is no `SECURITY.md`, no threat model, and no statement about what a recording contains and how long it should be kept.
 
 **Proposal.**
 

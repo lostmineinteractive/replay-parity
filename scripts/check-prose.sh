@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.." || exit 1
 status=0
 em_dash=$(printf '\342\200\224')
 
-prune='-path ./node_modules -o -path ./.git -o -path ./coverage -o -path ./demo/out -o -name node_modules -o -name dist'
+prune='-path ./node_modules -o -path ./.git -o -path ./.claude -o -path ./coverage -o -path ./demo/out -o -name node_modules -o -name dist'
 
 md_files=$(find . \( $prune \) -prune -o -type f -name '*.md' -print | sort)
 for f in $md_files; do
