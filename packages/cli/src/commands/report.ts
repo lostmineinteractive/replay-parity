@@ -1,15 +1,33 @@
 import { writeFile } from 'node:fs/promises';
-import { ConfigError, explainDiff, readRun, type Run } from '@replay-parity/core';
-import { renderHtml, renderJson, renderTerminal } from '@replay-parity/report';
+import { ConfigError, exitCodeFor, explainDiff, readRun, type Run } from '@replay-parity/core';
+import {
+  renderHtml,
+  renderJson,
+  renderJunit,
+  renderMarkdown,
+  renderTerminal,
+} from '@replay-parity/report';
 import { Command, Option } from 'commander';
 import { out, err, type CliStreams } from '../io.js';
+
+export type ReportFormat = 'html' | 'json' | 'terminal' | 'junit' | 'markdown';
 
 export interface ReportCommandOptions {
   run: string;
   out?: string;
-  format?: 'html' | 'json' | 'terminal';
+  format?: ReportFormat;
   explain?: string | boolean;
+  /** Exit with the run's own code after a successful render instead of 0. */
+  failOnVerdict?: boolean;
 }
+
+const RENDERERS: Record<ReportFormat, (run: Run) => string> = {
+  html: renderHtml,
+  json: renderJson,
+  terminal: renderTerminal,
+  junit: renderJunit,
+  markdown: renderMarkdown,
+};
 
 /** Plain language explanation of one exchange, or of every mismatched exchange. */
 export function explainRun(run: Run, id: string | undefined): string {
@@ -35,29 +53,29 @@ export async function runReport(
   streams: CliStreams,
 ): Promise<number> {
   const run = await readRun(options.run);
+  const code = options.failOnVerdict === true ? exitCodeFor(run.verdict) : 0;
   if (options.explain !== undefined) {
     out(
       streams,
       explainRun(run, typeof options.explain === 'string' ? options.explain : undefined),
     );
-    return 0;
+    return code;
   }
   const format = options.format ?? (options.out === undefined ? 'terminal' : 'html');
-  const text =
-    format === 'html' ? renderHtml(run) : format === 'json' ? renderJson(run) : renderTerminal(run);
+  const text = RENDERERS[format](run);
   if (options.out === undefined) {
     streams.stdout.write(text);
   } else {
     await writeFile(options.out, text, 'utf8');
     err(streams, `wrote ${options.out} (${format}): ${run.verdict.toUpperCase()}`);
   }
-  return 0;
+  return code;
 }
 
 export function reportCommand(streams: CliStreams, exit: (code: number) => void): Command {
   return new Command('report')
     .description(
-      'Render a run as HTML, JSON, or a terminal summary, or explain why exchanges mismatched. Exits 0 after a successful render regardless of the verdict.',
+      'Render a run as HTML, JSON, JUnit XML, Markdown, or a terminal summary, or explain why exchanges mismatched. Exits 0 after a successful render regardless of the verdict unless --fail-on-verdict is given.',
     )
     .requiredOption('--run <path>', 'run file written by rp replay')
     .option('--out <path>', 'file to write; without it the report goes to stdout')
@@ -65,11 +83,15 @@ export function reportCommand(streams: CliStreams, exit: (code: number) => void)
       new Option(
         '--format <name>',
         'output format; html when --out is given, terminal otherwise',
-      ).choices(['html', 'json', 'terminal']),
+      ).choices(['html', 'json', 'terminal', 'junit', 'markdown']),
     )
     .option(
       '--explain [exchange-id]',
       'explain one exchange in plain language, or every mismatched exchange',
+    )
+    .option(
+      '--fail-on-verdict',
+      'exit with the run verdict code after writing the output: 0 pass, 2 fail, 3 inconclusive',
     )
     .action(async (opts: ReportCommandOptions) => {
       exit(await runReport(opts, streams));
