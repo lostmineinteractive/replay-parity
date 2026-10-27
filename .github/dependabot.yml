@@ -32,6 +32,7 @@ updates:
   # The two demo Dockerfiles share a base image. One entry watches both.
   - package-ecosystem: docker
     directories:
+      - /
       - /demo/reference-service
       - /demo/candidate-service
     schedule:
