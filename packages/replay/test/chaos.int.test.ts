@@ -129,10 +129,11 @@ function errorRateThresholds(): Thresholds {
 describe('HTTP adapter under chaos', () => {
   it('classifies a connection destroyed after the headers and half the body as a transport failure, not other', async () => {
     const err = await sendError(new HttpAdapter(url, { timeoutMs: 2000 }), '/half-body');
-    // undici reports the early close as a socket error, which the adapter maps to
-    // `connection`. A content length mismatch would arrive as `protocol`. Either
-    // is a transport failure; `other` would mean the error went unclassified.
-    expect(['connection', 'protocol']).toContain(err.kind);
+    // undici reports the early close as `UND_ERR_SOCKET: other side closed`, which the
+    // adapter maps to `connection`. A content length mismatch would arrive as `protocol`.
+    // Either is a transport failure; `other` would mean the error went unclassified.
+    expect(err.kind).toBe('connection');
+    expect(err.message).toMatch(/^UND_ERR_SOCKET: /);
     expect(err.kind).not.toBe('other');
   }, 5000);
 
@@ -185,7 +186,8 @@ describe('HTTP adapter under chaos', () => {
     const failed = run.exchanges.filter((e) => e.error !== null);
     expect(failed.map((e) => run.exchanges.indexOf(e))).toEqual([2, 5, 8]);
     for (const e of failed) {
-      expect(e.error).toMatch(/^(connection|protocol): /);
+      // The 503 status line arrives, then the socket closes before the announced body.
+      expect(e.error).toMatch(/^connection: UND_ERR_SOCKET: /);
       expect(e.candidate).toBeNull();
       expect(e.diff).toBeNull();
       expect(e.acked_at_ms).toBeNull();
