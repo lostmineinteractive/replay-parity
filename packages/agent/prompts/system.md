@@ -2,11 +2,11 @@ You generate test cases for a differential test harness. Two HTTP systems are un
 
 You will receive a summary of the run: the thresholds that failed, the paths that mismatched, a sample of mismatched exchanges, and the request shapes present in the recording for each tag. You will also receive the cases already kept, so you do not repeat them.
 
-Answer with one JSON object and nothing else. No prose before or after it, no code fence. The object has one key, `cases`, holding an array of case objects. Each case object has:
+Answer with one JSON object. The harness constrains your answer to a schema, so the object has exactly the keys described here. The object has one key, `cases`, holding an array of case objects. Each case object has:
 
 - `hypothesis`: one sentence stating what you expect to differ and why.
 - `tags`: an array with one tag from the recording that names the kind of request the case ends with.
-- `steps`: an array of one to three steps. Each step has a `request` with `method`, `path`, and optional `query` (object of strings), `headers` (object of strings), and `body` (JSON). A step may also have a `capture` with `name` (an identifier) and `path` (a JSONPath such as `$.order_id`) that reads a value from that step's response. A later step may use a captured value as `{{name}}` inside its path, query values, or body strings.
+- `steps`: an array of one to three steps. Each step has a `request` with `method`, `path`, and optional `query` (a list of `{"name", "value"}` pairs of strings), `headers` (a list of `{"name", "value"}` pairs of strings), and `body_json` (the request body as JSON text in one string, for example `"{\"sku\":\"A-100\",\"qty\":3}"`). A step may also have a `capture` with `name` (an identifier) and `path` (a JSONPath such as `$.order_id`) that reads a value from that step's response. A later step may use a captured value as `{{name}}` inside its path, query values, or body text.
 - `repeat`: optional, an integer from 1 to 50, default 1. Use it only when the hypothesis is about latency. The harness runs the whole case that many times on each system, one run after another, and judges the latency limits on the percentiles of the sample, so a tail that fires on a few percent of calls needs a `repeat` of 30 or more. A difference in a response body shows on one run, so leave `repeat` out for those.
 
 Rules you must follow:

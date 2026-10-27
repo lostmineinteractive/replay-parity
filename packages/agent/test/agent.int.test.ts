@@ -18,7 +18,15 @@ import { buildApp as buildCandidate } from '@replay-parity/demo-candidate';
 import { buildApp as buildReference } from '@replay-parity/demo-reference';
 import { HttpAdapter, replayExchanges, type Adapter } from '@replay-parity/replay';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { MockModelClient, runAgent, type AgentOptions, type MockAnswer } from '../src/index.js';
+import {
+  MockModelClient,
+  PRICES_AS_OF,
+  runAgent,
+  writeCaseRecording,
+  type AgentOptions,
+  type MockAnswer,
+  type MockModelClientOptions,
+} from '../src/index.js';
 
 const RECORDING = resolve(import.meta.dirname, '../../../demo/recording.jsonl');
 const RULES = parseDiffRules(
@@ -32,6 +40,8 @@ let recording: Exchange[];
 let run: Run;
 let reference: HttpAdapter;
 let candidate: HttpAdapter;
+let refUrl: string;
+let candUrl: string;
 const closers: (() => Promise<void>)[] = [];
 
 beforeAll(async () => {
@@ -45,8 +55,8 @@ beforeAll(async () => {
     () => ref.close(),
     () => cand.close(),
   );
-  const refUrl = `http://127.0.0.1:${(ref.server.address() as AddressInfo).port}`;
-  const candUrl = `http://127.0.0.1:${(cand.server.address() as AddressInfo).port}`;
+  refUrl = `http://127.0.0.1:${(ref.server.address() as AddressInfo).port}`;
+  candUrl = `http://127.0.0.1:${(cand.server.address() as AddressInfo).port}`;
   // Both systems take the recording first, so they stand in the same state and assign the same
   // ids to the cases that follow, the way they do after make demo.
   await replayExchanges(recording, { target: refUrl, pace: 'max', concurrency: 1, rules: RULES });
@@ -102,11 +112,16 @@ const matchingCase = {
   steps: [{ request: { method: 'POST', path: '/v1/orders', body: { sku: 'B-200', qty: 2 } } }],
 };
 
-async function agent(answers: MockAnswer[], over: Partial<AgentOptions> = {}) {
+async function agent(
+  answers: MockAnswer[],
+  over: Partial<AgentOptions> = {},
+  mock: Partial<MockModelClientOptions> = {},
+) {
   const dir = await mkdtemp(join(tmpdir(), 'rp-agent-'));
   const client = new MockModelClient(answers, {
     model: 'claude-sonnet-5-5',
     usage: { input_tokens: 5000, output_tokens: 1000 },
+    ...mock,
   });
   const outcome = await runAgent({
     run,
@@ -361,4 +376,205 @@ describe('the agent loop on the mock client', () => {
       'capture id found nothing at $.nope',
     );
   });
+
+  it('records the estimator, the pricing, and the isolation mode in the transcript', async () => {
+    const counted = await agent(
+      [JSON.stringify({ cases: [roundingCase] }), JSON.stringify({ cases: [] })],
+      {},
+      { countTokens: (request) => request.system.length + request.user.length },
+    );
+    const first = counted.transcript.rounds[0]!;
+    expect(first.estimator).toBe('count_tokens');
+    const request = counted.client.calls[0]!.request;
+    const tokens = request.system.length + request.user.length;
+    expect(first.estimate_usd).toBeCloseTo((tokens * 2 + 8192 * 10) / 1_000_000, 9);
+    expect(first.schema_constrained).toBe(false);
+    expect(first.fallback_ran).toBe(false);
+    expect(first.answered_by).toBeUndefined();
+    expect(counted.transcript).toMatchObject({
+      pricing_as_of: PRICES_AS_OF,
+      pricing_assumed: false,
+      pricing_path: null,
+      isolation: { reset_between_cases: false, case_concurrency: 1 },
+    });
+
+    // A counter that fails leaves the heuristic in charge, and the mock without one never counts.
+    const failing = await agent(
+      [JSON.stringify({ cases: [roundingCase] })],
+      {},
+      {
+        countTokens: () => {
+          throw new Error('offline');
+        },
+      },
+    );
+    expect(failing.transcript.rounds[0]?.estimator).toBe('heuristic');
+    expect(failing.transcript.rounds[0]?.estimate_usd).toBeCloseTo(
+      (Math.ceil(tokens / 3) * 2 + 8192 * 10) / 1_000_000,
+      9,
+    );
+    const plain = await agent([JSON.stringify({ cases: [roundingCase] })]);
+    expect(plain.transcript.rounds[0]?.estimator).toBe('heuristic');
+
+    // A supplied table prices the calls, the estimate, and is named in the transcript.
+    const priced = await agent([JSON.stringify({ cases: [roundingCase] })], {
+      prices: { 'claude-sonnet-5-5': { input: 1, output: 2, cache_read: 0.1, cache_write: 1.25 } },
+      pricingPath: 'prices.json',
+    });
+    // The single answer repeats, so the loop makes two calls before it stops.
+    expect(priced.report.rounds).toBe(2);
+    expect(priced.report.cost_usd).toBeCloseTo((2 * (5000 * 1 + 1000 * 2)) / 1_000_000, 9);
+    expect(priced.transcript.pricing_path).toBe('prices.json');
+    expect(priced.transcript.pricing_assumed).toBe(false);
+    const assumed = await agent(
+      [JSON.stringify({ cases: [roundingCase] })],
+      {},
+      { model: 'some-new-model' },
+    );
+    expect(assumed.transcript.pricing_assumed).toBe(true);
+
+    // A response that names another model is priced by that model.
+    const fellBack = await agent([
+      () => ({
+        text: JSON.stringify({ cases: [roundingCase] }),
+        stop_reason: 'end_turn',
+        usage: {
+          input_tokens: 5000,
+          output_tokens: 1000,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+        },
+        model: 'claude-sonnet-5',
+        fallback_ran: true,
+        schema_constrained: true,
+      }),
+    ]);
+    expect(fellBack.transcript.rounds[0]).toMatchObject({
+      answered_by: 'claude-sonnet-5',
+      fallback_ran: true,
+      schema_constrained: true,
+    });
+    expect(fellBack.report.rounds).toBe(2);
+    expect(fellBack.report.cost_usd).toBeCloseTo((2 * (5000 * 2 + 1000 * 10)) / 1_000_000, 9);
+  }, 60_000);
+
+  it('exports the kept cases as a recording whose replay reproduces the mismatches', async () => {
+    // Every exported step carries the case's tags, so the two step case is tagged by its create
+    // and the substitution rule captures the order id from it on replay.
+    const twoStepCreate = { ...twoStepCase, tags: ['create-order'] };
+    const { exchanges, cases, report } = await agent([
+      JSON.stringify({ cases: [twoStepCreate, unknownCase, matchingCase] }),
+      JSON.stringify({ cases: [] }),
+    ]);
+    expect(report.kept).toBe(2);
+    expect(cases.map((c) => c.id)).toEqual(['case-1-1', 'case-1-2']);
+    // One exchange per step, the two step case first, offsets growing by the reference latency.
+    expect(exchanges.map((e) => e.id)).toEqual(['case-1-1:1', 'case-1-1:2', 'case-1-2:1']);
+    expect(exchanges.map((e) => e.tags)).toEqual([
+      ['create-order', 'agent:case-1-1'],
+      ['create-order', 'agent:case-1-1'],
+      ['get-order', 'agent:case-1-2'],
+    ]);
+    expect(exchanges[0]?.offset_ms).toBe(0);
+    expect(exchanges[1]?.offset_ms).toBe(exchanges[0]!.response.latency_ms);
+    expect(exchanges[2]?.offset_ms).toBe(
+      exchanges[0]!.response.latency_ms + exchanges[1]!.response.latency_ms,
+    );
+    expect(Date.parse(exchanges[0]!.ts)).toBe(Date.parse(run.created_at));
+    expect(exchanges[0]?.request.method).toBe('POST');
+    expect(exchanges[0]?.request.headers['content-type']).toBe('application/json');
+    // The second step's placeholder was resolved from the reference's own order id.
+    expect(exchanges[1]?.request.path).toMatch(/^\/v1\/orders\/o-\d+$/);
+    expect(exchanges[0]?.response.status).toBe(201);
+    expect(exchanges[2]?.response.status).toBe(404);
+
+    const dir = await mkdtemp(join(tmpdir(), 'rp-agent-export-'));
+    const path = join(dir, 'agent-cases.jsonl');
+    expect(await writeCaseRecording(path, exchanges)).toBe(3);
+    const back = await readRecording(path);
+    expect(back).toEqual(exchanges);
+
+    // Replaying the export against the same candidate finds the same two divergences. The
+    // reference takes it too, so both systems keep assigning the same ids to later tests.
+    const replayed = await replayExchanges(back, {
+      target: candUrl,
+      pace: 'max',
+      concurrency: 1,
+      rules: RULES,
+      thresholds: THRESHOLDS,
+    });
+    const onReference = await replayExchanges(back, {
+      target: refUrl,
+      pace: 'max',
+      concurrency: 1,
+      rules: RULES,
+      thresholds: THRESHOLDS,
+    });
+    expect(onReference.verdict).toBe('pass');
+    expect(replayed.verdict).toBe('fail');
+    const byId = new Map(replayed.exchanges.map((e) => [e.id, e]));
+    // The candidate already served this create once, so it assigns the next id and `$.order_id`
+    // differs on the create the way it does for any system that has moved on; the captured pair
+    // tolerates the ids from then on. `$.total` is the divergence the case was kept for.
+    const untolerated = (id: string): string[] =>
+      byId
+        .get(id)
+        ?.diff?.findings.filter((f) => !f.tolerated)
+        .map((f) => f.path) ?? [];
+    expect(byId.get('case-1-1:1')?.diff?.verdict).toBe('mismatch');
+    expect(untolerated('case-1-1:1').filter((p) => p !== '$.order_id')).toEqual(['$.total']);
+    expect(byId.get('case-1-1:2')?.diff?.verdict).toBe('mismatch');
+    expect(untolerated('case-1-1:2')).toEqual(['$.total']);
+    expect(byId.get('case-1-2:1')?.diff?.verdict).toBe('mismatch');
+    expect(untolerated('case-1-2:1')).toEqual(['status', '$']);
+    expect(byId.get('case-1-2:1')?.candidate?.status).toBe(200);
+  }, 60_000);
+
+  it('resets both systems before every case, runs cases in parallel only without resets, and stops when a reset fails', async () => {
+    const counts = { reference: 0, candidate: 0 };
+    const reset = (side: keyof typeof counts) => (): Promise<void> => {
+      counts[side] += 1;
+      return Promise.resolve();
+    };
+    const answers = [
+      JSON.stringify({ cases: [roundingCase, unknownCase, matchingCase] }),
+      JSON.stringify({ cases: [sameCase] }),
+    ];
+    const isolated = await agent(answers, {
+      resets: { reference: reset('reference'), candidate: reset('candidate') },
+      caseConcurrency: 4,
+    });
+    expect(isolated.report.executed).toBe(4);
+    expect(counts).toEqual({ reference: 4, candidate: 4 });
+    expect(isolated.transcript.isolation).toEqual({
+      reset_between_cases: true,
+      case_concurrency: 1,
+    });
+    expect(isolated.cases.map((c) => c.id)).toEqual(['case-1-1', 'case-1-2']);
+
+    const parallel = await agent(answers, { caseConcurrency: 2 });
+    expect(parallel.transcript.isolation).toEqual({
+      reset_between_cases: false,
+      case_concurrency: 2,
+    });
+    expect(parallel.report.executed).toBe(4);
+    // Results are judged in case order whatever the order they finish in.
+    expect(parallel.cases.map((c) => c.id)).toEqual(['case-1-1', 'case-1-2']);
+    expect(parallel.transcript.rounds[0]?.not_kept).toEqual([
+      { id: 'case-1-3', reason: 'no difference and no latency breach' },
+    ]);
+    expect(parallel.transcript.rounds[1]?.not_kept).toEqual([
+      { id: 'case-2-1', reason: 'same as a kept case (mismatch:$.total)' },
+    ]);
+
+    const broken = await agent(answers, {
+      resets: { candidate: () => Promise.reject(new Error('reset answered 500')) },
+    });
+    expect(broken.report.stop_reason).toBe('error');
+    expect(broken.report.executed).toBe(0);
+    expect(broken.transcript.rounds[0]?.error).toBe(
+      'reset before case-1-1 failed: reset answered 500',
+    );
+    expect(broken.transcript.rounds[0]?.stop_reason).toBe('end_turn');
+  }, 60_000);
 });

@@ -31,6 +31,12 @@ import { describeSendError, type Adapter } from '@replay-parity/replay';
  * latency limits are judged on the percentiles of the sample.
  */
 export interface SideResult {
+  /**
+   * Requests of the first run, one per step, with captures resolved. A
+   * redacted header keeps its marker and caller supplied headers are left
+   * out, so they can be stored in a recording.
+   */
+  requests: RecordedRequest[];
   /** Responses of the first run. */
   responses: RecordedResponse[];
   /** Captures of the first run. */
@@ -62,6 +68,7 @@ export interface CaseExecution {
 }
 
 interface Pass {
+  requests: RecordedRequest[];
   responses: RecordedResponse[];
   captures: Map<string, string | number>;
   error: string | null;
@@ -97,10 +104,15 @@ function substituteBody(
   return value;
 }
 
-export function resolveRequest(
+/**
+ * The request with captures resolved and the JSON content type defaulted.
+ * Header names are lower cased. A redacted header keeps its marker and no
+ * caller supplied header is applied, so the result is what a recording
+ * stores.
+ */
+export function substituteRequest(
   request: RecordedRequest,
   captures: ReadonlyMap<string, string | number>,
-  headers: HeaderMap,
 ): RecordedRequest {
   const query: RecordedRequest['query'] = {};
   for (const [k, v] of Object.entries(request.query)) {
@@ -108,18 +120,32 @@ export function resolveRequest(
       ? v.map((x) => substituteText(x, captures))
       : substituteText(v, captures);
   }
-  const merged = mergeHeaders(dropRedactedHeaders(request.headers), headers);
+  const headers = mergeHeaders(request.headers, {});
   const jsonBody = request.body !== undefined && request.encoding === undefined;
   // A JSON body goes out as JSON. The model is told it does not need to set the header.
-  if (jsonBody && merged['content-type'] === undefined) merged['content-type'] = 'application/json';
+  if (jsonBody && headers['content-type'] === undefined)
+    headers['content-type'] = 'application/json';
   const out: RecordedRequest = {
     ...request,
     path: substituteText(request.path, captures),
     query,
-    headers: merged,
+    headers,
   };
   if (jsonBody) out.body = substituteBody(request.body as JsonValue, captures);
   return out;
+}
+
+/** The substituted request as it goes on the wire: redacted headers dropped, caller supplied headers on top. */
+function applyHeaders(request: RecordedRequest, headers: HeaderMap): RecordedRequest {
+  return { ...request, headers: mergeHeaders(dropRedactedHeaders(request.headers), headers) };
+}
+
+export function resolveRequest(
+  request: RecordedRequest,
+  captures: ReadonlyMap<string, string | number>,
+  headers: HeaderMap,
+): RecordedRequest {
+  return applyHeaders(substituteRequest(request, captures), headers);
 }
 
 async function runOnce(
@@ -129,26 +155,29 @@ async function runOnce(
   id: string,
 ): Promise<Pass> {
   const captures = new Map<string, string | number>();
+  const requests: RecordedRequest[] = [];
   const responses: RecordedResponse[] = [];
   for (let i = 0; i < c.steps.length; i += 1) {
     const step = c.steps[i]!;
-    const request = resolveRequest(step.request, captures, headers);
+    const substituted = substituteRequest(step.request, captures);
+    requests.push(substituted);
     let response: RecordedResponse;
     try {
-      response = await adapter.send(request, {
+      response = await adapter.send(applyHeaders(substituted, headers), {
         id: `${id}:${i + 1}`,
         index: i,
         tags: c.tags,
         signal: new AbortController().signal,
       });
     } catch (err) {
-      return { responses, captures, error: `step ${i + 1}: ${describeSendError(err)}` };
+      return { requests, responses, captures, error: `step ${i + 1}: ${describeSendError(err)}` };
     }
     responses.push(response);
     if (step.capture) {
       const value = get(response.body, step.capture.path);
       if (typeof value !== 'string' && typeof value !== 'number') {
         return {
+          requests,
           responses,
           captures,
           error: `step ${i + 1}: capture ${step.capture.name} found nothing at ${step.capture.path}`,
@@ -157,10 +186,10 @@ async function runOnce(
       captures.set(step.capture.name, value);
     }
   }
-  return { responses, captures, error: null };
+  return { requests, responses, captures, error: null };
 }
 
-/** Runs the case `repeat` times, one run after another, and keeps the first run's responses. */
+/** Runs the case `repeat` times, one run after another, and keeps the first run's requests and responses. */
 export async function runSide(
   c: GeneratedCase,
   adapter: Adapter,
@@ -174,12 +203,24 @@ export async function runSide(
     first ??= pass;
     if (pass.error !== null) {
       const error = c.repeat === 1 ? pass.error : `run ${run}: ${pass.error}`;
-      return { responses: first.responses, captures: first.captures, latencies, error };
+      return {
+        requests: first.requests,
+        responses: first.responses,
+        captures: first.captures,
+        latencies,
+        error,
+      };
     }
     latencies.push(pass.responses[pass.responses.length - 1]!.latency_ms);
   }
   const done = first as Pass;
-  return { responses: done.responses, captures: done.captures, latencies, error: null };
+  return {
+    requests: done.requests,
+    responses: done.responses,
+    captures: done.captures,
+    latencies,
+    error: null,
+  };
 }
 
 /** The pairs of captured values, so the differ treats each system's own id as equivalent. */

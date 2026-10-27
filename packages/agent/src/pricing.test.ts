@@ -9,6 +9,7 @@ import {
   PRICES_AS_OF,
   PRICING_MAX_AGE_DAYS,
   costUsd,
+  estimateCostForTokens,
   estimateCostUsd,
   loadPricingFile,
   priceFor,
@@ -43,9 +44,12 @@ describe('PRICES', () => {
       'claude-haiku-4-5',
       'claude-haiku-5-5',
       'claude-opus-5-5',
+      'claude-sonnet-5',
       'claude-sonnet-5-5',
     ]);
     for (const id of Object.keys(PRICES)) expect(id).not.toMatch(/\d{8}$/);
+    // The fallback target of the default model is priced like the default model.
+    expect(PRICES['claude-sonnet-5']).toEqual(PRICES['claude-sonnet-5-5']);
     expect(PRICES_AS_OF).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(Number.isNaN(Date.parse(PRICES_AS_OF))).toBe(false);
     expect(PRICES[FALLBACK_PRICE_MODEL]).toBeDefined();
@@ -95,6 +99,20 @@ describe('costUsd', () => {
   it('uses a caller supplied table', () => {
     expect(costUsd('claude-sonnet-5-5', usage, custom)).toBe(1 + 0.2 + 0.05 + 0.25);
     expect(costUsd('my-model', usage, custom)).toBe(3 + 0.6 + 0.15 + 0.75);
+  });
+});
+
+describe('estimateCostForTokens', () => {
+  it('prices a counted input at the plain rate and spends every output token', () => {
+    expect(estimateCostForTokens('claude-sonnet-5-5', 1000, 8192)).toBeCloseTo(
+      (1000 * 2 + 8192 * 10) / 1_000_000,
+      9,
+    );
+    expect(estimateCostForTokens('my-model', 10, 1, custom)).toBeCloseTo(
+      (10 * 3 + 1 * 6) / 1_000_000,
+      9,
+    );
+    expect(estimateCostForTokens('unknown', 0, 0)).toBe(0);
   });
 });
 

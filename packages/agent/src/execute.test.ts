@@ -1,6 +1,54 @@
-import { exactSummary, parseThresholds } from '@replay-parity/core';
+import { REDACTED, exactSummary, makeRequest, parseThresholds } from '@replay-parity/core';
 import { describe, expect, it } from 'vitest';
-import { describeBreach, latencyBreach, mismatchKey } from './execute.js';
+import {
+  describeBreach,
+  latencyBreach,
+  mismatchKey,
+  resolveRequest,
+  substituteRequest,
+} from './execute.js';
+
+describe('substituteRequest and resolveRequest', () => {
+  const captures = new Map<string, string | number>([
+    ['id', 'o-7'],
+    ['qty', 3],
+  ]);
+  const request = makeRequest({
+    method: 'POST',
+    path: '/v1/orders/{{id}}/lines',
+    query: { expand: '{{id}}', fields: ['total', '{{missing}}'] },
+    headers: { Authorization: REDACTED, 'X-Trace': 't-1' },
+    body: { order: '{{id}}', qty: '{{qty}}', note: 'order {{id}} x{{qty}}' },
+  });
+
+  it('resolves captures everywhere, defaults the JSON content type, and keeps the redaction marker', () => {
+    const substituted = substituteRequest(request, captures);
+    expect(substituted.path).toBe('/v1/orders/o-7/lines');
+    expect(substituted.query).toEqual({ expand: 'o-7', fields: ['total', '{{missing}}'] });
+    // An exact placeholder keeps the captured type, a placeholder inside text becomes text.
+    expect(substituted.body).toEqual({ order: 'o-7', qty: 3, note: 'order o-7 x3' });
+    expect(substituted.headers).toEqual({
+      authorization: REDACTED,
+      'x-trace': 't-1',
+      'content-type': 'application/json',
+    });
+    // The input is left alone.
+    expect(request.headers).toEqual({ Authorization: REDACTED, 'X-Trace': 't-1' });
+  });
+
+  it('sends without the redacted header and with the caller supplied headers on top', () => {
+    const sent = resolveRequest(request, captures, { 'X-Trace': 't-2', authorization: 'Bearer t' });
+    expect(sent.headers).toEqual({
+      'x-trace': 't-2',
+      'content-type': 'application/json',
+      authorization: 'Bearer t',
+    });
+    expect(sent.path).toBe('/v1/orders/o-7/lines');
+    const noBody = resolveRequest(makeRequest({ method: 'GET', path: '/x' }), new Map(), {});
+    expect(noBody.headers).toEqual({});
+    expect(noBody.body).toBeUndefined();
+  });
+});
 
 describe('mismatchKey', () => {
   it('sorts and dedupes top level paths', () => {

@@ -23,6 +23,11 @@ describe('prompts', () => {
   it('loads both files with a content version', () => {
     const prompts = loadPrompts();
     expect(prompts.system.text).toContain('Answer with one JSON object');
+    // The answer is schema constrained, so the prompt describes the constrained shape and
+    // no longer asks for bare JSON.
+    expect(prompts.system.text).toContain('body_json');
+    expect(prompts.system.text).toContain('{"name", "value"}');
+    expect(prompts.system.text).not.toContain('no code fence');
     expect(prompts.round.text).toContain('{{summary}}');
     expect(prompts.versions).toEqual({
       'system.md': prompts.system.version,

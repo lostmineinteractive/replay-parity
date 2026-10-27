@@ -31,6 +31,8 @@ export const PRICES: Readonly<Record<string, Price>> = {
   'claude-fable-5-1': { input: 10, output: 50, cache_read: 0.25, cache_write: 12.5 },
   [FALLBACK_PRICE_MODEL]: FALLBACK_PRICE,
   'claude-sonnet-5-5': { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 },
+  /** The model a declined Sonnet 5.5 call falls back to. Same rates as Sonnet 5.5. */
+  'claude-sonnet-5': { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 },
   'claude-haiku-5-5': { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125 },
   'claude-haiku-4-5': { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 },
 };
@@ -112,14 +114,27 @@ export function costUsd(
   return Math.round(dollars * 1_000_000) / 1_000_000;
 }
 
-/** A conservative estimate for a call that has not happened: every output token is spent. */
+/**
+ * A conservative estimate for a call that has not happened: every input
+ * token at the plain input price, whether or not the cache serves it, and
+ * every output token spent.
+ */
+export function estimateCostForTokens(
+  model: string,
+  inputTokens: number,
+  maxTokens: number,
+  prices: Readonly<Record<string, Price>> = PRICES,
+): number {
+  const { price } = priceFor(model, prices);
+  return (inputTokens * price.input + maxTokens * price.output) / 1_000_000;
+}
+
+/** The character heuristic: three characters per input token. Used when no counter is available. */
 export function estimateCostUsd(
   model: string,
   promptChars: number,
   maxTokens: number,
   prices: Readonly<Record<string, Price>> = PRICES,
 ): number {
-  const { price } = priceFor(model, prices);
-  const inputTokens = Math.ceil(promptChars / 3);
-  return (inputTokens * price.input + maxTokens * price.output) / 1_000_000;
+  return estimateCostForTokens(model, Math.ceil(promptChars / 3), maxTokens, prices);
 }

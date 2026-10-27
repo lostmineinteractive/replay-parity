@@ -11,6 +11,76 @@ const ok = {
   steps: [{ request: create }],
 };
 
+describe('validateCases on a schema constrained answer', () => {
+  it('decodes pairs and body text, then applies the same checks as a plain answer', () => {
+    const text = JSON.stringify({
+      cases: [
+        {
+          hypothesis: 'ship after create',
+          tags: ['create-order'],
+          steps: [
+            {
+              request: {
+                method: 'POST',
+                path: '/v1/orders',
+                headers: [{ name: 'Authorization', value: REDACTED }],
+                body_json: '{"sku":"A-100","qty":3}',
+              },
+              capture: { name: 'order', path: '$.order_id' },
+            },
+            {
+              request: {
+                method: 'GET',
+                path: '/v1/orders/{{order}}',
+                query: [
+                  { name: 'fields', value: 'total' },
+                  { name: 'fields', value: 'status' },
+                ],
+              },
+            },
+          ],
+        },
+        { ...ok, steps: [{ request: { method: 'GET', path: '/v1/orders', body_json: '{oops' } }] },
+        {
+          ...ok,
+          steps: [{ request: { method: 'GET', path: '/v1/orders', headers: [{ name: 'a' }] } }],
+        },
+        {
+          ...ok,
+          steps: [{ request: { method: 'GET', path: '/v1/orders', body: {}, body_json: '{}' } }],
+        },
+        {
+          ...ok,
+          steps: [
+            {
+              request: {
+                method: 'POST',
+                path: '/v1/orders',
+                headers: [{ name: 'authorization', value: 'Bearer live' }],
+                body_json: '{}',
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const result = validateCases(text, TAGS);
+    expect(result.proposed).toBe(5);
+    expect(result.cases).toHaveLength(1);
+    const c = result.cases[0]!;
+    expect(c.steps[0]?.request.body).toEqual({ sku: 'A-100', qty: 3 });
+    expect(c.steps[0]?.request.headers).toEqual({ authorization: REDACTED });
+    expect(c.steps[1]?.request.query).toEqual({ fields: ['total', 'status'] });
+    expect(c.repeat).toBe(1);
+    expect(result.dropped.map((d) => d.reason)).toEqual([
+      expect.stringContaining('step 1 body_json is not valid JSON') as string,
+      'step 1 headers must be a list of {name, value} pairs',
+      'step 1 has both body and body_json',
+      `step 1 sets header authorization to a value other than ${REDACTED}`,
+    ]);
+  });
+});
+
 describe('parseAnswer', () => {
   it('reads an object with cases, a bare array, and a fenced block', () => {
     expect(parseAnswer('{"cases": [1]}')).toEqual({ cases: [1] });

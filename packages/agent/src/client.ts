@@ -27,15 +27,25 @@ export interface ModelResponse {
   text: string;
   stop_reason: ModelStopReason;
   usage: ModelUsage;
-  /** What the API reported it ran, when known. */
+  /** What the API reported it ran, when known. After a fallback this is the model that answered. */
   model?: string | undefined;
   /** A short explanation when the model refused. */
   refusal?: string | undefined;
+  /** True when the API constrained the answer to the cases schema. */
+  schema_constrained?: boolean | undefined;
+  /** True when the requested model declined and a fallback model produced the answer. */
+  fallback_ran?: boolean | undefined;
 }
 
 export interface ModelClient {
   readonly model: string;
   complete(request: ModelRequest): Promise<ModelResponse>;
+  /**
+   * The input tokens the request would be billed for, counted by the
+   * provider. Absent on a client without a counting endpoint, in which case
+   * the loop estimates from the character count.
+   */
+  countTokens?(request: ModelRequest): Promise<number>;
 }
 
 export const ZERO_USAGE: ModelUsage = {
@@ -55,21 +65,30 @@ export interface MockCall {
   response: ModelResponse;
 }
 
+export interface MockModelClientOptions {
+  model?: string | undefined;
+  usage?: Partial<ModelUsage> | undefined;
+  /** When given, the mock counts tokens with it. Without it the mock has no counter. */
+  countTokens?: ((request: ModelRequest) => number | Promise<number>) | undefined;
+}
+
 /** Answers from a script, one per call. The last answer repeats when the script runs out. */
 export class MockModelClient implements ModelClient {
   readonly model: string;
   readonly calls: MockCall[] = [];
+  countTokens?: (request: ModelRequest) => Promise<number>;
   private readonly answers: MockAnswer[];
   private readonly usage: ModelUsage;
 
-  constructor(
-    answers: MockAnswer[],
-    options: { model?: string | undefined; usage?: Partial<ModelUsage> | undefined } = {},
-  ) {
+  constructor(answers: MockAnswer[], options: MockModelClientOptions = {}) {
     if (answers.length === 0) throw new Error('the mock needs at least one answer');
     this.answers = answers;
     this.model = options.model ?? 'mock-model';
     this.usage = { ...ZERO_USAGE, input_tokens: 1000, output_tokens: 200, ...options.usage };
+    const counter = options.countTokens;
+    if (counter !== undefined) {
+      this.countTokens = async (request) => counter(request);
+    }
   }
 
   complete(request: ModelRequest): Promise<ModelResponse> {

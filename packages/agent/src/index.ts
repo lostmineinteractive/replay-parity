@@ -3,6 +3,7 @@ export {
   ZERO_USAGE,
   type MockAnswer,
   type MockCall,
+  type MockModelClientOptions,
   type ModelClient,
   type ModelRequest,
   type ModelResponse,
@@ -14,15 +15,27 @@ export {
   DEFAULT_EFFORT,
   DEFAULT_MAX_TOKENS,
   DEFAULT_MODEL,
+  FALLBACK_BETA,
+  casesOutputFormat,
   type AnthropicClientOptions,
   type Effort,
 } from './anthropic.js';
+export {
+  AnswerCaseSchema,
+  AnswerRequestSchema,
+  AnswerSchema,
+  AnswerStepSchema,
+  decodeCase,
+  type Answer,
+  type Decoded,
+} from './answer.js';
 export {
   FALLBACK_PRICE_MODEL,
   PRICES,
   PRICES_AS_OF,
   PRICING_MAX_AGE_DAYS,
   costUsd,
+  estimateCostForTokens,
   estimateCostUsd,
   loadPricingFile,
   priceFor,
@@ -51,14 +64,25 @@ export {
   latencyBreach,
   resolveRequest,
   runSide,
+  substituteRequest,
   type CaseExecution,
   type SideResult,
 } from './execute.js';
+export {
+  resetByPost,
+  resolveIsolation,
+  runResets,
+  type Isolation,
+  type ResetHook,
+  type ResetHooks,
+} from './isolation.js';
+export { casesToExchanges, writeCaseRecording, type KeptExecution } from './export-recording.js';
 export {
   buildUserPrompt,
   runAgent,
   type AgentOptions,
   type AgentOutcome,
+  type Estimator,
   type Transcript,
   type TranscriptRound,
 } from './agent.js';

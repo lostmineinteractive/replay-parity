@@ -7,10 +7,13 @@ import {
   type GeneratedCase,
   type JsonValue,
 } from '@replay-parity/core';
+import { decodeCase } from './answer.js';
 
 /**
  * Turns a model answer into valid cases. Anything outside the shape is
- * dropped with a reason that goes to the transcript.
+ * dropped with a reason that goes to the transcript. A schema constrained
+ * answer arrives in the answer shape and is decoded first; a plain answer
+ * is taken as it is, so both validate the same way.
  */
 export interface Dropped {
   index: number;
@@ -105,7 +108,12 @@ export function validateCases(
   const dropped: Dropped[] = [];
   const tags = new Set(knownTags);
   parsed.cases.forEach((raw, index) => {
-    const result = GeneratedCaseSchema.safeParse(raw);
+    const decoded = decodeCase(raw);
+    if (!decoded.ok) {
+      dropped.push({ index, reason: decoded.reason });
+      return;
+    }
+    const result = GeneratedCaseSchema.safeParse(decoded.value);
     if (!result.success) {
       dropped.push({ index, reason: formatZodError(result.error) });
       return;
