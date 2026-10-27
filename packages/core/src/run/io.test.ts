@@ -7,7 +7,7 @@ import { parseThresholds } from '../thresholds/schema.js';
 import { ConfigError } from '../yaml.js';
 import { parseRun, readRun, runJsonSchema, serializeRun, writeRun } from './io.js';
 import type { InvariantReport } from '../invariants/schema.js';
-import { GeneratedCaseSchema, RunSchema, type AgentReport } from './schema.js';
+import { GeneratedCaseSchema, RUN_SCHEMA_VERSION, RunSchema, type AgentReport } from './schema.js';
 
 let validate: RunValidator;
 
@@ -239,6 +239,22 @@ describe('run model', () => {
     expect(() =>
       parseRun(JSON.stringify({ ...makeRun(), pacing: { mode: 'slow' } }), 'r.json'),
     ).toThrow(/pacing\.mode/);
+  });
+
+  it('migrates on read and names the file when the version is wrong', () => {
+    const current = makeRun({ agent });
+    expect(current.schema_version).toBe(RUN_SCHEMA_VERSION);
+    expect(parseRun(serializeRun(current))).toEqual(current);
+    const newer = JSON.stringify({ ...makeRun(), schema_version: RUN_SCHEMA_VERSION + 1 });
+    expect(() => parseRun(newer, 'r.json')).toThrow(ConfigError);
+    expect(() => parseRun(newer, 'r.json')).toThrow(/^r\.json: .*newer version of rp/);
+    const older = JSON.stringify({ ...makeRun(), schema_version: 0 });
+    expect(() => parseRun(older, 'r.json')).toThrow(/^r\.json: no migration from version 0/);
+    const { schema_version: _v, ...unversioned } = makeRun();
+    expect(() => parseRun(JSON.stringify(unversioned), 'r.json')).toThrow(
+      /^r\.json: schema_version is missing/,
+    );
+    expect(() => parseRun('[]', 'r.json')).toThrow(/^r\.json: .*expected object/);
   });
 
   it('writes and reads a file', async () => {

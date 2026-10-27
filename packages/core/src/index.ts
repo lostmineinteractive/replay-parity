@@ -21,5 +21,6 @@ export * from './thresholds/evaluate.js';
 export * from './run/verdict.js';
 export * from './invariants/schema.js';
 export * from './run/schema.js';
+export * from './run/migrate.js';
 export * from './run/io.js';
 export * from './testing.js';

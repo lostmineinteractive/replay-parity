@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { ConfigError, formatZodError } from '../yaml.js';
+import { migrateRun } from './migrate.js';
 import { RunSchema, type Run } from './schema.js';
 
 export function serializeRun(run: Run): string {
@@ -18,7 +19,15 @@ export function parseRun(text: string, source = 'run'): Run {
   } catch (err) {
     throw new ConfigError(`${source}: invalid JSON (${(err as Error).message})`);
   }
-  const result = RunSchema.safeParse(raw);
+  // A file from an earlier rp is brought to the current version before validation.
+  let migrated: unknown;
+  try {
+    migrated = migrateRun(raw);
+  } catch (err) {
+    if (err instanceof ConfigError) throw new ConfigError(`${source}: ${err.message}`);
+    throw err;
+  }
+  const result = RunSchema.safeParse(migrated);
   if (!result.success) {
     throw new ConfigError(`${source}: ${formatZodError(result.error)}`);
   }

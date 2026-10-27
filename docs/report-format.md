@@ -29,6 +29,8 @@
 | `reproduction`        | object or null                 | Filled by `rp shrink`.                                                                     |
 | `agent`               | object                         | Present after `rp agent`.                                                                  |
 
+Schema versions. `rp` migrates an older run file when it reads one: before validating against the schema, it applies one migration per version step from the file's `schema_version` up to the current one, so a file written by an earlier `rp` still renders and can still be extended by `rp shrink` and `rp agent`. A file whose `schema_version` is higher than the one this `rp` knows is refused with an error saying it was written by a newer version of `rp`, and a file with no integer `schema_version` is refused with an error naming that. The migrations live in `packages/core/src/run/migrate.ts`, one entry per source version in `RUN_MIGRATIONS`; the table is empty while version 1 is current.
+
 ## Verdict and inconclusive kinds
 
 The precedence rule: a run level condition makes the run inconclusive even when mismatches were observed. Otherwise any failed threshold row makes it fail. Otherwise any insufficient sample row makes it inconclusive. Otherwise it passes.
