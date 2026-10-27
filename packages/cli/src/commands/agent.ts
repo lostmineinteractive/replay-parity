@@ -8,6 +8,7 @@ import {
   type ModelClient,
 } from '@replay-parity/agent';
 import {
+  EXIT_CODES,
   emptyRules,
   emptyThresholds,
   loadDiffRules,
@@ -49,16 +50,22 @@ export interface AgentCommandHooks {
 export const NO_KEY_MESSAGE =
   'rp agent: ANTHROPIC_API_KEY is not set, so the agent did not run. Set it in the shell or in a .env file at the repository root to generate cases.';
 
+/** The no key message with every `.env` path that was looked at. */
+export function noKeyMessage(tried: readonly string[]): string {
+  return `${NO_KEY_MESSAGE} Looked for a .env file at ${tried.join(' and then at ')}.`;
+}
+
 export async function runAgentCommand(
   options: AgentCommandOptions,
   streams: CliStreams,
   hooks: AgentCommandHooks = {},
+  signal?: AbortSignal,
 ): Promise<number> {
   const env = hooks.env ?? process.env;
-  loadDotEnv(options.env, env);
+  const dotEnv = loadDotEnv(options.env, env);
   const apiKey = env.ANTHROPIC_API_KEY;
   if (apiKey === undefined || apiKey.length === 0) {
-    out(streams, NO_KEY_MESSAGE);
+    out(streams, noKeyMessage(dotEnv.tried));
     return 0;
   }
   const run = await readRun(options.run);
@@ -90,6 +97,7 @@ export async function runAgentCommand(
       transcriptPath,
       casesPath: options.out,
       log: (line) => err(streams, `agent: ${line}`),
+      signal,
     });
     await writeFile(
       options.out,
@@ -111,6 +119,10 @@ export async function runAgentCommand(
         `  wrote ${options.out}, ${transcriptPath}, and the agent section of ${options.run}`,
       ].join('\n'),
     );
+    if (r.stop_reason === 'aborted') {
+      err(streams, 'agent stopped by signal at a case boundary');
+      return EXIT_CODES.inconclusive;
+    }
     return 0;
   } finally {
     await reference.close();
@@ -118,7 +130,11 @@ export async function runAgentCommand(
   }
 }
 
-export function agentCommand(streams: CliStreams, exit: (code: number) => void): Command {
+export function agentCommand(
+  streams: CliStreams,
+  signal: AbortSignal,
+  exit: (code: number) => void,
+): Command {
   return new Command('agent')
     .description(
       'Ask a model for new cases that sharpen the differences a run found, send each to both systems, keep the ones that reveal something new, and add an agent section to the run. Without ANTHROPIC_API_KEY it prints a message and exits 0.',
@@ -159,6 +175,6 @@ export function agentCommand(streams: CliStreams, exit: (code: number) => void):
       '.env',
     )
     .action(async (opts: AgentCommandOptions) => {
-      exit(await runAgentCommand(opts, streams));
+      exit(await runAgentCommand(opts, streams, {}, signal));
     });
 }

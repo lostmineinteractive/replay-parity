@@ -1,4 +1,11 @@
-import { ConfigError, loadDiffRules, readRecording, readRun, writeRun } from '@replay-parity/core';
+import {
+  ConfigError,
+  EXIT_CODES,
+  loadDiffRules,
+  readRecording,
+  readRun,
+  writeRun,
+} from '@replay-parity/core';
 import {
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_TIME_BUDGET_MS,
@@ -29,6 +36,7 @@ export interface ShrinkCommandOptions {
 export async function runShrink(
   options: ShrinkCommandOptions,
   streams: CliStreams,
+  signal?: AbortSignal,
 ): Promise<number> {
   const run = await readRun(options.run);
   const exchanges = await readRecording(options.recording);
@@ -45,7 +53,7 @@ export async function runShrink(
     const res = await fetch(resetUrl, { method: 'POST' });
     if (!res.ok) throw new ConfigError(`reset ${resetUrl} answered ${res.status}`);
   };
-  const { reproduction } = await shrink({
+  const { reproduction, aborted } = await shrink({
     exchanges,
     target: options.target,
     reset,
@@ -59,8 +67,15 @@ export async function runShrink(
         streams,
         `attempt ${e.attempt} (${e.phase}, ${e.steps} steps): ${e.reproduced ? 'reproduced' : 'did not reproduce'}`,
       ),
+    signal,
   });
   await writeRun(options.run, { ...run, reproduction });
+  if (aborted) {
+    err(
+      streams,
+      `shrink stopped by signal after ${reproduction.attempts} attempt${reproduction.attempts === 1 ? '' : 's'}, keeping the best reduction so far`,
+    );
+  }
   out(
     streams,
     `${reproduction.label}: ${reproduction.original_steps} -> ${reproduction.reduced_steps} steps in ${reproduction.attempts} attempt${reproduction.attempts === 1 ? '' : 's'} for ${reproduction.rule}`,
@@ -72,10 +87,14 @@ export async function runShrink(
     );
   }
   err(streams, `wrote ${options.out} and updated ${options.run}`);
-  return 0;
+  return aborted ? EXIT_CODES.inconclusive : 0;
 }
 
-export function shrinkCommand(streams: CliStreams, exit: (code: number) => void): Command {
+export function shrinkCommand(
+  streams: CliStreams,
+  signal: AbortSignal,
+  exit: (code: number) => void,
+): Command {
   return new Command('shrink')
     .description(
       'Reduce a failing run to a reduced reproduction by replaying subsets of the recording against a reset candidate. Updates the run file in place.',
@@ -110,6 +129,6 @@ export function shrinkCommand(streams: CliStreams, exit: (code: number) => void)
       new Option('--timeout-ms <n>', 'request timeout').default(30_000).argParser(positiveInt),
     )
     .action(async (opts: ShrinkCommandOptions) => {
-      exit(await runShrink(opts, streams));
+      exit(await runShrink(opts, streams, signal));
     });
 }

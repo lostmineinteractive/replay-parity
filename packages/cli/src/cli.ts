@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ConfigError, EXIT_CODES, RecordingParseError } from '@replay-parity/core';
 import { TagRuleError } from '@replay-parity/capture';
 import { CommanderError, Command, InvalidArgumentError } from 'commander';
@@ -9,10 +12,24 @@ import { reportCommand } from './commands/report.js';
 import { shrinkCommand } from './commands/shrink.js';
 import { err, type CliStreams } from './io.js';
 
-export const CLI_VERSION = '0.1.0';
+/** The version in this package's package.json. From src/ the file is one directory up, from dist/src/ two up. */
+export function readPackageVersion(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const candidate of [resolve(here, '../package.json'), resolve(here, '../../package.json')]) {
+    if (!existsSync(candidate)) continue;
+    const pkg = JSON.parse(readFileSync(candidate, 'utf8')) as {
+      name?: unknown;
+      version?: unknown;
+    };
+    if (pkg.name === '@replay-parity/cli' && typeof pkg.version === 'string') return pkg.version;
+  }
+  return '0.0.0';
+}
+
+export const CLI_VERSION = readPackageVersion();
 
 export interface RunCliOptions extends Partial<CliStreams> {
-  /** Aborted to stop long running commands such as capture. */
+  /** Aborted to stop the running command. Every command stops cleanly and writes what it has. */
   signal?: AbortSignal | undefined;
 }
 
@@ -37,11 +54,11 @@ export function buildProgram(
     })
     .exitOverride();
   program.addCommand(captureCommand(streams, signal, exit));
-  program.addCommand(replayCommand(streams, exit));
+  program.addCommand(replayCommand(streams, signal, exit));
   program.addCommand(reportCommand(streams, exit));
   program.addCommand(invariantsCommand(streams, exit));
-  program.addCommand(shrinkCommand(streams, exit));
-  program.addCommand(agentCommand(streams, exit));
+  program.addCommand(shrinkCommand(streams, signal, exit));
+  program.addCommand(agentCommand(streams, signal, exit));
   for (const sub of program.commands) {
     sub.configureOutput({
       writeOut: (text) => {

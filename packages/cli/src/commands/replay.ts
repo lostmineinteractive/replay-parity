@@ -12,6 +12,7 @@ import {
   BusAdapter,
   DEFAULT_BARRIER_TIMEOUT_MS,
   DEFAULT_CONCURRENCY,
+  DEFAULT_MAX_GAP_MS,
   RedisStreamsBus,
   replay,
   type Adapter,
@@ -39,6 +40,8 @@ export interface ReplayCommandOptions {
   warmup: number;
   filter?: string;
   limit?: number;
+  includeDependencies: boolean;
+  maxGapMs: number;
   rules?: string;
   thresholds?: string;
   adapter: 'http' | 'bus';
@@ -57,6 +60,7 @@ export interface ReplayCommandOptions {
 export async function runReplay(
   options: ReplayCommandOptions,
   streams: CliStreams,
+  signal?: AbortSignal,
 ): Promise<number> {
   const rules = options.rules === undefined ? emptyRules() : await loadDiffRules(options.rules);
   const thresholds =
@@ -80,6 +84,8 @@ export async function runReplay(
       warmup: options.warmup,
       filterTag: options.filter ?? null,
       limit: options.limit ?? null,
+      includeDependencies: options.includeDependencies,
+      maxGapMs: options.maxGapMs,
       rules,
       thresholds,
       headers,
@@ -89,8 +95,23 @@ export async function runReplay(
       invariants: options.invariants,
       timeoutMs: options.timeoutMs,
       maxBodyBytes: options.maxBodyBytes,
+      signal,
     });
     await writeRun(options.out, run);
+    if (run.filter.dependencies > 0) {
+      err(
+        streams,
+        `selected ${run.filter.dependencies} dependency exchange${run.filter.dependencies === 1 ? '' : 's'} that produce values the filtered exchanges use`,
+      );
+    }
+    if (run.pacing.gaps_capped > 0) {
+      err(
+        streams,
+        `capped ${run.pacing.gaps_capped} recorded gap${run.pacing.gaps_capped === 1 ? '' : 's'} at ${run.pacing.max_gap_ms} ms`,
+      );
+    }
+    const aborted = run.inconclusive.find((c) => c.kind === 'aborted');
+    if (aborted !== undefined) err(streams, `replay ${aborted.detail}, writing the partial run`);
     if (!options.quiet) out(streams, renderTerminal(run));
     err(streams, `wrote ${options.out}: ${run.verdict.toUpperCase()}`);
     return exitCodeFor(run.verdict);
@@ -100,7 +121,11 @@ export async function runReplay(
   }
 }
 
-export function replayCommand(streams: CliStreams, exit: (code: number) => void): Command {
+export function replayCommand(
+  streams: CliStreams,
+  signal: AbortSignal,
+  exit: (code: number) => void,
+): Command {
   return new Command('replay')
     .description(
       'Replay a recording against the candidate, diff every response, evaluate the thresholds, and write run.json. Exits 0 on pass, 2 on fail, 3 on inconclusive, 1 on a tool error.',
@@ -137,6 +162,18 @@ export function replayCommand(streams: CliStreams, exit: (code: number) => void)
       new Option('--limit <n>', 'replay only the first n exchanges after filtering').argParser(
         positiveInt,
       ),
+    )
+    .option(
+      '--no-include-dependencies',
+      'with --filter, do not also replay the exchanges that produce the substituted values the filtered exchanges use',
+    )
+    .addOption(
+      new Option(
+        '--max-gap-ms <n>',
+        'longest recorded gap kept under as-recorded pacing, 0 keeps every gap',
+      )
+        .default(DEFAULT_MAX_GAP_MS)
+        .argParser(nonNegativeInt),
     )
     .option('--rules <path>', 'diff rules file (diff-rules.yaml)')
     .option('--thresholds <path>', 'thresholds file (thresholds.yaml)')
@@ -179,7 +216,7 @@ export function replayCommand(streams: CliStreams, exit: (code: number) => void)
     )
     .option('--quiet', 'do not print the terminal summary', false)
     .action(async (opts: ReplayCommandOptions) => {
-      exit(await runReplay(opts, streams));
+      exit(await runReplay(opts, streams, signal));
     });
 }
 

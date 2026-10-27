@@ -9,6 +9,9 @@ import { Writable } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   compileRunValidator,
+  jsonResponse,
+  makeExchange,
+  makeRequest,
   parseRecordingText,
   parseRun,
   type RunValidator,
@@ -17,11 +20,12 @@ import { buildApp as buildCandidate, type DivergenceSetting } from '@replay-pari
 import { buildApp as buildReference } from '@replay-parity/demo-reference';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { MockModelClient } from '@replay-parity/agent';
-import { NO_KEY_MESSAGE, runAgentCommand, runCli } from '../src/index.js';
+import { CLI_VERSION, NO_KEY_MESSAGE, runAgentCommand, runCli } from '../src/index.js';
 
 const ROOT = resolve(import.meta.dirname, '../../..');
 const RECORDING = join(ROOT, 'demo/recording.jsonl');
 const MAIN = join(ROOT, 'packages/cli/src/main.ts');
+const PACKAGE_JSON = join(ROOT, 'packages/cli/package.json');
 
 const RULES = `
 ignore: ["$.created_at"]
@@ -54,6 +58,8 @@ const FLAGS: Record<string, string[]> = {
     '--warmup',
     '--filter',
     '--limit',
+    '--no-include-dependencies',
+    '--max-gap-ms',
     '--rules',
     '--thresholds',
     '--adapter',
@@ -112,10 +118,13 @@ class Sink extends Writable {
   }
 }
 
-async function rp(args: string[]): Promise<{ code: number; out: string; err: string }> {
+async function rp(
+  args: string[],
+  signal?: AbortSignal,
+): Promise<{ code: number; out: string; err: string }> {
   const stdout = new Sink();
   const stderr = new Sink();
-  const code = await runCli(args, { stdout, stderr });
+  const code = await runCli(args, { stdout, stderr, signal });
   return { code, out: stdout.text, err: stderr.text };
 }
 
@@ -172,7 +181,10 @@ describe('help and usage', () => {
     }
     const version = await rp(['--version']);
     expect(version.code).toBe(0);
-    expect(version.out.trim()).toBe('0.1.0');
+    const pkg = JSON.parse(await readFile(PACKAGE_JSON, 'utf8')) as { version: string };
+    expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(version.out.trim()).toBe(pkg.version);
+    expect(CLI_VERSION).toBe(pkg.version);
   });
 
   it('exits 1 with a message on an unknown flag, a missing required flag, and a missing file', async () => {
@@ -312,6 +324,128 @@ describe('replay and report', () => {
     expect(inconclusive.err).toContain('INCONCLUSIVE');
   }, 60_000);
 
+  it('stops on a signal, writes the partial run, and exits 3', async () => {
+    const off = await candidate('off');
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 300);
+    const partial = join(dir, 'partial.json');
+    const res = await rp(
+      [
+        'replay',
+        '--recording',
+        RECORDING,
+        '--target',
+        off,
+        '--pace',
+        'as-recorded',
+        '--rules',
+        join(dir, 'rules.yaml'),
+        '--out',
+        partial,
+        '--quiet',
+      ],
+      controller.signal,
+    );
+    expect(res.code).toBe(3);
+    const sent = Number(/replay stopped by signal after (\d+) of 283 exchanges/.exec(res.err)?.[1]);
+    expect(sent).toBeGreaterThan(0);
+    expect(sent).toBeLessThan(283);
+    expect(res.err).toContain(`wrote ${partial}: INCONCLUSIVE`);
+    const run = parseRun(await readFile(partial, 'utf8'));
+    expect(run.verdict).toBe('inconclusive');
+    expect(run.inconclusive).toEqual([
+      { kind: 'aborted', detail: `stopped by signal after ${sent} of 283 exchanges` },
+    ]);
+    expect(run.recording.selected).toBe(283);
+    expect(run.exchanges).toHaveLength(sent);
+    expect(validate(run), validate.errors ?? '').toBe(true);
+  });
+
+  it('caps recorded gaps with --max-gap-ms and selects dependencies under --filter', async () => {
+    const off = await candidate('off');
+    const exchanges = [0, 10_000, 10_010].map((offset, i) =>
+      makeExchange({
+        index: i,
+        offset_ms: offset,
+        tags: ['list-inventory'],
+        request: makeRequest({ path: '/v1/inventory' }),
+        response: jsonResponse({ items: [] }),
+      }),
+    );
+    const gappy = join(dir, 'gappy.jsonl');
+    await writeFile(gappy, exchanges.map((e) => JSON.stringify(e)).join('\n') + '\n');
+    const capped = join(dir, 'capped.json');
+    const res = await rp([
+      'replay',
+      '--recording',
+      gappy,
+      '--target',
+      off,
+      '--max-gap-ms',
+      '50',
+      '--out',
+      capped,
+      '--quiet',
+    ]);
+    expect(res.code).toBe(0);
+    expect(res.err).toContain('capped 1 recorded gap at 50 ms');
+    const run = parseRun(await readFile(capped, 'utf8'));
+    expect(run.pacing).toMatchObject({ max_gap_ms: 50, gaps_capped: 1 });
+    expect(run.exchanges.map((e) => e.scheduled_at_ms)).toEqual([0, 50, 60]);
+    const uncapped = await rp([
+      'replay',
+      '--recording',
+      gappy,
+      '--target',
+      off,
+      '--pace',
+      'max',
+      '--max-gap-ms',
+      '0',
+      '--out',
+      capped,
+      '--quiet',
+    ]);
+    expect(uncapped.err).not.toMatch(/capped \d+ recorded gap/);
+    expect(parseRun(await readFile(capped, 'utf8')).pacing).toMatchObject({
+      max_gap_ms: null,
+      gaps_capped: 0,
+    });
+
+    const filtered = join(dir, 'filtered.json');
+    const base = [
+      'replay',
+      '--recording',
+      RECORDING,
+      '--target',
+      off,
+      '--pace',
+      'max',
+      '--concurrency',
+      '1',
+      '--rules',
+      join(dir, 'rules.yaml'),
+      '--filter',
+      'tag=get-order',
+      '--out',
+      filtered,
+      '--quiet',
+    ];
+    const withDeps = await rp(base);
+    expect(withDeps.err).toContain('selected 44 dependency exchanges');
+    const run2 = parseRun(await readFile(filtered, 'utf8'));
+    expect(run2.filter).toEqual({ tag: 'get-order', include_dependencies: true, dependencies: 44 });
+    expect(run2.exchanges.filter((e) => e.dependency)).toHaveLength(44);
+    expect(run2.stats.overall.count).toBe(109);
+    const bare = await rp([...base, '--no-include-dependencies']);
+    expect(bare.err).not.toContain('dependency');
+    expect(parseRun(await readFile(filtered, 'utf8')).filter).toEqual({
+      tag: 'get-order',
+      include_dependencies: false,
+      dependencies: 0,
+    });
+  }, 60_000);
+
   it('rejects contradictory replay flags with exit 1', async () => {
     const res = await rp([
       'replay',
@@ -443,6 +577,36 @@ describe('invariants and shrink', () => {
     );
     expect(validate(run), validate.errors ?? '').toBe(true);
 
+    // A signal already aborted spends no attempt, still writes both files, and exits 3.
+    const stoppedOut = join(dir, 'reduced-stopped.jsonl');
+    const stopped = await rp(
+      [
+        'shrink',
+        '--run',
+        runPath,
+        '--recording',
+        RECORDING,
+        '--target',
+        url,
+        '--reset',
+        `${url}/admin/reset`,
+        '--out',
+        stoppedOut,
+      ],
+      AbortSignal.abort(),
+    );
+    expect(stopped.code).toBe(3);
+    expect(stopped.err).toContain(
+      'shrink stopped by signal after 0 attempts, keeping the best reduction so far',
+    );
+    expect(stopped.out).toContain('reduction unsuccessful: 283 -> 283 steps in 0 attempts');
+    expect(parseRecordingText(await readFile(stoppedOut, 'utf8'))).toHaveLength(283);
+    expect(parseRun(await readFile(runPath, 'utf8')).reproduction).toMatchObject({
+      attempts: 0,
+      successful: false,
+      recording: stoppedOut,
+    });
+
     const nothing = await rp([
       'shrink',
       '--run',
@@ -490,7 +654,52 @@ describe('agent', () => {
     );
     expect(code).toBe(0);
     expect(stdout.text).toContain(NO_KEY_MESSAGE);
+    expect(stdout.text).toContain(`Looked for a .env file at ${envFile}.`);
     expect(stderr.text).toBe('');
+  });
+
+  it('stops on a signal, writes the agent section with the aborted stop reason, and exits 3', async () => {
+    const runPath = join(dir, 'agent-stopped.json');
+    await writeFile(runPath, await readFile(join(dir, 'failing.json'), 'utf8'));
+    const stdout = new Sink();
+    const stderr = new Sink();
+    const code = await runAgentCommand(
+      {
+        run: runPath,
+        recording: RECORDING,
+        target: 'http://127.0.0.1:9',
+        reference: 'http://127.0.0.1:9',
+        out: join(dir, 'stopped-cases.jsonl'),
+        casesPerRound: 4,
+        model: 'claude-sonnet-5-5',
+        budgetUsd: 2,
+        maxRounds: 2,
+        header: [],
+        timeoutMs: 1000,
+        env: join(dir, 'key.env'),
+      },
+      { stdout, stderr },
+      {
+        env: { ANTHROPIC_API_KEY: 'test-key' },
+        clientFactory: (_apiKey, model) =>
+          new MockModelClient([JSON.stringify({ cases: [] })], { model }),
+      },
+      AbortSignal.abort(),
+    );
+    expect(code).toBe(3);
+    expect(stdout.text).toContain('0 of 2 rounds, stopped on aborted');
+    expect(stderr.text).toContain('agent stopped by signal at a case boundary');
+    const updated = parseRun(await readFile(runPath, 'utf8'));
+    expect(updated.agent).toMatchObject({ stop_reason: 'aborted', rounds: 0, executed: 0 });
+    expect(validate(updated), validate.errors ?? '').toBe(true);
+    expect(await readFile(join(dir, 'stopped-cases.jsonl'), 'utf8')).toBe('');
+    expect(
+      (
+        JSON.parse(await readFile(join(dir, 'agent-transcript.json'), 'utf8')) as {
+          stop_reason: string;
+        }
+      ).stop_reason,
+    ).toBe('aborted');
   });
 
   it('runs the loop with an injected client and adds the agent section to the run', async () => {

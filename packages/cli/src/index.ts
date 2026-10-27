@@ -1,10 +1,27 @@
-export { CLI_VERSION, buildProgram, runCli, type RunCliOptions } from './cli.js';
-export { loadDotEnv, parseDotEnv } from './env.js';
+export {
+  CLI_VERSION,
+  buildProgram,
+  readPackageVersion,
+  runCli,
+  type RunCliOptions,
+} from './cli.js';
+export {
+  dotEnvCandidates,
+  findProjectRoot,
+  loadDotEnv,
+  parseDotEnv,
+  type DotEnvLoad,
+} from './env.js';
 export { parseFilter, parseListen, resolveHeaders, type Listen } from './options.js';
 export { explainRun, runReport } from './commands/report.js';
 export { runReplay } from './commands/replay.js';
 export { runCapture } from './commands/capture.js';
 export { invariantsExitCode, renderInvariantReport, runInvariants } from './commands/invariants.js';
 export { runShrink } from './commands/shrink.js';
-export { NO_KEY_MESSAGE, runAgentCommand, type AgentCommandHooks } from './commands/agent.js';
+export {
+  NO_KEY_MESSAGE,
+  noKeyMessage,
+  runAgentCommand,
+  type AgentCommandHooks,
+} from './commands/agent.js';
 export type { CliStreams } from './io.js';
