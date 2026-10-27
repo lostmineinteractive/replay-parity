@@ -20,9 +20,14 @@ export {
 export {
   FALLBACK_PRICE_MODEL,
   PRICES,
+  PRICES_AS_OF,
+  PRICING_MAX_AGE_DAYS,
   costUsd,
   estimateCostUsd,
+  loadPricingFile,
   priceFor,
+  pricingStaleness,
+  resolvePrices,
   type Price,
 } from './pricing.js';
 export {
