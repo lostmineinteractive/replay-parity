@@ -202,6 +202,55 @@ describe('shrink', () => {
     expect(reproduction.reduced_steps).toBeGreaterThan(5);
   });
 
+  it('stops on a signal after the attempt in progress and keeps the best reduction so far', async () => {
+    const url = await candidate(['shipment-applied-twice']);
+    const run = await failingRun(url);
+    const rule = defaultRule(run) as ShrinkRule;
+    const controller = new AbortController();
+    const dir = await mkdtemp(join(tmpdir(), 'rp-shrink-'));
+    const out = join(dir, 'reduced-reproduction.jsonl');
+    const { reproduction, aborted } = await shrink({
+      exchanges: recording,
+      target: url,
+      reset: resetter(url),
+      rule,
+      replay: { rules: RULES },
+      out,
+      onAttempt: () => controller.abort(),
+      signal: controller.signal,
+    });
+    expect(aborted).toBe(true);
+    expect(reproduction.attempts).toBe(1);
+    // The witness truncation was confirmed by the first attempt and is kept.
+    expect(reproduction.successful).toBe(true);
+    expect(reproduction.reduced_steps).toBeLessThan(283);
+    expect(reproduction.recording).toBe(out);
+    expect(parseRecordingText(await readFile(out, 'utf8'))).toHaveLength(
+      reproduction.reduced_steps,
+    );
+
+    // A signal that is already aborted spends no attempt.
+    const none = await shrink({
+      exchanges: recording,
+      target: url,
+      reset: resetter(url),
+      rule,
+      replay: { rules: RULES },
+      signal: AbortSignal.abort(),
+    });
+    expect(none.aborted).toBe(true);
+    expect(none.reproduction).toMatchObject({ attempts: 0, successful: false, reduced_steps: 283 });
+    const done = await shrink({
+      exchanges: recording.slice(0, 30),
+      target: url,
+      reset: resetter(url),
+      rule: { kind: 'invariant', system: 'candidate', name: 'receivables' },
+      replay: { rules: RULES },
+      signal: new AbortController().signal,
+    });
+    expect(done.aborted).toBe(false);
+  }, 60_000);
+
   it('stops at the time budget', async () => {
     const url = await candidate(['shipment-applied-twice']);
     const run = await failingRun(url);

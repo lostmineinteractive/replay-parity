@@ -54,6 +54,11 @@ export interface ShrinkOptions {
   out?: string | null | undefined;
   onAttempt?: ((event: AttemptEvent) => void) | undefined;
   now?: (() => number) | undefined;
+  /**
+   * Aborting stops the attempts, like the attempt budget running out. The best
+   * reduction found so far is kept and `aborted` is set on the result.
+   */
+  signal?: AbortSignal | undefined;
 }
 
 export type AttemptPhase = 'confirm' | 'remove' | 'lower';
@@ -68,6 +73,8 @@ export interface AttemptEvent {
 export interface ShrinkResult {
   reproduction: Reproduction;
   exchanges: Exchange[];
+  /** True when `signal` stopped the attempts before the reduction was done. */
+  aborted: boolean;
 }
 
 export const DEFAULT_MAX_ATTEMPTS = 64;
@@ -138,7 +145,11 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
   const listOf = (indices: readonly number[]): Exchange[] =>
     indices.map((i) => (steps.get(i) as Step).exchange);
 
+  const signal = options.signal;
+  const stopped = (): boolean => signal?.aborted === true;
+
   const judge = async (indices: readonly number[], phase: AttemptPhase): Promise<boolean> => {
+    if (stopped()) throw new AttemptBudgetExceeded('stopped by signal');
     if (attempts >= maxAttempts || now() - started > timeBudgetMs)
       throw new AttemptBudgetExceeded();
     attempts += 1;
@@ -152,7 +163,10 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
       rules,
       thresholds: emptyThresholds(),
       invariants: options.rule.kind === 'invariant',
+      signal,
     });
+    // An attempt cut short by the signal is spent but not judged.
+    if (stopped()) throw new AttemptBudgetExceeded('stopped by signal');
     const reproduced = reproduces(run, options.rule);
     options.onAttempt?.({ attempt: attempts, phase, steps: indices.length, reproduced });
     return reproduced;
@@ -199,7 +213,7 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
       ? kept.map(toStep)
       : original.map((exchange, index) => toStep({ index, exchange, quantityReduced: false })),
   };
-  return { reproduction, exchanges: finalExchanges };
+  return { reproduction, exchanges: finalExchanges, aborted: stopped() };
 }
 
 /** Lowers `qty` and `quantity` fields toward one, keeping each change that still reproduces. */
