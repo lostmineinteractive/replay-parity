@@ -1,10 +1,23 @@
+# Shared by the three Dockerfiles, all built from the repository root. The
+# build stages copy the manifests, packages, demo, and scripts, so everything
+# listed here is either rebuilt inside the image or never needed by one.
 .git
+.github
+.changeset
+.claude
 .env
 .env.*
 node_modules
 **/node_modules
 **/dist
+**/*.tsbuildinfo
 coverage
 demo/out
-docs/images
+demo/recording.jsonl
+docs
+examples
+fixtures
+Dockerfile
+Makefile
 *.md
+*.tgz

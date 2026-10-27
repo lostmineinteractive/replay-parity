@@ -4,7 +4,7 @@ PNPM ?= pnpm
 REFERENCE_URL ?= http://127.0.0.1:3000
 CANDIDATE_URL ?= http://127.0.0.1:3002
 
-.PHONY: all install build typecheck lint format test test-unit test-int coverage check-prose check-secrets check-parallel check recording bench-capture bench-replay demo demo-down screenshots clean
+.PHONY: all install build typecheck lint format test test-unit test-int coverage check-prose check-secrets check-parallel check recording bench-capture bench-replay demo demo-down screenshots image image-run release-check clean
 
 all: install lint build test
 
@@ -63,6 +63,22 @@ demo-down:
 
 screenshots:
 	sh scripts/screenshots.sh
+
+# The rp image and the release dry run. IMAGE names the tag to build and run.
+# RP_ARGS is passed to rp inside the container with demo mounted read only at
+# /demo, so `make image-run RP_ARGS="report --run /demo/out/run.json"` renders
+# a run from the demo. Neither target publishes anything.
+IMAGE ?= replay-parity-rp:dev
+RP_ARGS ?= --help
+
+image:
+	docker build -f Dockerfile -t $(IMAGE) .
+
+image-run:
+	docker run --rm -v "$(CURDIR)/demo:/demo:ro" $(IMAGE) $(RP_ARGS)
+
+release-check:
+	sh scripts/release-check.sh
 
 clean:
 	rm -rf packages/*/dist demo/*/dist coverage demo/out
