@@ -70,6 +70,14 @@ A property that fails again prints its seed and path; see the section above to r
 | `/flaky-clean`                | Every third request is a complete 503                            | The exchanges are compared and mismatch on status; the error rate stays zero, since only transport failures count.     |
 | `/close-before-headers`       | The socket is destroyed before any header                        | Kind `connection`.                                                                                                     |
 
+## Timing in tests
+
+Timing tests assert ordering and relative spacing from the run's own fields. A replay test reads `scheduled_at_ms`, `sent_at_ms`, `acked_at_ms`, and `duration_ms` from the run rather than from a stopwatch around the call. It checks that sends keep the recording order, that no send runs ahead of its scheduled time by more than timer granularity, that the sends span at least the schedule, and that the slip, which is `sent_at_ms` minus `scheduled_at_ms`, is small relative to the gaps of the schedule rather than below a fixed number of milliseconds. A capture test reads `offset_ms` from the recording and the counts from the proxy's statistics, and injects the clock where arrival order matters.
+
+Absolute bounds are generous and commented. Where a test needs an upper bound on a duration, the bound leaves at least 1500 ms of slack over the figure a quiet machine produces, the comment beside it says what was observed and why, and the test carries `retry: 2`. Synchronous tests of a few hundred milliseconds took 7 seconds under CPU contention on a shared machine, so the unit project's `testTimeout` is 20 seconds and the integration project's is 60. Neither change affects what passes on a quiet machine.
+
+The suite is expected to pass with another suite running at the same time. The check is `pnpm test` run three times while `pnpm exec vitest run --project unit` runs concurrently in another process. A test that fails only under that load is fixed by reading the run's own fields and by loosening the absolute bound with a comment, not by removing the assertion.
+
 ## Makefile targets
 
 | Target                                    | Runs                                                                                       |

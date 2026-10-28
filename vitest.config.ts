@@ -27,6 +27,10 @@ export default defineConfig({
         test: {
           name: 'unit',
           include: ['packages/*/src/**/*.test.ts', 'demo/*/src/**/*.test.ts'],
+          // Synchronous tests of a few hundred milliseconds took 7 seconds under CPU contention
+          // on a shared machine, so the budget is raised from the default 5000. This changes
+          // nothing about what passes on a quiet machine.
+          testTimeout: 20_000,
         },
       },
       {
@@ -38,7 +42,10 @@ export default defineConfig({
             'demo/*/test/**/*.int.test.ts',
             'scripts/test/**/*.int.test.ts',
           ],
-          testTimeout: 30_000,
+          // Raised from 30 seconds for the same reason as the unit budget: tests of a few hundred
+          // milliseconds took 7 seconds under CPU contention on a shared machine, and the longer
+          // integration tests scale the same way.
+          testTimeout: 60_000,
           hookTimeout: 30_000,
         },
       },
