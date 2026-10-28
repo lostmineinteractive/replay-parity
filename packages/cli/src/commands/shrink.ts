@@ -15,8 +15,10 @@ import {
   verifyRecordingHash,
 } from '@replay-parity/shrink';
 import { Command, Option } from 'commander';
+import { displayText, type CliContext } from '../config/index.js';
 import { err, out, type CliStreams } from '../io.js';
-import { collect, positiveInt, resolveHeaders } from '../options.js';
+import { collect, collectQuery, positiveInt, resolveHeaders, resolveQuery } from '../options.js';
+import { formatCheck, hasError, preflight } from '../preflight.js';
 
 export interface ShrinkCommandOptions {
   run: string;
@@ -30,15 +32,26 @@ export interface ShrinkCommandOptions {
   out: string;
   header: string[];
   headersFile?: string;
+  query: string[];
   barrierTag: string[];
   timeoutMs: number;
   allowRecordingMismatch: boolean;
+  /** Run the preflight checks before the first attempt. Default true, `--no-preflight` turns it off. */
+  preflight?: boolean;
+  /** Probe the target and the reset URL in the preflight. Default false. */
+  preflightProbe?: boolean;
+  config?: string;
+  profile?: string;
+  /** The URLs as they should be printed, which is the unresolved text when one held a secret. */
+  targetLabel?: string;
+  resetLabel?: string;
 }
 
 export async function runShrink(
   options: ShrinkCommandOptions,
   streams: CliStreams,
   signal?: AbortSignal,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
   const run = await readRun(options.run);
   // The run names the file it replayed by hash. A different file is refused unless asked.
@@ -61,18 +74,50 @@ export async function runShrink(
       `${options.run} has no violated invariant and no mismatched exchange to reproduce`,
     );
   }
-  const headers = await resolveHeaders(options.header, options.headersFile);
+  if (options.preflight !== false) {
+    const probe = options.preflightProbe === true;
+    const checks = await preflight({
+      recording: options.recording,
+      exchanges,
+      rules,
+      barrierTags: options.barrierTag,
+      target: probe
+        ? { url: options.target, label: options.targetLabel ?? options.target }
+        : undefined,
+      reset: probe ? { url: options.reset, label: options.resetLabel ?? options.reset } : undefined,
+    });
+    for (const check of checks) {
+      if (check.level !== 'ok') err(streams, `preflight: ${formatCheck(check)}`);
+    }
+    if (hasError(checks)) {
+      err(
+        streams,
+        'preflight failed, nothing was sent. rp validate prints every check, --no-preflight skips them.',
+      );
+      return EXIT_CODES.error;
+    }
+  }
+  const headers = await resolveHeaders(options.header, options.headersFile, env);
+  const queryOverrides = resolveQuery(options.query);
   const resetUrl = options.reset;
   const reset = async (): Promise<void> => {
     const res = await fetch(resetUrl, { method: 'POST' });
-    if (!res.ok) throw new ConfigError(`reset ${resetUrl} answered ${res.status}`);
+    if (!res.ok) {
+      throw new ConfigError(`reset ${options.resetLabel ?? resetUrl} answered ${res.status}`);
+    }
   };
   const { reproduction, aborted } = await shrink({
     exchanges,
     target: options.target,
     reset,
     rule,
-    replay: { rules, headers, barrierTags: options.barrierTag, timeoutMs: options.timeoutMs },
+    replay: {
+      rules,
+      headers,
+      queryOverrides,
+      barrierTags: options.barrierTag,
+      timeoutMs: options.timeoutMs,
+    },
     maxAttempts: options.maxAttempts,
     timeBudgetMs: options.timeBudgetMs,
     out: options.out,
@@ -108,6 +153,7 @@ export function shrinkCommand(
   streams: CliStreams,
   signal: AbortSignal,
   exit: (code: number) => void,
+  context?: CliContext,
 ): Command {
   return new Command('shrink')
     .description(
@@ -138,6 +184,12 @@ export function shrinkCommand(
     .option('--out <path>', 'reduced recording to write', 'reduced-reproduction.jsonl')
     .option('--header <name: value>', 'header applied to every request, repeatable', collect, [])
     .option('--headers-file <path>', 'file with one "name: value" header per line')
+    .option(
+      '--query <name=value>',
+      'query parameter applied to every request over the recorded value, repeatable',
+      collectQuery,
+      [],
+    )
     .option('--barrier-tag <tag>', 'barrier tag kept for every attempt, repeatable', collect, [])
     .addOption(
       new Option('--timeout-ms <n>', 'request timeout').default(30_000).argParser(positiveInt),
@@ -147,7 +199,23 @@ export function shrinkCommand(
       'shrink even when the recording hash differs from the one the run recorded',
       false,
     )
-    .action(async (opts: ShrinkCommandOptions) => {
-      exit(await runShrink(opts, streams, signal));
+    .option(
+      '--no-preflight',
+      'skip the checks of the rules and barrier tags against the recording before the first attempt',
+    )
+    .option('--preflight-probe', 'also probe the target and the reset URL first', false)
+    .action(async (opts: ShrinkCommandOptions, command: Command) => {
+      exit(
+        await runShrink(
+          {
+            ...opts,
+            targetLabel: displayText(command, 'target', opts.target),
+            resetLabel: displayText(command, 'reset', opts.reset),
+          },
+          streams,
+          signal,
+          context?.env,
+        ),
+      );
     });
 }

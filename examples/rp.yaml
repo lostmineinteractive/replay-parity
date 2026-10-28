@@ -1,0 +1,199 @@
+# rp.yaml, every key explained. rp reads the file named by --config, else by
+# RP_CONFIG, else ./rp.yaml when it exists. Every long flag of every command
+# can be a key under the command's name, spelled as on the command line without
+# the leading dashes. A repeatable flag takes a list. A flag that is a switch
+# takes true or false, and true means the flag is given. Precedence, lowest to
+# highest: this file's top level, the selected profile, RP_<COMMAND>_<FLAG>
+# environment variables, then the flags on the command line. A layer that sets
+# a key replaces the value below it, lists included. Any string may hold
+# ${NAME}, replaced with the environment variable NAME when the command runs,
+# and $$ is a literal dollar sign. Relative paths are relative to the working
+# directory, as on the command line. Every section is optional.
+
+capture:
+  # Address to listen on, as [host]:port.
+  listen: 127.0.0.1:8080
+  # Base URL of the reference system to forward to.
+  target: http://127.0.0.1:3000
+  # Recording file to append to.
+  out: recordings/reference.jsonl
+  # Tag rules "[METHOD ]<glob>=<tag>", first match wins.
+  tag-rule:
+    - POST /v1/orders=create-order
+    - GET /v1/orders/*=get-order
+  # Fraction of exchanges to record, above 0 and at most 1.
+  sample: 1
+  # Headers to redact. The list replaces the default list.
+  redact-header: [authorization, cookie, set-cookie, x-api-key]
+  # Query parameters to redact. The list replaces the default list.
+  redact-query: [api_key, token]
+  # Bodies above this size are stored as a hash.
+  max-body-bytes: 1048576
+  # Same as passing --no-append: start a new recording file instead of appending.
+  no-append: false
+  # Upstream headers and body timeout in milliseconds.
+  upstream-timeout-ms: 30000
+
+replay:
+  # Recording to replay.
+  recording: recordings/reference.jsonl
+  # Base URL of the candidate system.
+  target: '${CANDIDATE_URL}'
+  # Run file to write.
+  out: out/run.json
+  # Send schedule: as-recorded, fixed-rate, or max.
+  pace: as-recorded
+  # Requests per second under fixed-rate pacing.
+  rps: 50
+  # Most requests in flight at once.
+  concurrency: 8
+  # Leading exchanges that run but do not count.
+  warmup: 0
+  # Replay only exchanges carrying this tag.
+  filter: tag=get-order
+  # Replay only the first n exchanges after filtering.
+  limit: 1000
+  # Same as --no-include-dependencies: with a filter, do not also replay the
+  # exchanges that produce the substituted values the filtered exchanges use.
+  no-include-dependencies: false
+  # Longest recorded gap kept under as-recorded pacing, in milliseconds. 0 keeps every gap.
+  max-gap-ms: 30000
+  # Diff rules and thresholds files.
+  rules: diff-rules.yaml
+  thresholds: thresholds.yaml
+  # Transport: http or bus.
+  adapter: http
+  # Redis URL for the bus adapter.
+  bus-url: redis://127.0.0.1:6379
+  # Headers applied to every request over the recorded value. ${TOKEN} is read
+  # from the environment when the replay starts and never written to the run.
+  header:
+    - 'authorization: Bearer ${TOKEN}'
+    - 'x-env: staging'
+  # File with one "name: value" header per line. Its values may hold ${NAME} too.
+  headers-file: headers.txt
+  # Query parameters applied to every request over the recorded value.
+  query:
+    - 'api_key=${API_KEY}'
+  # Tags whose exchanges wait for every earlier exchange to be acknowledged.
+  barrier-tag: [list-ledger]
+  # Longest wait at a barrier before the run is inconclusive.
+  barrier-timeout-ms: 10000
+  # Write the requests as sent and the candidate responses here.
+  candidate-recording: out/candidate.jsonl
+  # Evaluate the independent invariants on both recordings.
+  invariants: true
+  # Request timeout in milliseconds.
+  timeout-ms: 30000
+  # Candidate bodies above this size are stored as a hash.
+  max-body-bytes: 1048576
+  # Do not print the terminal summary.
+  quiet: false
+  # Same as --no-preflight: skip the checks of the thresholds, rules, and barrier
+  # tags against the recording before sending.
+  no-preflight: false
+  # Also probe the target before sending.
+  preflight-probe: true
+
+report:
+  # Run file written by rp replay.
+  run: out/run.json
+  # File to write. Without it the report goes to stdout.
+  out: out/report.html
+  # html, json, terminal, junit, or markdown.
+  format: html
+  # true explains every mismatched exchange, an exchange id explains one.
+  explain: false
+  # Exit with the run verdict code after writing the output.
+  fail-on-verdict: false
+
+invariants:
+  # The recording of one system and a label for the report.
+  recording: recordings/reference.jsonl
+  system: reference
+  # Write the report as JSON here.
+  out: out/invariants.json
+
+shrink:
+  # The failing run file and the recording it replayed.
+  run: out/run.json
+  recording: recordings/reference.jsonl
+  # Base URL of the candidate and the URL that receives a POST before every attempt.
+  target: '${CANDIDATE_URL}'
+  reset: '${CANDIDATE_URL}/admin/reset'
+  # Rule to reproduce: invariant:<system>:<name> or mismatch:<exchange id>[:<path>].
+  rule: invariant:candidate:shipment-applied-once
+  # Diff rules file. Default: the rules embedded in the run.
+  rules: diff-rules.yaml
+  # Most replays and most time to spend.
+  max-attempts: 64
+  time-budget-ms: 120000
+  # Reduced recording to write.
+  out: out/reduced-reproduction.jsonl
+  # The same headers, headers file, and query parameters as for replay.
+  header: ['authorization: Bearer ${TOKEN}']
+  headers-file: headers.txt
+  query: ['api_key=${API_KEY}']
+  # Barrier tags kept for every attempt.
+  barrier-tag: [list-ledger]
+  timeout-ms: 30000
+  no-preflight: false
+  # Also probe the target and the reset URL before the first attempt.
+  preflight-probe: true
+
+agent:
+  # The run file, updated in place, and the recording it replayed.
+  run: out/run.json
+  recording: recordings/reference.jsonl
+  # Base URLs of the candidate and the reference.
+  target: '${CANDIDATE_URL}'
+  reference: '${REFERENCE_URL}'
+  # Diff rules and thresholds. Default: the ones embedded in the run.
+  rules: diff-rules.yaml
+  thresholds: thresholds.yaml
+  # Kept cases file. The transcript lands next to it.
+  out: out/generated-cases.jsonl
+  # Cases to ask for per round, the model id, the spending limit in US dollars, and the round limit.
+  cases-per-round: 8
+  model: claude-sonnet-4-5
+  budget-usd: 2
+  max-rounds: 3
+  header: ['authorization: Bearer ${TOKEN}']
+  headers-file: headers.txt
+  # Request timeout for both systems and the model.
+  timeout-ms: 120000
+  # .env file read for ANTHROPIC_API_KEY when the variable is not set.
+  env: .env
+
+validate:
+  # The recording the other files are checked against, and the files to check.
+  recording: recordings/reference.jsonl
+  rules: diff-rules.yaml
+  thresholds: thresholds.yaml
+  # URLs to probe: a GET on the target and the reference, a POST on the reset URL.
+  target: '${CANDIDATE_URL}'
+  reference: '${REFERENCE_URL}'
+  reset: '${CANDIDATE_URL}/admin/reset'
+  # Barrier tags that must exist in the recording.
+  barrier-tag: [list-ledger]
+
+doctor:
+  # URLs to probe after the configuration is printed.
+  target: '${CANDIDATE_URL}'
+  reference: '${REFERENCE_URL}'
+  reset: '${CANDIDATE_URL}/admin/reset'
+
+# A profile holds the same sections and overrides the top level when
+# --profile <name> or RP_PROFILE selects it.
+profiles:
+  nightly:
+    replay:
+      pace: fixed-rate
+      rps: 200
+      limit: 50000
+      header: ['x-env: nightly']
+  smoke:
+    replay:
+      pace: max
+      limit: 200
+      no-preflight: true

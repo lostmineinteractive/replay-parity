@@ -1,0 +1,22 @@
+# Settings for the demo replays. scripts/demo.sh passes them with
+# --config demo/rp.yaml --profile <strict|unordered>. The per replay
+# differences, the target, the run file, and the candidate recording, stay on
+# the command line, which wins over this file. docs/configuration.md explains
+# the format and examples/rp.yaml explains every key.
+replay:
+  recording: demo/out/recording.jsonl
+  pace: as-recorded
+  concurrency: 8
+  thresholds: demo/thresholds.yaml
+  barrier-tag: [list-ledger]
+  invariants: true
+  rules: demo/diff-rules.yaml
+profiles:
+  # Array order is significant, so the inventory ordering divergence mismatches.
+  strict:
+    replay:
+      rules: demo/diff-rules.yaml
+  # Inventory rows are compared as a set keyed by SKU, so the ordering is tolerated.
+  unordered:
+    replay:
+      rules: demo/diff-rules-unordered.yaml

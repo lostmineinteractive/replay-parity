@@ -6,11 +6,14 @@ import { TagRuleError } from '@replay-parity/capture';
 import { CommanderError, Command, InvalidArgumentError } from 'commander';
 import { agentCommand } from './commands/agent.js';
 import { captureCommand } from './commands/capture.js';
+import { doctorCommand } from './commands/doctor.js';
 import { invariantsCommand } from './commands/invariants.js';
 import { recordingCommand } from './commands/recording.js';
 import { replayCommand } from './commands/replay.js';
 import { reportCommand } from './commands/report.js';
 import { shrinkCommand } from './commands/shrink.js';
+import { validateCommand } from './commands/validate.js';
+import { installConfig, type CliContext } from './config/index.js';
 import { err, type CliStreams } from './io.js';
 
 /** The version in this package's package.json. From src/ the file is one directory up, from dist/src/ two up. */
@@ -32,12 +35,17 @@ export const CLI_VERSION = readPackageVersion();
 export interface RunCliOptions extends Partial<CliStreams> {
   /** Aborted to stop the running command. Every command stops cleanly and writes what it has. */
   signal?: AbortSignal | undefined;
+  /** The environment the configuration reads. Default: the process environment. */
+  env?: NodeJS.ProcessEnv | undefined;
+  /** Where `./rp.yaml` and relative `--config` paths are looked for. Default: the working directory. */
+  cwd?: string | undefined;
 }
 
 export function buildProgram(
   streams: CliStreams,
   signal: AbortSignal,
   exit: (code: number) => void,
+  context: CliContext = { env: process.env, cwd: process.cwd() },
 ): Command {
   const program = new Command('rp')
     .description(
@@ -55,12 +63,15 @@ export function buildProgram(
     })
     .exitOverride();
   program.addCommand(captureCommand(streams, signal, exit));
-  program.addCommand(replayCommand(streams, signal, exit));
+  program.addCommand(replayCommand(streams, signal, exit, context));
   program.addCommand(reportCommand(streams, exit));
   program.addCommand(invariantsCommand(streams, exit));
-  program.addCommand(shrinkCommand(streams, signal, exit));
+  program.addCommand(shrinkCommand(streams, signal, exit, context));
   program.addCommand(agentCommand(streams, signal, exit));
   program.addCommand(recordingCommand(streams, exit));
+  program.addCommand(validateCommand(streams, exit, context));
+  program.addCommand(doctorCommand(streams, exit, { ...context, version: CLI_VERSION }));
+  installConfig(program, context);
   for (const sub of program.commands) {
     sub.configureOutput({
       writeOut: (text) => {
@@ -100,10 +111,19 @@ export async function runCli(
     stderr: options.stderr ?? process.stderr,
   };
   const signal = options.signal ?? new AbortController().signal;
+  const context: CliContext = {
+    env: options.env ?? process.env,
+    cwd: options.cwd ?? process.cwd(),
+  };
   let code: number | null = null;
-  const program = buildProgram(streams, signal, (c) => {
-    code = c;
-  });
+  const program = buildProgram(
+    streams,
+    signal,
+    (c) => {
+      code = c;
+    },
+    context,
+  );
   try {
     await program.parseAsync([...argv], { from: 'user' });
   } catch (e) {

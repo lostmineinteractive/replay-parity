@@ -1,10 +1,12 @@
 import {
   ConfigError,
+  EXIT_CODES,
   emptyRules,
   emptyThresholds,
   exitCodeFor,
   loadDiffRules,
   loadThresholds,
+  readRecording,
   writeRun,
   type PacingMode,
 } from '@replay-parity/core';
@@ -14,21 +16,25 @@ import {
   DEFAULT_CONCURRENCY,
   DEFAULT_MAX_GAP_MS,
   RedisStreamsBus,
-  replay,
+  replayExchanges,
   type Adapter,
 } from '@replay-parity/replay';
 import { renderTerminal } from '@replay-parity/report';
 import { Command, Option } from 'commander';
+import { displayText, type CliContext } from '../config/index.js';
 import { err, out, type CliStreams } from '../io.js';
 import {
   collect,
+  collectQuery,
   nonNegativeInt,
   parseFilter,
   parseHeaderOption,
   positiveInt,
   positiveNumber,
   resolveHeaders,
+  resolveQuery,
 } from '../options.js';
+import { formatCheck, hasError, preflight } from '../preflight.js';
 
 export interface ReplayCommandOptions {
   recording: string;
@@ -48,6 +54,7 @@ export interface ReplayCommandOptions {
   busUrl?: string;
   header: string[];
   headersFile?: string;
+  query: string[];
   barrierTag: string[];
   barrierTimeoutMs: number;
   candidateRecording?: string;
@@ -55,17 +62,51 @@ export interface ReplayCommandOptions {
   timeoutMs: number;
   maxBodyBytes?: number;
   quiet: boolean;
+  /** Run the preflight checks before sending. Default true, `--no-preflight` turns it off. */
+  preflight?: boolean;
+  /** Probe the target in the preflight. Default false. */
+  preflightProbe?: boolean;
+  config?: string;
+  profile?: string;
+  /** The target as it should be printed, which is the unresolved text when it held a secret. */
+  targetLabel?: string;
 }
 
 export async function runReplay(
   options: ReplayCommandOptions,
   streams: CliStreams,
   signal?: AbortSignal,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
   const rules = options.rules === undefined ? emptyRules() : await loadDiffRules(options.rules);
   const thresholds =
     options.thresholds === undefined ? emptyThresholds() : await loadThresholds(options.thresholds);
-  const headers = await resolveHeaders(options.header, options.headersFile);
+  const headers = await resolveHeaders(options.header, options.headersFile, env);
+  const queryOverrides = resolveQuery(options.query);
+  const exchanges = await readRecording(options.recording);
+  if (options.preflight !== false) {
+    const checks = await preflight({
+      recording: options.recording,
+      exchanges,
+      rules,
+      thresholds,
+      barrierTags: options.barrierTag,
+      target:
+        options.preflightProbe === true && options.adapter === 'http'
+          ? { url: options.target, label: options.targetLabel ?? options.target }
+          : undefined,
+    });
+    for (const check of checks) {
+      if (check.level !== 'ok') err(streams, `preflight: ${formatCheck(check)}`);
+    }
+    if (hasError(checks)) {
+      err(
+        streams,
+        'preflight failed, nothing was sent. rp validate prints every check, --no-preflight skips them.',
+      );
+      return EXIT_CODES.error;
+    }
+  }
   let adapter: Adapter | undefined;
   let bus: RedisStreamsBus | undefined;
   if (options.adapter === 'bus') {
@@ -74,7 +115,7 @@ export async function runReplay(
     adapter = await BusAdapter.create(bus, { timeoutMs: options.timeoutMs });
   }
   try {
-    const run = await replay({
+    const run = await replayExchanges(exchanges, {
       recording: options.recording,
       target: options.target,
       adapter,
@@ -89,6 +130,7 @@ export async function runReplay(
       rules,
       thresholds,
       headers,
+      queryOverrides,
       barrierTags: options.barrierTag,
       barrierTimeoutMs: options.barrierTimeoutMs,
       candidateRecording: options.candidateRecording ?? null,
@@ -125,6 +167,7 @@ export function replayCommand(
   streams: CliStreams,
   signal: AbortSignal,
   exit: (code: number) => void,
+  context?: CliContext,
 ): Command {
   return new Command('replay')
     .description(
@@ -187,6 +230,12 @@ export function replayCommand(
     )
     .option('--headers-file <path>', 'file with one "name: value" header per line')
     .option(
+      '--query <name=value>',
+      'query parameter applied to every request over the recorded value, repeatable',
+      collectQuery,
+      [],
+    )
+    .option(
       '--barrier-tag <tag>',
       'tag whose exchanges wait for every earlier exchange to be acknowledged, repeatable',
       collect,
@@ -215,8 +264,20 @@ export function replayCommand(
       ).argParser(nonNegativeInt),
     )
     .option('--quiet', 'do not print the terminal summary', false)
-    .action(async (opts: ReplayCommandOptions) => {
-      exit(await runReplay(opts, streams, signal));
+    .option(
+      '--no-preflight',
+      'skip the checks of the thresholds, rules, and barrier tags against the recording before sending',
+    )
+    .option('--preflight-probe', 'also probe the target before sending', false)
+    .action(async (opts: ReplayCommandOptions, command: Command) => {
+      exit(
+        await runReplay(
+          { ...opts, targetLabel: displayText(command, 'target', opts.target) },
+          streams,
+          signal,
+          context?.env,
+        ),
+      );
     });
 }
 

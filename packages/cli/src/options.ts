@@ -5,8 +5,10 @@ import {
   parseHeaderLine,
   parseHeadersText,
   type HeaderMap,
+  type Query,
 } from '@replay-parity/core';
 import { InvalidArgumentError } from 'commander';
+import { interpolate } from './config/interpolate.js';
 
 /** Option parsers shared by the commands. Each throws a message commander prints with usage. */
 
@@ -71,10 +73,15 @@ export function parseHeaderOption(value: string): [string, string] {
   }
 }
 
-/** Headers from `--headers-file`, then `--header` entries on top. */
+/**
+ * Headers from `--headers-file`, then `--header` entries on top. A value in
+ * the file may hold `${NAME}`, resolved from `env` so the file never needs to
+ * hold the secret itself.
+ */
 export async function resolveHeaders(
   headerOptions: readonly string[],
   headersFile: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<HeaderMap> {
   let headers: HeaderMap = {};
   if (headersFile !== undefined) {
@@ -89,6 +96,9 @@ export async function resolveHeaders(
     } catch (err) {
       throw new ConfigError(`${headersFile}: ${(err as Error).message}`);
     }
+    for (const [name, value] of Object.entries(headers)) {
+      headers[name] = interpolate(value, env, `${headersFile} (${name})`);
+    }
   }
   const extra: HeaderMap = {};
   for (const line of headerOptions) {
@@ -96,4 +106,32 @@ export async function resolveHeaders(
     extra[name] = value;
   }
   return mergeHeaders(headers, extra);
+}
+
+/** One `name=value` query parameter. The value may be empty and may hold `=`. */
+export function parseQueryOption(value: string): [string, string] {
+  const idx = value.indexOf('=');
+  const name = idx < 0 ? value : value.slice(0, idx);
+  if (idx < 0 || name.trim().length === 0) {
+    throw new InvalidArgumentError('expected name=value');
+  }
+  return [name.trim(), value.slice(idx + 1)];
+}
+
+/** Collects `--query` entries and rejects one that is not `name=value` where it is given. */
+export function collectQuery(value: string, previous: string[] = []): string[] {
+  parseQueryOption(value);
+  return [...previous, value];
+}
+
+/** The query overrides from repeated `--query` flags. A name given more than once becomes a list. */
+export function resolveQuery(queryOptions: readonly string[]): Query {
+  const out: Query = {};
+  for (const entry of queryOptions) {
+    const [name, value] = parseQueryOption(entry);
+    const previous = out[name];
+    if (previous === undefined) out[name] = value;
+    else out[name] = Array.isArray(previous) ? [...previous, value] : [previous, value];
+  }
+  return out;
 }

@@ -36,6 +36,9 @@ controls:
   tags: [admin-restart, admin-reset]
 `;
 
+// Every command takes the configuration flags.
+const CONFIG_FLAGS = ['--config', '--profile'];
+
 const FLAGS: Record<string, string[]> = {
   capture: [
     '--listen',
@@ -44,9 +47,11 @@ const FLAGS: Record<string, string[]> = {
     '--tag-rule',
     '--sample',
     '--redact-header',
+    '--redact-query',
     '--max-body-bytes',
     '--no-append',
     '--upstream-timeout-ms',
+    ...CONFIG_FLAGS,
   ],
   replay: [
     '--recording',
@@ -66,6 +71,7 @@ const FLAGS: Record<string, string[]> = {
     '--bus-url',
     '--header',
     '--headers-file',
+    '--query',
     '--barrier-tag',
     '--barrier-timeout-ms',
     '--candidate-recording',
@@ -73,9 +79,12 @@ const FLAGS: Record<string, string[]> = {
     '--timeout-ms',
     '--max-body-bytes',
     '--quiet',
+    '--no-preflight',
+    '--preflight-probe',
+    ...CONFIG_FLAGS,
   ],
-  report: ['--run', '--out', '--format', '--explain'],
-  invariants: ['--recording', '--out', '--system'],
+  report: ['--run', '--out', '--format', '--explain', '--fail-on-verdict', ...CONFIG_FLAGS],
+  invariants: ['--recording', '--out', '--system', ...CONFIG_FLAGS],
   shrink: [
     '--run',
     '--recording',
@@ -88,8 +97,12 @@ const FLAGS: Record<string, string[]> = {
     '--out',
     '--header',
     '--headers-file',
+    '--query',
     '--barrier-tag',
     '--timeout-ms',
+    '--no-preflight',
+    '--preflight-probe',
+    ...CONFIG_FLAGS,
   ],
   agent: [
     '--run',
@@ -107,7 +120,19 @@ const FLAGS: Record<string, string[]> = {
     '--headers-file',
     '--timeout-ms',
     '--env',
+    ...CONFIG_FLAGS,
   ],
+  validate: [
+    '--recording',
+    '--rules',
+    '--thresholds',
+    '--target',
+    '--reference',
+    '--reset',
+    '--barrier-tag',
+    ...CONFIG_FLAGS,
+  ],
+  doctor: ['--target', '--reference', '--reset', ...CONFIG_FLAGS],
 };
 
 class Sink extends Writable {

@@ -95,27 +95,30 @@ $LOAD --target "http://127.0.0.1:$PROXY_PORT"
 kill -TERM "$CAPTURE_PID"
 wait "$CAPTURE_PID"
 
-COMMON="--recording $OUT/recording.jsonl --pace as-recorded --concurrency 8 \
-  --thresholds demo/thresholds.yaml --barrier-tag list-ledger --invariants"
+# The shared replay settings (recording, pacing, concurrency, thresholds,
+# barrier tag, invariants) live in demo/rp.yaml. The profile picks the rules
+# file. The target, the run file, and the candidate recording differ per
+# replay and stay on the command line.
+CONFIG="--config demo/rp.yaml"
 
 step "replay 1: classic candidate, strict rules (expected FAIL on the four divergences)"
-replay $COMMON --target "http://127.0.0.1:$CAND_PORT" --rules demo/diff-rules.yaml \
+replay $CONFIG --profile strict --target "http://127.0.0.1:$CAND_PORT" \
   --candidate-recording "$OUT/candidate.jsonl" --out "$OUT/run.json"
 $RP report --run "$OUT/run.json" --out "$OUT/report.html"
 
 step "replay 1b: classic candidate, unordered rules (ordering tolerated)"
 reset "$CAND_PORT"
-replay $COMMON --target "http://127.0.0.1:$CAND_PORT" --rules demo/diff-rules-unordered.yaml \
+replay $CONFIG --profile unordered --target "http://127.0.0.1:$CAND_PORT" \
   --out "$OUT/run-unordered.json" --quiet
 $RP report --run "$OUT/run-unordered.json" --out "$OUT/report-unordered.html"
 
 step "replay 2: clean pair, DIVERGENCES=off (expected PASS)"
-replay $COMMON --target "http://127.0.0.1:$CLEAN_PORT" --rules demo/diff-rules.yaml \
+replay $CONFIG --profile strict --target "http://127.0.0.1:$CLEAN_PORT" \
   --candidate-recording "$OUT/candidate-clean.jsonl" --out "$OUT/run-clean.json"
 $RP report --run "$OUT/run-clean.json" --out "$OUT/report-clean.html"
 
 step "replay 3: seeded defect $DEMO_DEFECT (expected FAIL on invariants), then shrink"
-replay $COMMON --target "http://127.0.0.1:$DEFECT_PORT" --rules demo/diff-rules.yaml \
+replay $CONFIG --profile strict --target "http://127.0.0.1:$DEFECT_PORT" \
   --candidate-recording "$OUT/candidate-defect.jsonl" --out "$OUT/run-defect.json"
 $RP shrink --run "$OUT/run-defect.json" --recording "$OUT/recording.jsonl" \
   --target "http://127.0.0.1:$DEFECT_PORT" --reset "http://127.0.0.1:$DEFECT_PORT/admin/reset" \
