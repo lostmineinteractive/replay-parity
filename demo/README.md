@@ -6,14 +6,14 @@
 
 1. `docker compose` starts four containers from `demo/docker-compose.yml`: the reference on port 3000, the candidate with the four planted divergences on 3001, a clean candidate with `DIVERGENCES=off` on 3002, and a candidate with one seeded defect on 3003.
 2. `rp capture` listens on 8080 in front of the reference. The load generator in `demo/load` sends twelve order lifecycle scenarios with background traffic between them, a ledger read after each scenario, and a final read of every order and the ledger. The recording lands in `demo/out/recording.jsonl` with 284 exchanges across nine tags.
-3. `rp replay` runs with `as-recorded` pacing, the demo thresholds, `list-ledger` as a barrier tag, and the invariants on both recordings. The runs and reports land in `demo/out`.
+3. `rp replay` runs with `--config demo/rp.yaml` and the `strict` or `unordered` profile. The file holds the shared settings, `as-recorded` pacing, concurrency 8, the demo thresholds, `list-ledger` as a barrier tag, and the invariants on both recordings, and the profile names the rules file. The target, the run file, and the candidate recording differ per replay and stay on the command line. The runs and reports land in `demo/out`.
 
-| Replay | Candidate                                       | Rules                            | Expected verdict                          | Report                  |
-| ------ | ----------------------------------------------- | -------------------------------- | ----------------------------------------- | ----------------------- |
-| 1      | the four divergences                            | `demo/diff-rules.yaml`           | FAIL on all four                          | `report.html`           |
-| 1b     | the four divergences                            | `demo/diff-rules-unordered.yaml` | FAIL on three, ordering tolerated         | `report-unordered.html` |
-| 2      | `DIVERGENCES=off`                               | `demo/diff-rules.yaml`           | PASS, every invariant holds on both sides | `report-clean.html`     |
-| 3      | `DEMO_DEFECT`, default `shipment-applied-twice` | `demo/diff-rules.yaml`           | FAIL on invariants, then `rp shrink`      | `report-defect.html`    |
+| Replay | Candidate                                       | Profile and rules                             | Expected verdict                          | Report                  |
+| ------ | ----------------------------------------------- | --------------------------------------------- | ----------------------------------------- | ----------------------- |
+| 1      | the four divergences                            | `strict`, `demo/diff-rules.yaml`              | FAIL on all four                          | `report.html`           |
+| 1b     | the four divergences                            | `unordered`, `demo/diff-rules-unordered.yaml` | FAIL on three, ordering tolerated         | `report-unordered.html` |
+| 2      | `DIVERGENCES=off`                               | `strict`, `demo/diff-rules.yaml`              | PASS, every invariant holds on both sides | `report-clean.html`     |
+| 3      | `DEMO_DEFECT`, default `shipment-applied-twice` | `strict`, `demo/diff-rules.yaml`              | FAIL on invariants, then `rp shrink`      | `report-defect.html`    |
 
 `make demo` exits 0 when every step ran. A failing or inconclusive replay is a result, not an error. `make demo-down` stops the containers.
 
@@ -71,12 +71,14 @@ With `ANTHROPIC_API_KEY` set, `make demo` runs `rp agent` for two rounds against
 
 ## Knobs
 
-| Variable                                                                                               | Default                      | Effect                                                                                                                                                            |
-| ------------------------------------------------------------------------------------------------------ | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DIVERGENCES`                                                                                          | `on`                         | Divergences of the main candidate: `on`, `off`, or a comma separated list of names. `DIVERGENCES=off make demo` makes the first replay pass.                      |
-| `DEMO_DEFECT`                                                                                          | `shipment-applied-twice`     | The seeded defect of the third candidate: `shipment-applied-twice`, `quantity-as-additional`, `drop-late-precancel-shipment`, or `idempotency-lost-on-restart`.   |
-| `DEMO_REFERENCE_PORT`, `DEMO_CANDIDATE_PORT`, `DEMO_CLEAN_PORT`, `DEMO_DEFECT_PORT`, `DEMO_PROXY_PORT` | 3000, 3001, 3002, 3003, 8080 | Host ports.                                                                                                                                                       |
-| `ANTHROPIC_API_KEY`                                                                                    | unset                        | When set, in the shell or in a gitignored `.env` at the repository root, the agent runs two rounds after the first replay and adds its findings to `report.html`. |
+| Variable                                                                                               | Default                      | Effect                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------ | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DIVERGENCES`                                                                                          | `on`                         | Divergences of the main candidate: `on`, `off`, or a comma separated list of names. `DIVERGENCES=off make demo` makes the first replay pass.                                                                                                                                                                                        |
+| `DEMO_DEFECT`                                                                                          | `shipment-applied-twice`     | The seeded defect of the third candidate: `shipment-applied-twice`, `quantity-as-additional`, `drop-late-precancel-shipment`, or `idempotency-lost-on-restart`.                                                                                                                                                                     |
+| `DEMO_REFERENCE_PORT`, `DEMO_CANDIDATE_PORT`, `DEMO_CLEAN_PORT`, `DEMO_DEFECT_PORT`, `DEMO_PROXY_PORT` | 3000, 3001, 3002, 3003, 8080 | Host ports.                                                                                                                                                                                                                                                                                                                         |
+| `ANTHROPIC_API_KEY`                                                                                    | unset                        | When set, in the shell or in a gitignored `.env` at the repository root, the agent runs two rounds after the first replay and adds its findings to `report.html`.                                                                                                                                                                   |
+| `demo/rp.yaml`                                                                                         | the committed file           | The shared replay settings, with the `strict` profile naming `demo/diff-rules.yaml` and the `unordered` profile naming `demo/diff-rules-unordered.yaml`. `scripts/demo.sh` passes `--config demo/rp.yaml --profile <name>` on every replay, so an edit to the file changes every replay, and `examples/rp.yaml` explains every key. |
+| `RP_REPLAY_<FLAG>`                                                                                     | unset                        | A variable for any `rp replay` flag sits above the profile and below the command line, so `RP_REPLAY_CONCURRENCY=4 make demo` changes the pool without editing the file. The target, the run file, and the candidate recording are passed as flags by the script and win over a variable.                                           |
 
 ## Measured on this machine
 
@@ -91,3 +93,14 @@ Apple M4 Max, 16 cores, Docker Desktop 29.4.1 with a linux/aarch64 engine. Comma
 ## Without Docker
 
 The committed `demo/recording.jsonl` replays against the candidate in process. `pnpm test` runs that flow in `demo/load/test/demo.int.test.ts`, and `rp replay --recording demo/recording.jsonl --target <url>` works against any running candidate.
+
+The two services also start with node directly after `pnpm build`. Each reads its port from `PORT`, the candidate reads `DIVERGENCES` and `DIVERGENCE_SEED`, both answer `/healthz`, and both accept `POST /admin/reset`:
+
+```sh
+PORT=3100 node demo/reference-service/dist/src/server.js &
+PORT=3101 DIVERGENCES=on node demo/candidate-service/dist/src/server.js &
+node packages/cli/dist/src/main.js replay --recording demo/recording.jsonl --target http://127.0.0.1:3101 \
+  --rules demo/diff-rules.yaml --thresholds demo/thresholds.yaml --barrier-tag list-ledger --out run.json
+```
+
+A one round agent smoke was run that way on this machine: the committed recording replayed at `max` pacing against the reference on 3100 and the classic candidate on 3101, then `rp agent` against the candidate's run with four cases per round, one round, a fifty cent budget, and `--export-recording`. The model proposed four cases and all four were kept, the one cent difference on `$.total`, the inventory ordering, the unknown id answered 200 with no body, and the `adjust-stock` p99 over 40 runs at 62.9 ms against the 40 ms limit, for $0.0159, and the exported recording of four exchanges passed `rp recording validate`.
