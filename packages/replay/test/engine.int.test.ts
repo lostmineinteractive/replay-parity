@@ -21,7 +21,7 @@ import {
   type RunValidator,
 } from '@replay-parity/core';
 import { buildApp, type DivergenceSetting } from '@replay-parity/demo-candidate';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, onTestFailed } from 'vitest';
 import {
   HttpAdapter,
   replay,
@@ -92,6 +92,24 @@ function demoRun(url: string, over: Partial<ReplayOptions> = {}): Promise<Run> {
 
 function byTag(run: Run, tag: string) {
   return run.exchanges.filter((e) => e.tags.includes(tag));
+}
+
+/**
+ * Logs why an attempt of a retried timing test failed, with the pacing fields of its run, so a
+ * retry is never silent in the output. The hook runs after each failed attempt.
+ */
+function logFailedAttempt(run: Run): void {
+  onTestFailed(({ task }) => {
+    const errors = task.result?.errors ?? [];
+    const timeline = run.exchanges
+      .map((e) => `${e.scheduled_at_ms}/${e.sent_at_ms}/${e.acked_at_ms ?? '-'}`)
+      .join(' ');
+    console.error(
+      `attempt failed: ${errors[errors.length - 1]?.message ?? 'no error recorded'}\n` +
+        `pacing ${JSON.stringify(run.pacing)} duration_ms ${run.duration_ms}\n` +
+        `scheduled/sent/acked ${timeline}`,
+    );
+  });
 }
 
 /** Wraps an adapter so tests can slow down or rewrite selected responses. */
@@ -383,19 +401,38 @@ describe('selection, warmup, and pacing', () => {
     expect(limited.recording.selected).toBe(2 + limited.filter.dependencies);
   });
 
-  it('honors recorded gaps under as-recorded pacing', async () => {
+  // Retried because the absolute bound below failed with stalls of 7 to 10 s when other suites
+  // ran at the same time on a shared machine. The other assertions hold under any stall.
+  it('honors recorded gaps under as-recorded pacing', { retry: 2 }, async () => {
     const { url } = await startCandidate('off');
     const run = await demoRun(url, { pace: 'as-recorded', concurrency: 8, limit: 25 });
+    logFailedAttempt(run);
     const offsets: number[] = [];
     for (const line of (await readFile(RECORDING, 'utf8')).split('\n').slice(0, 25)) {
       offsets.push((JSON.parse(line) as Exchange).offset_ms);
     }
+    const span = offsets[24]! - offsets[0]!;
     expect(run.exchanges.map((e) => e.scheduled_at_ms)).toEqual(
       offsets.map((o) => o - offsets[0]!),
     );
-    expect(run.pacing.slip_max_ms).toBeLessThan(60);
-    expect(run.duration_ms).toBeGreaterThanOrEqual(offsets[24]! - offsets[0]!);
-    expect(run.pacing.requested_rps).toBeCloseTo((24 * 1000) / (offsets[24]! - offsets[0]!), 1);
+    expect(run.pacing.requested_rps).toBeCloseTo((24 * 1000) / span, 1);
+    // The schedule is read from the run's own fields. Sends keep the recording order, never run
+    // ahead of their scheduled time beyond timer granularity, and span at least the schedule. A
+    // stall on the machine delays every send alike and leaves these true.
+    const sent = run.exchanges.map((e) => e.sent_at_ms);
+    for (let i = 0; i < sent.length; i += 1) {
+      expect(sent[i]!).toBeGreaterThanOrEqual(run.exchanges[i]!.scheduled_at_ms - 1);
+      if (i > 0) expect(sent[i]!).toBeGreaterThanOrEqual(sent[i - 1]!);
+    }
+    expect(sent[24]! - sent[0]!).toBeGreaterThanOrEqual(span - 1);
+    expect(run.duration_ms).toBeGreaterThanOrEqual(span - 1);
+    // The slip is judged against the gaps, not against a fixed number: the median send goes out
+    // within one median gap of its scheduled time. The largest slip has a generous absolute bound,
+    // since a 60 ms bound held on a quiet machine and failed under CPU contention.
+    const gaps = offsets.slice(1).map((o, i) => o - offsets[i]!);
+    const medianGap = [...gaps].sort((a, b) => a - b)[Math.floor((gaps.length - 1) / 2)]!;
+    expect(run.pacing.slip_p50_ms).toBeLessThanOrEqual(medianGap);
+    expect(run.pacing.slip_max_ms).toBeLessThan(1500);
     // The engine clamps a slip at zero: a timer that fires early is not ahead of schedule.
     const slips = run.exchanges
       .map((e) => Math.max(0, e.sent_at_ms - e.scheduled_at_ms))
@@ -466,17 +503,34 @@ describe('selection, warmup, and pacing', () => {
     ).rejects.toThrow(/max gap/);
   });
 
-  it('approximates the requested rate under fixed-rate pacing', async () => {
+  // Retried because the absolute bound below failed with stalls of 7 to 10 s when other suites
+  // ran at the same time on a shared machine. The other assertions hold under any stall.
+  it('approximates the requested rate under fixed-rate pacing', { retry: 2 }, async () => {
     const { url } = await startCandidate('off');
     const run = await demoRun(url, { pace: 'fixed-rate', rps: 100, limit: 40 });
+    logFailedAttempt(run);
     expect(run.pacing).toMatchObject({ mode: 'fixed-rate', rps: 100, requested_rps: 100 });
     expect(run.exchanges.map((e) => e.scheduled_at_ms)).toEqual(
       Array.from({ length: 40 }, (_, i) => i * 10),
     );
-    expect(run.duration_ms).toBeGreaterThanOrEqual(390);
-    expect(run.duration_ms).toBeLessThan(800);
-    expect(run.pacing.achieved_rps).toBeGreaterThan(50);
+    // Read from the run's own fields: sends keep order, never run ahead of the schedule beyond
+    // timer granularity, and span at least the 390 ms of the schedule.
+    const sent = run.exchanges.map((e) => e.sent_at_ms);
+    for (let i = 0; i < sent.length; i += 1) {
+      expect(sent[i]!).toBeGreaterThanOrEqual(i * 10 - 1);
+      if (i > 0) expect(sent[i]!).toBeGreaterThanOrEqual(sent[i - 1]!);
+    }
+    expect(sent[39]! - sent[0]!).toBeGreaterThanOrEqual(389);
+    expect(run.duration_ms).toBeGreaterThanOrEqual(389);
+    // The achieved rate is the count over the run's own duration, and a 390 ms schedule cannot
+    // be run faster than 103 per second.
+    expect(run.pacing.achieved_rps).toBeCloseTo((40 * 1000) / run.duration_ms, 2);
     expect(run.pacing.achieved_rps).toBeLessThanOrEqual(103);
+    // The slip is judged against the 10 ms gap: the median send goes out within one gap of its
+    // scheduled time. The duration has a generous absolute bound, since an 800 ms bound held on
+    // a quiet machine and failed under CPU contention.
+    expect(run.pacing.slip_p50_ms).toBeLessThanOrEqual(10);
+    expect(run.duration_ms).toBeLessThan(390 + 1500);
   });
 
   it('keeps the pool full under max without exceeding the concurrency', async () => {
@@ -511,7 +565,15 @@ describe('selection, warmup, and pacing', () => {
       concurrency: 4,
     });
     expect(peak).toBe(4);
-    expect(run.duration_ms).toBeLessThan(40 * 15);
+    // Overlap is read from the run's own fields: the first four sends go out before the first
+    // acknowledgement, so the pool was full from the start.
+    expect(run.exchanges[3]!.sent_at_ms).toBeLessThan(run.exchanges[0]!.acked_at_ms ?? -Infinity);
+    // Forty sends of 15 ms at concurrency 4 take about 150 ms on a quiet machine. The bound is
+    // generous because a bound of 600 ms fails under CPU contention on a shared machine, and
+    // `peak` above is the proof of concurrency.
+    expect(run.duration_ms).toBeLessThan(40 * 15 + 1500);
+    // Under max pacing the scheduled time is taken in the same synchronous step as the send, so
+    // the slip is near zero by construction and does not depend on the machine.
     expect(run.pacing.slip_max_ms).toBeLessThan(10);
     expect(run.stats.overall.matches).toBe(40);
     expect(run.adapter).toBe('fake');
@@ -715,53 +777,62 @@ describe('inconclusive outcomes and errors', () => {
     expect(validate(run), validate.errors ?? '').toBe(true);
   });
 
-  it('ends a long scheduled wait at once when stopped, and sends nothing on a signal already aborted', async () => {
-    const adapter: Adapter = {
-      name: 'fake',
-      send: (req) => Promise.resolve(jsonResponse({ echo: req.path }, 200, 1)),
-    };
-    const exchanges = [0, 1].map((i) =>
-      makeExchange({
-        index: i,
-        offset_ms: i * 5000,
-        request: makeRequest({ path: `/g/${i}` }),
-        response: jsonResponse({ echo: `/g/${i}` }, 200, 1),
-      }),
-    );
-    const recording = await writeRecording(exchanges);
-    const controller = new AbortController();
-    setTimeout(() => controller.abort(), 50);
-    const startedAt = Date.now();
-    const run = await replay({
-      recording,
-      target: 'fake://',
-      adapter,
-      pace: 'as-recorded',
-      maxGapMs: 0,
-      signal: controller.signal,
-    });
-    expect(Date.now() - startedAt).toBeLessThan(2000);
-    expect(run.exchanges.map((e) => e.path)).toEqual(['/g/0']);
-    expect(run.inconclusive).toEqual([
-      { kind: 'aborted', detail: 'stopped by signal after 1 of 2 exchanges' },
-    ]);
-    expect(run.verdict).toBe('inconclusive');
+  // Retried because the absolute bound below failed with stalls of 7 to 10 s when other suites
+  // ran at the same time on a shared machine.
+  it(
+    'ends a long scheduled wait at once when stopped, and sends nothing on a signal already aborted',
+    { retry: 2 },
+    async () => {
+      const adapter: Adapter = {
+        name: 'fake',
+        send: (req) => Promise.resolve(jsonResponse({ echo: req.path }, 200, 1)),
+      };
+      const exchanges = [0, 1].map((i) =>
+        makeExchange({
+          index: i,
+          offset_ms: i * 5000,
+          request: makeRequest({ path: `/g/${i}` }),
+          response: jsonResponse({ echo: `/g/${i}` }, 200, 1),
+        }),
+      );
+      const recording = await writeRecording(exchanges);
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 50);
+      const run = await replay({
+        recording,
+        target: 'fake://',
+        adapter,
+        pace: 'as-recorded',
+        maxGapMs: 0,
+        signal: controller.signal,
+      });
+      logFailedAttempt(run);
+      // The second exchange is scheduled 5000 ms after the first. The run's own duration shows the
+      // wait ended on the stop, well before the schedule. The bound is generous because a 2000 ms
+      // bound on a stopwatch around the call failed under CPU contention on a shared machine.
+      expect(run.duration_ms).toBeLessThan(1500);
+      expect(run.exchanges.map((e) => e.path)).toEqual(['/g/0']);
+      expect(run.inconclusive).toEqual([
+        { kind: 'aborted', detail: 'stopped by signal after 1 of 2 exchanges' },
+      ]);
+      expect(run.verdict).toBe('inconclusive');
 
-    const none = await replay({
-      recording,
-      target: 'fake://',
-      adapter,
-      pace: 'max',
-      signal: AbortSignal.abort(),
-    });
-    expect(none.exchanges).toEqual([]);
-    expect(none.recording.selected).toBe(2);
-    expect(none.inconclusive).toEqual([
-      { kind: 'aborted', detail: 'stopped by signal after 0 of 2 exchanges' },
-    ]);
-    expect(none.verdict).toBe('inconclusive');
-    expect(validate(none), validate.errors ?? '').toBe(true);
-  });
+      const none = await replay({
+        recording,
+        target: 'fake://',
+        adapter,
+        pace: 'max',
+        signal: AbortSignal.abort(),
+      });
+      expect(none.exchanges).toEqual([]);
+      expect(none.recording.selected).toBe(2);
+      expect(none.inconclusive).toEqual([
+        { kind: 'aborted', detail: 'stopped by signal after 0 of 2 exchanges' },
+      ]);
+      expect(none.verdict).toBe('inconclusive');
+      expect(validate(none), validate.errors ?? '').toBe(true);
+    },
+  );
 
   it('never diffs a truncated body and reports body_too_large as a mismatch', async () => {
     const { url } = await startCandidate('off');
