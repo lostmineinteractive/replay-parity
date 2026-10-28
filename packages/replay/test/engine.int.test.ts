@@ -24,6 +24,7 @@ import { buildApp, type DivergenceSetting } from '@replay-parity/demo-candidate'
 import { afterEach, beforeAll, describe, expect, it, onTestFailed } from 'vitest';
 import {
   HttpAdapter,
+  dropRedactedQuery,
   replay,
   type Adapter,
   type ReplayContext,
@@ -909,6 +910,70 @@ describe('caller supplied headers', () => {
       expect(h.authorization).toBe('Bearer live');
       expect(h['x-tenant']).toBe('override');
       expect(h['x-keep']).toBe('yes');
+    }
+  });
+});
+
+describe('recorded query parameters', () => {
+  let server: Server;
+  let urls: string[] = [];
+
+  afterEach(async () => {
+    urls = [];
+    if (server) await new Promise<void>((r) => server.close(() => r()));
+  });
+
+  it('drops redacted parameters and applies overrides over the recorded query', async () => {
+    server = createServer((req, res) => {
+      urls.push(req.url ?? '');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const query = {
+      api_key: REDACTED,
+      token: [REDACTED, REDACTED],
+      mixed: [REDACTED, 'kept'],
+      page: '2',
+      sort: ['sku', 'asc'],
+    };
+    const exchanges = [0, 1].map((i) =>
+      makeExchange({
+        index: i,
+        request: makeRequest({ path: '/v1/inventory', query }),
+        response: jsonResponse({ ok: true }),
+      }),
+    );
+    // A parameter is dropped when its value, or every value, is the marker. A mixed list is kept.
+    expect(dropRedactedQuery(query)).toEqual({
+      mixed: [REDACTED, 'kept'],
+      page: '2',
+      sort: ['sku', 'asc'],
+    });
+    const recording = await writeRecording(exchanges);
+    const plain = await replay({ recording, target: url, pace: 'max' });
+    expect(plain.stats.overall.matches).toBe(2);
+    expect(urls).toEqual([
+      '/v1/inventory?mixed=%3Credacted%3E&mixed=kept&page=2&sort=sku&sort=asc',
+      '/v1/inventory?mixed=%3Credacted%3E&mixed=kept&page=2&sort=sku&sort=asc',
+    ]);
+    urls = [];
+    const overridden = await replay({
+      recording,
+      target: url,
+      pace: 'max',
+      queryOverrides: { api_key: 'live-key', page: '7', extra: ['a', 'b'] },
+    });
+    expect(overridden.stats.overall.matches).toBe(2);
+    expect(urls).toHaveLength(2);
+    for (const sent of urls) {
+      const params = new URL(sent, url).searchParams;
+      expect(params.get('api_key')).toBe('live-key');
+      expect(params.get('page')).toBe('7');
+      expect(params.getAll('extra')).toEqual(['a', 'b']);
+      expect(params.getAll('sort')).toEqual(['sku', 'asc']);
+      expect(params.getAll('token')).toEqual([]);
     }
   });
 });

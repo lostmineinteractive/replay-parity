@@ -39,6 +39,7 @@ export interface ShrinkOptions {
           ReplayExchangesOptions,
           | 'rules'
           | 'headers'
+          | 'queryOverrides'
           | 'barrierTags'
           | 'barrierTimeoutMs'
           | 'adapter'

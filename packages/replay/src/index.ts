@@ -24,6 +24,7 @@ export {
   DEFAULT_BARRIER_TIMEOUT_MS,
   DEFAULT_CONCURRENCY,
   DEFAULT_MAX_GAP_MS,
+  dropRedactedQuery,
   replay,
   replayExchanges,
   type ReplayExchangesOptions,

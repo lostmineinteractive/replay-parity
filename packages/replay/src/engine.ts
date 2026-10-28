@@ -3,6 +3,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import {
   ConfigError,
   DEFAULT_REDACTED_HEADERS,
+  REDACTED,
   StatsCollector,
   createDiffer,
   decideVerdict,
@@ -22,6 +23,7 @@ import {
   type HeaderMap,
   type InconclusiveCondition,
   type PacingMode,
+  type Query,
   type RecordedRequest,
   type RecordedResponse,
   type Run,
@@ -89,6 +91,11 @@ export interface ReplayOptions {
   thresholds?: Thresholds | undefined;
   /** Caller supplied headers. Applied to every request over recorded values. */
   headers?: HeaderMap | undefined;
+  /**
+   * Caller supplied query parameters. Applied to every request over the recorded
+   * query after the parameters the capture redacted are dropped.
+   */
+  queryOverrides?: Query | undefined;
   barrierTags?: readonly string[] | undefined;
   /** Default 10000. */
   barrierTimeoutMs?: number | undefined;
@@ -106,6 +113,20 @@ export interface ReplayOptions {
   onProgress?: ((progress: ReplayProgress) => void) | undefined;
   /** Aborting stops the run early. See the ordering rules above. */
   signal?: AbortSignal | undefined;
+}
+
+/**
+ * Drops query parameters whose value, or whose every value, is the redaction
+ * marker, the way `dropRedactedHeaders` drops headers. The capture proxy
+ * records redacted parameters with the marker, and sending it would be wrong.
+ */
+export function dropRedactedQuery(query: Query): Query {
+  const out: Query = {};
+  for (const [name, value] of Object.entries(query)) {
+    const redacted = Array.isArray(value) ? value.every((v) => v === REDACTED) : value === REDACTED;
+    if (!redacted) out[name] = value;
+  }
+  return out;
 }
 
 export interface ReplayProgress {
@@ -247,6 +268,7 @@ export async function replayExchanges(
   const rules = options.rules ?? emptyRules();
   const thresholds = options.thresholds ?? emptyThresholds();
   const overrides = options.headers ?? {};
+  const queryOverrides = options.queryOverrides ?? {};
   const barrierTags = new Set(options.barrierTags ?? []);
   const controlTags = new Set(rules.controls.tags);
   const barrierTimeoutMs = options.barrierTimeoutMs ?? DEFAULT_BARRIER_TIMEOUT_MS;
@@ -330,6 +352,7 @@ export async function replayExchanges(
     const substituted = table.apply(req);
     return {
       ...substituted,
+      query: { ...dropRedactedQuery(substituted.query), ...queryOverrides },
       headers: mergeHeaders(dropRedactedHeaders(substituted.headers), overrides),
     };
   };
