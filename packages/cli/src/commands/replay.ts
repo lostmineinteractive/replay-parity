@@ -6,6 +6,7 @@ import {
   exitCodeFor,
   loadDiffRules,
   loadThresholds,
+  hashRecordingFile,
   readRecording,
   writeRun,
   type PacingMode,
@@ -83,7 +84,12 @@ export async function runReplay(
     options.thresholds === undefined ? emptyThresholds() : await loadThresholds(options.thresholds);
   const headers = await resolveHeaders(options.header, options.headersFile, env);
   const queryOverrides = resolveQuery(options.query);
-  const exchanges = await readRecording(options.recording);
+  // The file is read once for the preflight and the replay, and hashed in a second
+  // streaming pass, so the run carries the recording hash the way replay() records it.
+  const [exchanges, recordingHash] = await Promise.all([
+    readRecording(options.recording),
+    hashRecordingFile(options.recording),
+  ]);
   if (options.preflight !== false) {
     const checks = await preflight({
       recording: options.recording,
@@ -139,6 +145,7 @@ export async function runReplay(
       maxBodyBytes: options.maxBodyBytes,
       signal,
     });
+    run.recording.recording_sha256 = recordingHash.sha256;
     await writeRun(options.out, run);
     if (run.filter.dependencies > 0) {
       err(
