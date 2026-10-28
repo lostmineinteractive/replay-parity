@@ -143,6 +143,14 @@ function teeUpload(req: IncomingMessage, body: CappedBody | null): Upload {
   // one keeps a late client failure from surfacing as an unhandled event.
   stream.on('error', () => undefined);
   const done = new Promise<void>((resolve) => stream.once('close', resolve));
+  // Once undici or the proxy is done with the stream, the rest of a body the
+  // client is still sending is read and discarded, as Node does for a body no
+  // handler consumed. The connection is not left paused on unread bytes, so a
+  // client that leaves is noticed at once and one that finishes can be reused.
+  stream.once('close', () => {
+    req.unpipe(stream);
+    if (!req.complete && !req.destroyed) req.resume();
+  });
   req.on('error', (err) => stream.destroy(err));
   req.on('close', () => {
     if (!req.complete) stream.destroy(new Error('client closed before the request body ended'));
@@ -170,6 +178,21 @@ function waitForDrainOrClose(res: ServerResponse): Promise<void> {
   });
 }
 
+/**
+ * True when `done` resolves within the timeout, false when the timer fires
+ * first. A timeout of zero or less waits without a bound, as undici does.
+ */
+function finishedWithin(done: Promise<void>, timeoutMs: number): Promise<boolean> {
+  if (!(timeoutMs > 0)) return done.then(() => true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs);
+    void done.then(() => {
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
 function sendError(res: ServerResponse, status: number, error: string): void {
   if (res.headersSent) {
     res.destroy();
@@ -190,6 +213,7 @@ export class CaptureServer {
   private readonly redacted: readonly string[];
   private readonly redactedQuery: readonly string[];
   private readonly maxBodyBytes: number;
+  private readonly upstreamTimeoutMs: number;
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly nextId: () => string;
@@ -214,8 +238,11 @@ export class CaptureServer {
     this.random = options.random ?? Math.random;
     this.nextId = options.ulid ?? defaultUlid;
     this.onError = options.onError ?? (() => undefined);
-    const timeout = options.upstreamTimeoutMs ?? 30_000;
-    this.pool = new Pool(options.target, { headersTimeout: timeout, bodyTimeout: timeout });
+    this.upstreamTimeoutMs = options.upstreamTimeoutMs ?? 30_000;
+    this.pool = new Pool(options.target, {
+      headersTimeout: this.upstreamTimeoutMs,
+      bodyTimeout: this.upstreamTimeoutMs,
+    });
     this.sink = new OrderedSink<PendingExchange>(
       (item) => this.persist(item),
       (err) => this.onError(err, 'recording write'),
@@ -338,18 +365,38 @@ export class CaptureServer {
 
     const responseBody = sampled ? new CappedBody(this.maxBodyBytes) : null;
     let lastByteAt = performance.now();
-    res.writeHead(upstream.statusCode, forwardableResponseHeaders(upstream.headers));
-    for await (const chunk of upstream.body as AsyncIterable<Buffer>) {
-      lastByteAt = performance.now();
-      responseBody?.push(chunk);
-      if (!res.write(chunk) && !res.destroyed) {
-        await waitForDrainOrClose(res);
+    try {
+      res.writeHead(upstream.statusCode, forwardableResponseHeaders(upstream.headers));
+      for await (const chunk of upstream.body as AsyncIterable<Buffer>) {
+        lastByteAt = performance.now();
+        responseBody?.push(chunk);
+        if (!res.write(chunk) && !res.destroyed) {
+          await waitForDrainOrClose(res);
+        }
       }
+    } catch (err) {
+      // A response that fails mid body fails the exchange. Undici has reset
+      // the upload with the socket by then, and destroying it again is a no
+      // op that frees the client stream in any case it has not.
+      upload?.stream.destroy();
+      throw err;
     }
     res.end();
-    // Undici has ended the upload by now, or reset it when the upstream
-    // answered before reading it all, so this never waits on the client.
-    if (upload !== null) await upload.done;
+    // Undici ends the upload once it is sent, resets it when the upstream
+    // answered before reading all of it, and fails it on a socket error. The
+    // wait is bounded by the upstream timeout all the same, so a stream undici
+    // never finishes with cannot hold the exchange and the client connection
+    // open. On timeout the exchange is recorded with the bytes the tee saw, so
+    // its hash and size describe what was sent.
+    if (upload !== null && !(await finishedWithin(upload.done, this.upstreamTimeoutMs))) {
+      upload.stream.destroy();
+      this.onError(
+        new Error(
+          `the upstream did not finish with the request body within ${this.upstreamTimeoutMs} ms of the response`,
+        ),
+        `${method} ${url.pathname} upload wait`,
+      );
+    }
     if (responseBody === null) return null;
 
     const latencyMs = Math.max(0, lastByteAt - startedAt);
