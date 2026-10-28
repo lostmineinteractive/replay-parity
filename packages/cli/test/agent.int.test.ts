@@ -213,6 +213,42 @@ describe('rp agent flags', () => {
     expect(badValue.err).toContain('expected a positive integer');
   });
 
+  it('fails the preflight with exit 1 when the thresholds name a tag the recording lacks', async () => {
+    process.env.ANTHROPIC_API_KEY = 'test-key-not-real';
+    const runPath = await freshRun('preflight.json');
+    const thresholds = join(dir, 'preflight-thresholds.yaml');
+    await writeFile(thresholds, 'latency:\n  by_tag:\n    no-such-tag: { p99_ms: 10 }\n', 'utf8');
+    const args = [
+      'agent',
+      '--run',
+      runPath,
+      '--recording',
+      RECORDING,
+      '--target',
+      'http://127.0.0.1:9',
+      '--reference',
+      'http://127.0.0.1:9',
+      '--env',
+      join(dir, 'none.env'),
+      '--thresholds',
+      thresholds,
+    ];
+    const failed = await rp(args);
+    expect(failed.code).toBe(1);
+    expect(failed.err).toMatch(/preflight: error thresholds: .*no-such-tag/);
+    expect(failed.err).toMatch(/preflight failed, no case was sent/);
+    // With the checks skipped the command proceeds to the systems, which refuse the connection.
+    const skipped = await rp([
+      ...args,
+      '--no-preflight',
+      '--max-rounds',
+      '1',
+      '--budget-usd',
+      '0.01',
+    ]);
+    expect(skipped.err).not.toMatch(/preflight failed/);
+  });
+
   it('rejects a missing pricing file with exit 1 through the cli before any call is made', async () => {
     process.env.ANTHROPIC_API_KEY = 'test-key-not-real';
     const runPath = await freshRun('bad-pricing.json');

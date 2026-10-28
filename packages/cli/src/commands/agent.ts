@@ -27,6 +27,7 @@ import { HttpAdapter } from '@replay-parity/replay';
 import { Command, Option } from 'commander';
 import { loadDotEnv } from '../env.js';
 import { err, out, type CliStreams } from '../io.js';
+import { formatCheck, hasError, preflight } from '../preflight.js';
 import { collect, positiveInt, positiveNumber, resolveHeaders } from '../options.js';
 
 export interface AgentCommandOptions {
@@ -45,6 +46,8 @@ export interface AgentCommandOptions {
   headersFile?: string;
   timeoutMs: number;
   env: string;
+  /** Run the preflight checks before the first call. Default true, `--no-preflight` turns it off. */
+  preflight?: boolean;
   /** A JSON table of model id to prices, applied over the built in one. */
   pricing?: string;
   /** Retry a declined round on a fallback model inside the same call. `--no-fallbacks` clears it. Default true. */
@@ -104,7 +107,25 @@ export async function runAgentCommand(
   const rules = options.rules === undefined ? run.rules : await loadDiffRules(options.rules);
   const thresholds =
     options.thresholds === undefined ? run.thresholds : await loadThresholds(options.thresholds);
-  const headers = await resolveHeaders(options.header, options.headersFile);
+  if (options.preflight !== false) {
+    const checks = await preflight({
+      recording: options.recording,
+      exchanges: recording,
+      rules,
+      thresholds,
+    });
+    for (const check of checks) {
+      if (check.level !== 'ok') err(streams, `preflight: ${formatCheck(check)}`);
+    }
+    if (hasError(checks)) {
+      err(
+        streams,
+        'preflight failed, no case was sent. rp validate prints every check, --no-preflight skips them.',
+      );
+      return EXIT_CODES.error;
+    }
+  }
+  const headers = await resolveHeaders(options.header, options.headersFile, env);
   const clientOptions: ClientFactoryOptions = {
     fallbacks: options.fallbacks ?? true,
     timeoutMs: options.timeoutMs,
@@ -260,6 +281,10 @@ export function agentCommand(
       '--env <path>',
       '.env file read for ANTHROPIC_API_KEY when the variable is not set',
       '.env',
+    )
+    .option(
+      '--no-preflight',
+      'skip the checks of the rules and thresholds against the recording before the first call',
     )
     .action(async (opts: AgentCommandOptions) => {
       exit(await runAgentCommand(opts, streams, hooks, signal));
