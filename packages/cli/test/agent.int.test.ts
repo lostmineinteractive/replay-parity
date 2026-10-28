@@ -245,6 +245,8 @@ describe('rp agent flags', () => {
       '1',
       '--budget-usd',
       '0.01',
+      '--out',
+      join(dir, 'skipped-cases.jsonl'),
     ]);
     expect(skipped.err).not.toMatch(/preflight failed/);
   });
