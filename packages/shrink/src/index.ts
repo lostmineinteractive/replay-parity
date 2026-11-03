@@ -20,3 +20,12 @@ export {
   type ShrinkOptions,
   type ShrinkResult,
 } from './shrink.js';
+export {
+  DEFAULT_RESET_TIMEOUT_MS,
+  buildReset,
+  chosenStrategies,
+  runResetCommand,
+  waitForHealth,
+  type ResetStrategyOptions,
+  type ResetUpstream,
+} from './reset.js';

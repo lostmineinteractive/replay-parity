@@ -1,0 +1,294 @@
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { Writable } from 'node:stream';
+import { parseRun, type Run } from '@replay-parity/core';
+import { buildApp, type DivergenceSetting } from '@replay-parity/demo-candidate';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { runCli } from '../src/index.js';
+
+const ROOT = resolve(import.meta.dirname, '../../..');
+const RECORDING = join(ROOT, 'demo/recording.jsonl');
+
+const RULES = `
+ignore: ["$.created_at"]
+substitutions:
+  - name: order_id
+    capture: { tag: create-order, path: "$.order_id" }
+controls:
+  tags: [admin-restart, admin-reset]
+`;
+
+class Sink extends Writable {
+  text = '';
+  override _write(chunk: Buffer | string, _enc: BufferEncoding, cb: () => void): void {
+    this.text += chunk.toString();
+    cb();
+  }
+}
+
+async function rp(args: string[]): Promise<{ code: number; out: string; err: string }> {
+  const stdout = new Sink();
+  const stderr = new Sink();
+  const code = await runCli(args, { stdout, stderr });
+  return { code, out: stdout.text, err: stderr.text };
+}
+
+let dir: string;
+const cleanups: (() => Promise<void>)[] = [];
+
+beforeAll(async () => {
+  dir = await mkdtemp(join(tmpdir(), 'rp-cli-shrink-'));
+  await writeFile(join(dir, 'rules.yaml'), RULES);
+});
+
+afterEach(async () => {
+  for (const fn of cleanups.splice(0)) await fn();
+});
+
+async function candidate(divergences: DivergenceSetting): Promise<string> {
+  const app = buildApp({ divergences, seed: 1 });
+  await app.listen({ port: 0, host: '127.0.0.1' });
+  cleanups.push(() => app.close());
+  return `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+}
+
+/** Replays the demo recording against `url` and writes the failing run. */
+async function failingRun(url: string, name: string): Promise<string> {
+  const runPath = join(dir, `${name}.json`);
+  await fetch(`${url}/admin/reset`, { method: 'POST' });
+  const replayed = await rp([
+    'replay',
+    '--recording',
+    RECORDING,
+    '--target',
+    url,
+    '--pace',
+    'max',
+    '--concurrency',
+    '1',
+    '--rules',
+    join(dir, 'rules.yaml'),
+    '--out',
+    runPath,
+    '--quiet',
+    '--invariants',
+  ]);
+  expect(replayed.code).toBe(2);
+  return runPath;
+}
+
+async function readReproduction(runPath: string): Promise<NonNullable<Run['reproduction']>> {
+  const run = parseRun(await readFile(runPath, 'utf8'));
+  expect(run.reproduction).not.toBeNull();
+  return run.reproduction as NonNullable<Run['reproduction']>;
+}
+
+/** A script that appends a line to the marker file and POSTs the reset URL. */
+async function resetScript(): Promise<string> {
+  const script = join(dir, 'reset-script.mjs');
+  await writeFile(
+    script,
+    `import { appendFileSync } from 'node:fs';
+const [url, marker] = process.argv.slice(2);
+const res = await fetch(url, { method: 'POST' });
+if (!res.ok) { console.error('reset answered ' + res.status); process.exit(2); }
+appendFileSync(marker, 'reset ' + url + '\\n');
+`,
+  );
+  return script;
+}
+
+const lines = (text: string): string[] => text.split('\n').filter((l) => l !== '');
+
+describe('rp shrink reset strategies', () => {
+  it('shrinks the demo defect to the same steps through --reset-command as through --reset-url', async () => {
+    const url = await candidate(['shipment-applied-twice']);
+    const script = await resetScript();
+    const marker = join(dir, 'command-marker.txt');
+    const viaUrl = await failingRun(url, 'via-url');
+    const urlOut = join(dir, 'via-url.jsonl');
+    const urlRun = await rp([
+      'shrink',
+      '--run',
+      viaUrl,
+      '--recording',
+      RECORDING,
+      '--target',
+      url,
+      '--reset-url',
+      `${url}/admin/reset`,
+      '--out',
+      urlOut,
+    ]);
+    expect(urlRun.code).toBe(0);
+    const expected = await readReproduction(viaUrl);
+
+    const viaCommand = await failingRun(url, 'via-command');
+    const commandRun = await rp([
+      'shrink',
+      '--run',
+      viaCommand,
+      '--recording',
+      RECORDING,
+      '--target',
+      url,
+      '--reset-command',
+      `"${process.execPath}" "${script}" "${url}/admin/reset" "${marker}"`,
+      '--out',
+      join(dir, 'via-command.jsonl'),
+    ]);
+    expect(commandRun.code).toBe(0);
+    const actual = await readReproduction(viaCommand);
+    expect(actual.steps.map((s) => s.id)).toEqual(expected.steps.map((s) => s.id));
+    expect(actual.steps).toEqual(expected.steps);
+    expect(actual.attempts).toBe(expected.attempts);
+    // The command ran once before every attempt.
+    expect(lines(await readFile(marker, 'utf8'))).toHaveLength(actual.attempts);
+  }, 120_000);
+
+  it('accepts --reset as an alias of --reset-url and refuses two different URLs', async () => {
+    const url = await candidate(['shipment-applied-twice']);
+    const runPath = await failingRun(url, 'alias');
+    const both = await rp([
+      'shrink',
+      '--run',
+      runPath,
+      '--recording',
+      RECORDING,
+      '--target',
+      url,
+      '--reset',
+      `${url}/admin/reset`,
+      '--reset-url',
+      `${url}/other`,
+    ]);
+    expect(both.code).toBe(1);
+    expect(both.err).toContain('--reset is an alias of --reset-url; give one of them');
+    const same = await rp([
+      'shrink',
+      '--run',
+      runPath,
+      '--recording',
+      RECORDING,
+      '--target',
+      url,
+      '--reset',
+      `${url}/admin/reset`,
+      '--reset-url',
+      `${url}/admin/reset`,
+      '--out',
+      join(dir, 'alias.jsonl'),
+    ]);
+    expect(same.code).toBe(0);
+  }, 60_000);
+
+  it('requires exactly one strategy', async () => {
+    const url = await candidate(['shipment-applied-twice']);
+    const runPath = await failingRun(url, 'exclusive');
+    const base = ['shrink', '--run', runPath, '--recording', RECORDING, '--target', url];
+    const none = await rp(base);
+    expect(none.code).toBe(1);
+    expect(none.err).toContain('a reset strategy is required');
+    const two = await rp([...base, '--reset-url', `${url}/admin/reset`, '--reset-command', 'true']);
+    expect(two.code).toBe(1);
+    expect(two.err).toContain(
+      'reset strategies are exclusive, got --reset-url and --reset-command',
+    );
+  }, 60_000);
+
+  it('reports a failing reset command with its text and stderr tail', async () => {
+    const url = await candidate(['shipment-applied-twice']);
+    const runPath = await failingRun(url, 'failing');
+    const res = await rp([
+      'shrink',
+      '--run',
+      runPath,
+      '--recording',
+      RECORDING,
+      '--target',
+      url,
+      '--reset-command',
+      'echo cannot restart >&2; exit 7',
+    ]);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('reset command "echo cannot restart >&2; exit 7" exited with 7');
+    expect(res.err).toContain('stderr: cannot restart');
+  }, 60_000);
+
+  it('times a reset command out at --reset-timeout-ms', async () => {
+    const url = await candidate(['shipment-applied-twice']);
+    const runPath = await failingRun(url, 'timeout');
+    const res = await rp([
+      'shrink',
+      '--run',
+      runPath,
+      '--recording',
+      RECORDING,
+      '--target',
+      url,
+      '--reset-command',
+      'sleep 5',
+      '--reset-timeout-ms',
+      '300',
+    ]);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('reset command "sleep 5" timed out after 300 ms');
+  }, 60_000);
+
+  it('resets through a module and waits for the health URL after each reset', async () => {
+    const url = await candidate(['shipment-applied-twice']);
+    const runPath = await failingRun(url, 'module');
+    // The health stand-in answers 503 for 250 ms after every reset, then 200.
+    const state = { readyAt: 0, polls: 0, resets: 0 };
+    const health = createServer((_req, res) => {
+      state.polls += 1;
+      res.writeHead(Date.now() >= state.readyAt ? 200 : 503);
+      res.end();
+    });
+    await new Promise<void>((r) => health.listen(0, '127.0.0.1', r));
+    cleanups.push(
+      () =>
+        new Promise<void>((r) => {
+          health.close(() => r());
+        }),
+    );
+    const healthUrl = `http://127.0.0.1:${(health.address() as AddressInfo).port}/ready`;
+    const holder = globalThis as unknown as { __rpReset?: () => Promise<void> };
+    holder.__rpReset = async () => {
+      state.resets += 1;
+      state.readyAt = Date.now() + 250;
+      await fetch(`${url}/admin/reset`, { method: 'POST' });
+    };
+    cleanups.push(() => {
+      delete holder.__rpReset;
+      return Promise.resolve();
+    });
+    const module = join(dir, 'reset-module.mjs');
+    await writeFile(module, 'export async function reset() { await globalThis.__rpReset(); }\n');
+    const started = Date.now();
+    const res = await rp([
+      'shrink',
+      '--run',
+      runPath,
+      '--recording',
+      RECORDING,
+      '--target',
+      url,
+      '--reset-module',
+      module,
+      '--reset-health',
+      healthUrl,
+      '--out',
+      join(dir, 'module.jsonl'),
+    ]);
+    expect(res.code).toBe(0);
+    const reproduction = await readReproduction(runPath);
+    expect(reproduction.successful).toBe(true);
+    expect(state.resets).toBe(reproduction.attempts);
+    expect(state.polls).toBeGreaterThan(state.resets);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250 * state.resets - 100);
+  }, 60_000);
+});

@@ -13,11 +13,13 @@ import {
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_TIME_BUDGET_MS,
   defaultRule,
+  buildReset,
+  DEFAULT_RESET_TIMEOUT_MS,
   parseRule,
   shrink,
   verifyRecordingHash,
 } from '@replay-parity/shrink';
-import { HttpAdapter, upstreamFetch, type Adapter } from '@replay-parity/replay';
+import { HttpAdapter, type Adapter } from '@replay-parity/replay';
 import { Command, Option } from 'commander';
 import { displayText, type CliContext } from '../config/index.js';
 import { endProgress, logger, out, startProgress, type CliStreams } from '../io.js';
@@ -46,7 +48,13 @@ export interface ShrinkCommandOptions extends UpstreamFlags, AdapterModuleFlags 
   run: string;
   recording: string;
   target: string;
-  reset: string;
+  /** The reset URL, an alias of `resetUrl`. */
+  reset?: string;
+  resetUrl?: string;
+  resetCommand?: string;
+  resetModule?: string;
+  resetHealth?: string;
+  resetTimeoutMs?: number;
   rule?: string;
   rules?: string;
   maxAttempts: number;
@@ -115,6 +123,14 @@ export async function runShrink(
     );
   }
   const upstream = await resolveUpstream(options);
+  if (
+    options.reset !== undefined &&
+    options.resetUrl !== undefined &&
+    options.reset !== options.resetUrl
+  ) {
+    throw new ConfigError('--reset is an alias of --reset-url; give one of them');
+  }
+  const resetUrl = options.resetUrl ?? options.reset;
   if (options.preflight !== false) {
     const probe = options.preflightProbe === true;
     const checks = await preflight({
@@ -126,9 +142,10 @@ export async function runShrink(
         probe && options.adapterModule === undefined
           ? { url: options.target, label: options.targetLabel ?? options.target, upstream }
           : undefined,
-      reset: probe
-        ? { url: options.reset, label: options.resetLabel ?? options.reset, upstream }
-        : undefined,
+      reset:
+        probe && resetUrl !== undefined
+          ? { url: resetUrl, label: options.resetLabel ?? resetUrl, upstream }
+          : undefined,
     });
     for (const check of checks) {
       if (check.level === 'warn') log.warn(`preflight: ${formatCheck(check)}`);
@@ -143,15 +160,15 @@ export async function runShrink(
   }
   const headers = await resolveHeaders(options.header, options.headersFile, env);
   const queryOverrides = resolveQuery(options.query);
-  const resetUrl = options.reset;
-  const reset = async (): Promise<void> => {
-    const res = customUpstream(upstream)
-      ? await upstreamFetch(resetUrl, { method: 'POST' }, upstream)
-      : await fetch(resetUrl, { method: 'POST' });
-    if (!res.ok) {
-      throw new ConfigError(`reset ${options.resetLabel ?? resetUrl} answered ${res.status}`);
-    }
-  };
+  const reset = await buildReset({
+    url: resetUrl,
+    command: options.resetCommand,
+    module: options.resetModule,
+    health: options.resetHealth,
+    timeoutMs: options.resetTimeoutMs ?? DEFAULT_RESET_TIMEOUT_MS,
+    upstream,
+    urlLabel: options.resetLabel ?? resetUrl,
+  });
   const startedAt = Date.now();
   const state: ShrinkProgressState = { attempts: 0, bestSteps: null };
   const progress =
@@ -256,9 +273,27 @@ export function shrinkCommand(
     .requiredOption('--run <path>', 'the failing run file')
     .requiredOption('--recording <path>', 'the recording the run replayed')
     .requiredOption('--target <url>', 'base URL of the candidate system')
-    .requiredOption(
-      '--reset <url>',
+    .option(
+      '--reset-url <url>',
       'URL that receives a POST before every attempt and returns the candidate to its initial state',
+    )
+    .option('--reset <url>', 'alias of --reset-url')
+    .option(
+      '--reset-command <command>',
+      'shell command run before every attempt that returns the candidate to its initial state',
+    )
+    .option(
+      '--reset-module <path>',
+      'ES module that exports reset(): Promise<void>, called before every attempt',
+    )
+    .option(
+      '--reset-health <url>',
+      'URL polled with GET after every reset until it answers 2xx or --reset-timeout-ms passes',
+    )
+    .addOption(
+      new Option('--reset-timeout-ms <n>', 'time a reset command and the health poll may take')
+        .default(DEFAULT_RESET_TIMEOUT_MS)
+        .argParser(positiveInt),
     )
     .option(
       '--rule <rule>',
@@ -324,7 +359,11 @@ export function shrinkCommand(
         {
           ...opts,
           targetLabel: displayText(command, 'target', opts.target),
-          resetLabel: displayText(command, 'reset', opts.reset),
+          resetLabel: displayText(
+            command,
+            opts.resetUrl === undefined ? 'reset' : 'resetUrl',
+            opts.resetUrl ?? opts.reset ?? '',
+          ),
         },
         streams,
         signal,

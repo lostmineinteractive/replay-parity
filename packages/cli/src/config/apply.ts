@@ -18,6 +18,8 @@ export const INTERPOLATED_FLAGS: ReadonlySet<string> = new Set([
   'target',
   'reference',
   'reset',
+  'reset-url',
+  'reset-health',
   'bus-url',
   'query',
 ]);
