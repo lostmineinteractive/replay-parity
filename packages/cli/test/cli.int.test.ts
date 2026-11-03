@@ -290,6 +290,27 @@ describe('replay and report', () => {
 
     const off = await candidate('off');
     const passing = join(dir, 'passing.json');
+    // The pass case is gated on the correctness and error rows of demo/thresholds.yaml and on no
+    // latency row. The candidate runs in this process, so a stall of the worker is measured as
+    // its latency, and the adjust-stock p99 row of the file above failed with stalls of 7 to
+    // 10 s when other suites ran at the same time on a shared machine. The latency gates are
+    // proven by the fail case above, by packages/replay/test/engine.int.test.ts, and by
+    // demo/load/test/demo.int.test.ts.
+    const passingThresholds = join(dir, 'passing-thresholds.yaml');
+    await writeFile(
+      passingThresholds,
+      [
+        'correctness:',
+        '  mismatch_rate_max: 0',
+        '  by_tag:',
+        '    create-order: { mismatch_rate_max: 0 }',
+        '    get-order: { mismatch_rate_max: 0 }',
+        '    list-inventory: { mismatch_rate_max: 0 }',
+        'errors:',
+        '  rate_max: 0',
+        '',
+      ].join('\n'),
+    );
     const pass = await rp([
       'replay',
       '--recording',
@@ -303,7 +324,7 @@ describe('replay and report', () => {
       '--rules',
       join(dir, 'rules.yaml'),
       '--thresholds',
-      thresholds,
+      passingThresholds,
       '--out',
       passing,
       '--quiet',
@@ -319,6 +340,10 @@ describe('replay and report', () => {
     expect(pass.out).toBe('');
     const passed = parseRun(await readFile(passing, 'utf8'));
     expect(passed.verdict).toBe('pass');
+    expect(passed.threshold_results.filter((r) => r.section === 'latency')).toEqual([]);
+    expect(passed.threshold_results.map((r) => r.section)).toEqual(
+      expect.arrayContaining(['correctness', 'errors']),
+    );
     expect(passed.pacing.barrier_tags).toEqual(['list-ledger']);
     expect(passed.invariants.candidate?.violations).toBe(0);
     expect(parseRecordingText(await readFile(join(dir, 'candidate.jsonl'), 'utf8'))).toHaveLength(
