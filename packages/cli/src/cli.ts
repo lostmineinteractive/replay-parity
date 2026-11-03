@@ -16,6 +16,7 @@ import { doctorCommand } from './commands/doctor.js';
 import { invariantsCommand } from './commands/invariants.js';
 import { recordingCommand } from './commands/recording.js';
 import { replayCommand } from './commands/replay.js';
+import { rulesCommand } from './commands/rules.js';
 import { reportCommand } from './commands/report.js';
 import { shrinkCommand } from './commands/shrink.js';
 import { validateCommand } from './commands/validate.js';
@@ -95,6 +96,7 @@ export function buildProgram(
   program.addCommand(agentCommand(streams, signal, exit));
   program.addCommand(recordingCommand(streams, exit));
   program.addCommand(validateCommand(streams, exit, context));
+  program.addCommand(rulesCommand(streams, exit));
   program.addCommand(doctorCommand(streams, exit, { ...context, version: CLI_VERSION }));
   // Registered before the configuration hook, so a configuration error carries the command too.
   program.hook('preSubcommand', (_program, sub) => {

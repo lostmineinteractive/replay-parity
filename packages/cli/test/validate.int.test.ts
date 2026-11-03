@@ -191,7 +191,7 @@ describe('rp validate', () => {
       '--recording',
       RECORDING,
       '--rules',
-      await file('broken-rules.yaml', 'ignore: ["$..deep"]\n'),
+      await file('broken-rules.yaml', 'ignore: ["$.a[1:2]"]\n'),
       '--thresholds',
       join(dir, 'missing-thresholds.yaml'),
     ]);

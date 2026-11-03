@@ -1,12 +1,17 @@
 import { performance } from 'node:perf_hooks';
 import {
-  get,
+  captureSource,
+  captureValue,
+  exchangeContext,
+  headerEntries,
+  ignoreEntries,
   parsePath,
   select,
+  whenMatches,
   type DiffRules,
   type Exchange,
-  type JsonValue,
   type Thresholds,
+  type When,
 } from '@replay-parity/core';
 import { hasUpstreamOptions, upstreamFetch } from '@replay-parity/replay';
 import type { Upstream } from './upstream.js';
@@ -110,20 +115,18 @@ export function checkThresholds(
   return out;
 }
 
-function isLeaf(value: JsonValue | undefined): boolean {
-  return typeof value === 'string' || typeof value === 'number';
-}
-
 /**
- * Every substitution must have a producer exchange with a value at its capture
- * path, every control tag should name an exchange, and every ignore,
- * tolerance, and unordered path should match something in a response body.
+ * Every substitution must have a producer exchange with a value at its
+ * capture, every control tag should name an exchange, every path rule should
+ * match something in a response body within its scope, and every compared
+ * header should appear in some response.
  */
 export function checkRules(rules: DiffRules, exchanges: readonly Exchange[]): Check[] {
   const out: Check[] = [];
   const tags = tagCounts(exchanges);
   for (const rule of rules.substitutions) {
-    const { tag, path } = rule.capture;
+    const { tag } = rule.capture;
+    const source = captureSource(rule.capture);
     const producers = exchanges.filter((e) => e.tags.includes(tag));
     if (producers.length === 0) {
       out.push(
@@ -134,17 +137,18 @@ export function checkRules(rules: DiffRules, exchanges: readonly Exchange[]): Ch
       );
       continue;
     }
-    const segments = parsePath(path);
-    const producing = producers.filter((e) => isLeaf(get(e.response.body, segments))).length;
+    const producing = producers.filter(
+      (e) => captureValue(rule.capture, e.response, e.request) !== undefined,
+    ).length;
     out.push(
       producing === 0
         ? error(
             'rules',
-            `substitution ${rule.name} captures ${path} from tag ${tag}, but none of its ${plural(producers.length, 'exchange')} has a value there`,
+            `substitution ${rule.name} captures ${source} from tag ${tag}, but none of its ${plural(producers.length, 'exchange')} has a value there`,
           )
         : ok(
             'rules',
-            `substitution ${rule.name} captures ${path} from ${producing} of ${plural(producers.length, `${tag} exchange`)}`,
+            `substitution ${rule.name} captures ${source} from ${producing} of ${plural(producers.length, `${tag} exchange`)}`,
           ),
     );
   }
@@ -156,14 +160,35 @@ export function checkRules(rules: DiffRules, exchanges: readonly Exchange[]): Ch
         : ok('rules', `control tag ${tag} names ${plural(count, 'exchange')}`),
     );
   }
-  const paths: [string, string][] = [
-    ...rules.ignore.map((p): [string, string] => ['ignore', p]),
-    ...rules.tolerances.map((r): [string, string] => ['tolerance', r.path]),
-    ...rules.unordered.map((r): [string, string] => ['unordered', r.path]),
+  const inScope = (when: When | undefined): Exchange[] =>
+    when === undefined
+      ? [...exchanges]
+      : exchanges.filter((e) => whenMatches(when, exchangeContext(e)));
+  const paths: [string, string, When | undefined][] = [
+    ...ignoreEntries(rules).map((r): [string, string, When | undefined] => [
+      'ignore',
+      r.path,
+      r.when,
+    ]),
+    ...rules.tolerances.map((r): [string, string, When | undefined] => [
+      'tolerance',
+      r.path,
+      r.when,
+    ]),
+    ...rules.unordered.map((r): [string, string, When | undefined] => [
+      'unordered',
+      r.path,
+      r.when,
+    ]),
+    ...rules.decimal.map((r): [string, string, When | undefined] => ['decimal', r.path, r.when]),
+    ...rules.time.map((r): [string, string, When | undefined] => ['time', r.path, r.when]),
+    ...rules.mask.map((r): [string, string, When | undefined] => ['mask', r.path, r.when]),
   ];
-  for (const [label, path] of paths) {
+  for (const [label, path, when] of paths) {
     const segments = parsePath(path);
-    const matching = exchanges.filter((e) => select(e.response.body, segments).length > 0).length;
+    const matching = inScope(when).filter(
+      (e) => select(e.response.body, segments).length > 0,
+    ).length;
     out.push(
       matching === 0
         ? warn('rules', `${label} ${path} matches no response body`)
@@ -171,6 +196,14 @@ export function checkRules(rules: DiffRules, exchanges: readonly Exchange[]): Ch
             'rules',
             `${label} ${path} matches ${plural(matching, 'response body').replace('bodys', 'bodies')}`,
           ),
+    );
+  }
+  for (const h of headerEntries(rules.headers.compare)) {
+    const present = inScope(h.when).filter((e) => e.response.headers[h.name] !== undefined).length;
+    out.push(
+      present === 0
+        ? warn('rules', `headers.compare ${h.name} appears in no response`)
+        : ok('rules', `headers.compare ${h.name} appears in ${plural(present, 'response')}`),
     );
   }
   return out;

@@ -296,7 +296,9 @@ describe('the configuration file and its layers', () => {
       concurrency: 8,
       barrier_tags: ['list-ledger'],
     });
-    expect(run.rules.unordered).toEqual([{ path: '$.items', key: '$.sku' }]);
+    expect(run.rules.unordered).toEqual([
+      { path: '$.items', key: '$.sku', when: { tags: ['list-inventory'] } },
+    ]);
     expect(Object.keys(run.thresholds.latency.by_tag)).toContain('adjust-stock');
     expect(run.invariants.candidate).not.toBeNull();
     const inventory = run.threshold_results.find(
