@@ -1,9 +1,32 @@
-# diff-rules.yaml, every key explained. Paths use a JSONPath subset:
-# $, .name, ['name'], [n], [*], .* and nothing else.
+# diff-rules.yaml, every key explained. docs/diff-rules.md is the full reference.
+#
+# Paths use a JSONPath subset: $, .name, ['name'], [n], [*], .* and, in rule
+# paths only, a filter such as [?(@.type=='fee')] (== or !=, against a string or
+# number literal) and recursive descent such as $..request_id. Unordered keys and
+# substitution captures take the plain subset.
+#
+# Scope: every rule entry below may carry `when: { tags, methods, paths }`. The
+# rule then applies only to exchanges that carry one of the tags, use one of the
+# methods, and have a path matching one of the globs (`*` within a segment, `**`
+# across segments). Each list is optional; every list given must match. A rule
+# without `when` applies to every exchange.
+#
+# Findings that a rule tolerates name it in the `kind[index]` style, as in
+# tolerances[0], decimal[1], or headers.masks[0].
+
+# Rule packs, resolved relative to this file and merged before validation. Their
+# lists come first, and a scalar set here wins over one set in a pack.
+include:
+  - rule-packs/timestamps.yaml
+  - rule-packs/ids.yaml
+
 ignore:
-  # Removed from both sides before comparison. No finding is produced.
+  # Removed from both sides before comparison. No finding is produced. An entry is
+  # a path, or { path, when } for a scoped entry.
   - '$.request_id'
   - '$.timestamps.*'
+  - path: "$.lines[?(@.type=='fee')].note"
+    when: { tags: [create-order] }
 tolerances:
   # Numbers within abs, or within rel times the larger magnitude, are tolerated.
   - path: '$.total'
@@ -14,21 +37,72 @@ unordered:
   # Arrays compared as sets. With key, elements are matched by the value at that path.
   - path: '$.items'
     key: '$.sku'
+    when: { tags: [list-inventory], methods: [GET] }
+decimal:
+  # Decimal strings or numbers compared after rounding to scale places, half away
+  # from zero, with integer arithmetic on the digits: "29.90" equals 29.9 at scale 2.
+  - path: '$..amount'
+    scale: 2
+time:
+  # Timestamps within abs_ms of each other are tolerated. format is iso8601 (the
+  # default), epoch_ms, or epoch_s. A value that does not read under the format is
+  # compared as usual.
+  - path: '$.order.placed_at'
+    abs_ms: 2000
+    format: iso8601
+mask:
+  # Two strings that both match the pattern are tolerated. The pattern is anchored
+  # at both ends and compiled once when the rules load; a bad pattern is an error.
+  - path: '$.order_ref'
+    pattern: 'ORD-[0-9]{6}'
+# deny (the default) reports a field the candidate adds as `unexpected`; allow
+# tolerates it. Only object members count: an extra array element is reported.
+extra_fields: deny
+extra_fields_rules:
+  # Scoped overrides of extra_fields. The first entry whose scope matches decides.
+  - allow: true
+    when: { paths: ['/v1/inventory/**'] }
+equivalences:
+  # null_absent: null and an absent field compare equal.
+  # empty_absent: "", [], {}, and an absent field compare equal.
+  # numeric_strings: a string that spells a number equals that number, as "12.5" and 12.5.
+  # One mapping applies everywhere; a list of mappings, each with its own when, scopes them.
+  null_absent: true
+  empty_absent: false
+  numeric_strings: false
 status:
-  # Status codes in one class are equivalent.
+  # Status codes in one class are equivalent. An entry is a class, or
+  # { classes, when } for scoped classes.
   equivalent:
     - [200, 201]
+    - classes: [[404, 410]]
+      when: { methods: [DELETE] }
 headers:
-  # Response headers compared by name. Default: none.
-  compare: ['content-type']
+  # Response headers compared by name, case blind. Default: none. An entry is a
+  # name or { name, when }.
+  compare: ['content-type', 'etag']
+  # Names taken out of the comparison, for instance to undo a pack's entry.
+  ignore: ['etag']
+  # A compared header whose two values both match the anchored pattern is tolerated.
+  masks:
+    - name: content-type
+      pattern: 'application/json(; charset=utf-8)?'
 substitutions:
-  # A value captured from the response of every exchange carrying the tag, on the
-  # reference and on the candidate. Later requests have the reference value replaced
-  # with the candidate value in the listed locations, and the differ treats the pair
-  # as equivalent. Default apply: [path, query, body].
+  # A value captured from every exchange carrying the tag, on the reference and on
+  # the candidate. Later requests have the reference value replaced with the
+  # candidate value in the listed locations, and the differ treats the pair as
+  # equivalent. Default apply: [path, query, body].
   - name: order_id
     capture: { tag: create-order, path: '$.order_id' }
     apply: [path, body]
+  # From a response header, through the first group of an optional pattern.
+  - name: shipment_ref
+    capture: { tag: ship-order, header: location, pattern: '/shipments/([^/?]+)' }
+    apply: [path]
+  # From the request body, with from: request.
+  - name: client_ref
+    capture: { tag: create-order, from: request, path: '$.client_ref' }
+    apply: [body]
 controls:
   # Harness controls such as a restart. Replayed in order as barriers, diffed on status
   # only, excluded from statistics and thresholds, shown in the report as control: true.
