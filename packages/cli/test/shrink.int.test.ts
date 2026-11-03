@@ -421,3 +421,42 @@ describe('rp shrink --targets', () => {
     expect(neither.err).toContain('--target or --targets is required');
   }, 60_000);
 });
+
+describe('rp shrink --cache', () => {
+  it('makes no new attempts when the same run is shrunk again', async () => {
+    const url = await candidate(['shipment-applied-twice']);
+    const runPath = await failingRun(url, 'cached');
+    const cache = join(dir, 'attempts.jsonl');
+    const args = [
+      'shrink',
+      '--run',
+      runPath,
+      '--recording',
+      RECORDING,
+      '--target',
+      url,
+      '--reset-url',
+      `${url}/admin/reset`,
+      '--cache',
+      cache,
+      '--out',
+      join(dir, 'cached.jsonl'),
+    ];
+    const first = await rp(args);
+    expect(first.code).toBe(0);
+    const firstRepro = await readReproduction(runPath);
+    expect(firstRepro.attempts).toBeGreaterThan(1);
+    expect(lines(await readFile(cache, 'utf8'))).toHaveLength(firstRepro.attempts);
+
+    const second = await rp(args);
+    expect(second.code).toBe(0);
+    const secondRepro = await readReproduction(runPath);
+    expect(secondRepro.attempts).toBe(0);
+    expect(secondRepro.cache_hits).toBeGreaterThanOrEqual(firstRepro.attempts);
+    expect(secondRepro.steps).toEqual(firstRepro.steps);
+    expect(secondRepro.successful).toBe(true);
+    expect(second.out).toMatch(/in 0 attempts for invariant:.* \(\d+ answered from the cache\)/);
+    expect(second.err).toContain('(cached)');
+    expect(lines(await readFile(cache, 'utf8'))).toHaveLength(firstRepro.attempts);
+  }, 60_000);
+});

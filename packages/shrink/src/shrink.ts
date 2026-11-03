@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import {
   ConfigError,
+  RUN_LEVEL_INCONCLUSIVE_KINDS,
   renderPath,
   select,
   type Segment,
@@ -20,6 +21,7 @@ import {
   writeExchanges,
   type ReplayExchangesOptions,
 } from '@replay-parity/replay';
+import { attemptKey, cacheSalt, MemoryAttemptCache, type AttemptCache } from './cache.js';
 import { AttemptBudgetExceeded, ddmin } from './ddmin.js';
 import { minimalValue, setAt, valueAt } from './lowering.js';
 import { Pool } from './pool.js';
@@ -77,6 +79,13 @@ export interface ShrinkOptions {
   lower?: readonly string[] | undefined;
   /** JSONPaths in the request bodies whose values become "", [], or {} when the rule still reproduces. */
   simplify?: readonly string[] | undefined;
+  /**
+   * Verdicts of attempts already judged, keyed by a hash of the exact subset
+   * and its lowered values. A subset in the cache is answered without a
+   * replay and does not count as an attempt. Default: a cache that lives for
+   * this call. `openAttemptCache` gives one that persists in a file.
+   */
+  cache?: AttemptCache | undefined;
   /** Default 64. */
   maxAttempts?: number | undefined;
   /** Default 120000. */
@@ -95,7 +104,10 @@ export interface ShrinkOptions {
 export type AttemptPhase = 'confirm' | 'remove' | 'lower';
 
 export interface AttemptEvent {
+  /** The number of replays spent so far, this one included. Unchanged for a cached verdict. */
   attempt: number;
+  /** True when the verdict came from the cache and nothing was replayed. */
+  cached?: boolean;
   phase: AttemptPhase;
   steps: number;
   reproduced: boolean;
@@ -222,17 +234,42 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
   ]);
   const width = 1 + (options.extraTargets?.length ?? 0);
   let speculative = 0;
+  let cacheHits = 0;
+  const cache = options.cache ?? new MemoryAttemptCache();
+  const salt = cacheSalt([
+    formatRule(options.rule),
+    rules,
+    sharedReplay.headers ?? null,
+    sharedReplay.queryOverrides ?? null,
+    sharedReplay.barrierTags ?? null,
+  ]);
   // The subsets whose replay counted as an attempt, so a discarded one can be taken back.
   const replayed = new WeakSet<readonly number[]>();
 
   const judge = async (indices: readonly number[], phase: AttemptPhase): Promise<boolean> => {
     if (stopped()) throw new AttemptBudgetExceeded('stopped by signal');
+    const key = attemptKey(salt, listOf(indices));
+    const known = cache.get(key);
+    if (known !== undefined) {
+      cacheHits += 1;
+      options.onAttempt?.({
+        attempt: attempts,
+        cached: true,
+        phase,
+        steps: indices.length,
+        reproduced: known,
+      });
+      return known;
+    }
     if (attempts >= maxAttempts || now() - started > timeBudgetMs)
       throw new AttemptBudgetExceeded();
     attempts += 1;
     replayed.add(indices);
     const attempt = attempts;
-    return slots.use((slot) => replayOn(slot, indices, phase, attempt));
+    const verdict = await slots.use((slot) => replayOn(slot, indices, phase, attempt));
+    // An attempt the harness could not complete says nothing about the candidate, so it is not kept.
+    if (verdict.conclusive) await cache.set(key, verdict.reproduced);
+    return verdict.reproduced;
   };
 
   const replayOn = async (
@@ -240,7 +277,7 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
     indices: readonly number[],
     phase: AttemptPhase,
     attempt: number,
-  ): Promise<boolean> => {
+  ): Promise<{ reproduced: boolean; conclusive: boolean }> => {
     await slot.reset();
     const run = await replayExchanges(listOf(indices), {
       ...sharedReplay,
@@ -258,7 +295,10 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
     if (stopped()) throw new AttemptBudgetExceeded('stopped by signal');
     const reproduced = reproduces(run, options.rule);
     options.onAttempt?.({ attempt, phase, steps: indices.length, reproduced });
-    return reproduced;
+    return {
+      reproduced,
+      conclusive: !run.inconclusive.some((c) => RUN_LEVEL_INCONCLUSIVE_KINDS.has(c.kind)),
+    };
   };
 
   const all = scope.map((_, i) => i);
@@ -310,6 +350,7 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
     label: successful ? 'reduced reproduction' : 'reduction unsuccessful',
     duration_ms: Math.round((now() - started) * 1000) / 1000,
     recording: recordingPath,
+    ...(cacheHits > 0 ? { cache_hits: cacheHits } : {}),
     steps: confirmed
       ? kept.map(toStep)
       : original.map((exchange, index) =>

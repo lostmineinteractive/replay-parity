@@ -15,6 +15,7 @@ import {
   DEFAULT_TIME_BUDGET_MS,
   defaultRule,
   buildReset,
+  openAttemptCache,
   DEFAULT_RESET_TIMEOUT_MS,
   parseRule,
   shrink,
@@ -59,6 +60,8 @@ export interface ShrinkCommandOptions extends UpstreamFlags, AdapterModuleFlags 
   resetModule?: string;
   resetHealth?: string;
   resetTimeoutMs?: number;
+  /** A file of attempt verdicts, as JSON lines, read first and appended to. */
+  cache?: string;
   rule?: string;
   rules?: string;
   maxAttempts: number;
@@ -225,6 +228,7 @@ export async function runShrink(
   if (targets.length > 1) {
     log.info(`shrinking against ${targets.length} targets`, { targets: targets.length });
   }
+  const cache = options.cache === undefined ? undefined : await openAttemptCache(options.cache);
   const startedAt = Date.now();
   const state: ShrinkProgressState = { attempts: 0, bestSteps: null };
   const progress =
@@ -272,6 +276,7 @@ export async function runShrink(
         adapter: adapters[i + 1],
       })),
       rule,
+      cache,
       lower: rules.shrink?.lower,
       simplify: rules.shrink?.simplify,
       replay: {
@@ -291,8 +296,14 @@ export async function runShrink(
           state.bestSteps = e.steps;
         }
         log.info(
-          `attempt ${e.attempt} (${e.phase}, ${e.steps} steps): ${e.reproduced ? 'reproduced' : 'did not reproduce'}`,
-          { attempt: e.attempt, phase: e.phase, steps: e.steps, reproduced: e.reproduced },
+          `attempt ${e.attempt} (${e.phase}, ${e.steps} steps): ${e.reproduced ? 'reproduced' : 'did not reproduce'}${e.cached === true ? ' (cached)' : ''}`,
+          {
+            attempt: e.attempt,
+            phase: e.phase,
+            steps: e.steps,
+            reproduced: e.reproduced,
+            cached: e.cached === true,
+          },
         );
         progress?.update();
       },
@@ -312,7 +323,7 @@ export async function runShrink(
   }
   out(
     streams,
-    `${reproduction.label}: ${reproduction.original_steps} -> ${reproduction.reduced_steps} steps in ${reproduction.attempts} attempt${reproduction.attempts === 1 ? '' : 's'} for ${reproduction.rule}`,
+    `${reproduction.label}: ${reproduction.original_steps} -> ${reproduction.reduced_steps} steps in ${reproduction.attempts} attempt${reproduction.attempts === 1 ? '' : 's'} for ${reproduction.rule}${reproduction.cache_hits === undefined ? '' : ` (${reproduction.cache_hits} answered from the cache)`}`,
   );
   for (const s of reproduction.steps) {
     out(
@@ -367,6 +378,10 @@ export function shrinkCommand(
       new Option('--reset-timeout-ms <n>', 'time a reset command and the health poll may take')
         .default(DEFAULT_RESET_TIMEOUT_MS)
         .argParser(positiveInt),
+    )
+    .option(
+      '--cache <path>',
+      'file of attempt verdicts as JSON lines; a subset judged before is answered from it without a replay, so a second shrink of the same run makes no new attempts',
     )
     .option(
       '--rule <rule>',

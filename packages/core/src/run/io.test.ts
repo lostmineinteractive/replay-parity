@@ -194,6 +194,7 @@ describe('run model', () => {
         label: 'reduced reproduction',
         duration_ms: 812,
         recording: 'reduced-reproduction.jsonl',
+        cache_hits: 3,
         steps: [
           {
             id: 'a',

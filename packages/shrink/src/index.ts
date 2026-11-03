@@ -31,3 +31,10 @@ export {
   type ResetStrategyOptions,
   type ResetUpstream,
 } from './reset.js';
+export {
+  MemoryAttemptCache,
+  attemptKey,
+  cacheSalt,
+  openAttemptCache,
+  type AttemptCache,
+} from './cache.js';

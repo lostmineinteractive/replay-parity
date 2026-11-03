@@ -291,6 +291,8 @@ export const ReproductionSchema = z
     duration_ms: nonneg,
     /** Path of the reduced recording, when one was written. */
     recording: z.string().nullable(),
+    /** Attempts answered from the cache without a replay. Present only when there were any. */
+    cache_hits: count.optional(),
     steps: z.array(ReproductionStepSchema),
   })
   .strict();

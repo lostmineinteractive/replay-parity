@@ -113,6 +113,7 @@ const FLAGS: Record<string, string[]> = {
     '--reset-health',
     '--reset-timeout-ms',
     '--targets',
+    '--cache',
     '--rule',
     '--rules',
     '--max-attempts',
