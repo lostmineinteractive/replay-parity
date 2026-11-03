@@ -240,7 +240,9 @@ export class RedisStreamsBus implements MessageBus {
     }
   }
 
+  /** Closes the bus. A second call does nothing, so a caller may close defensively. */
   async close(): Promise<void> {
+    if (this.closed) return;
     this.closed = true;
     for (const reader of this.readers) reader.destroy();
     this.readers.clear();

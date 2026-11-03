@@ -218,6 +218,23 @@ describe('consumer group details', () => {
     expect(got).toEqual(['one']);
   });
 
+  it('closes the client once however many times the bus is closed', async () => {
+    // A real Redis client throws "The client is closed" on a second close, which is
+    // what failed in CI when a test closed a consumer and the cleanup closed it again.
+    const client = new FakeRedisServer().client();
+    let closes = 0;
+    const close = client.close.bind(client);
+    client.close = () => {
+      closes += 1;
+      if (closes > 1) return Promise.reject(new Error('The client is closed'));
+      return close();
+    };
+    const bus = RedisStreamsBus.withClient(client, {});
+    await bus.close();
+    await bus.close();
+    expect(closes).toBe(1);
+  });
+
   it('refuses a consumer name without a group', () => {
     const client = new FakeRedisServer().client();
     expect(() => RedisStreamsBus.withClient(client, { consumer: 'c' })).toThrow(
