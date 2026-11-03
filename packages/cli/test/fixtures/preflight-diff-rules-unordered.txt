@@ -1,0 +1,19 @@
+ok    config: no file selected and no ./rp.yaml
+ok    recording: demo/recording.jsonl: 283 exchanges, 9 tags
+ok    thresholds: demo/thresholds.yaml parses
+ok    thresholds: latency.by_tag.create-order names 48 exchanges
+ok    thresholds: latency.by_tag.get-order names 109 exchanges
+ok    thresholds: latency.by_tag.list-inventory names 53 exchanges
+ok    thresholds: latency.by_tag.adjust-stock names 37 exchanges
+ok    thresholds: latency.by_tag.list-ledger names 16 exchanges
+ok    thresholds: correctness.by_tag.create-order names 48 exchanges
+ok    thresholds: correctness.by_tag.get-order names 109 exchanges
+ok    thresholds: correctness.by_tag.list-inventory names 53 exchanges
+ok    rules: demo/diff-rules-unordered.yaml parses
+ok    rules: substitution order_id captures $.order_id from 47 of 48 create-order exchanges
+ok    rules: control tag admin-restart names 1 exchange
+warn  rules: control tag admin-reset names no exchange
+ok    rules: ignore $.created_at matches 152 response bodies
+ok    rules: unordered $.items matches 53 response bodies
+ok    barrier: tag list-ledger names 16 exchanges
+error barrier: tag nope is not in the recording

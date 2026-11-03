@@ -15,7 +15,6 @@ import {
   hashRecordingFile,
   loadDiffRules,
   loadThresholds,
-  readRecording,
   readRun,
   replayMetrics,
   writeRun,
@@ -312,12 +311,9 @@ export async function runReplay(
   const queryOverrides = resolveQuery(options.query);
   const upstream = await resolveUpstream(options);
   if (options.preflight !== false) {
-    // The preflight reads the whole recording. The replay itself streams it, so with
-    // --no-preflight the memory a run takes is bounded by the window, not by the file.
-    const exchanges = await readRecording(options.recording);
+    // The preflight streams the recording and keeps counts, so it holds no more of it than the replay does.
     const checks = await preflight({
       recording: options.recording,
-      exchanges,
       rules,
       thresholds,
       barrierTags: options.barrierTag,

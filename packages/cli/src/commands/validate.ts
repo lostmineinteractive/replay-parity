@@ -3,9 +3,7 @@ import {
   EXIT_CODES,
   loadDiffRules,
   loadThresholds,
-  readRecording,
   type DiffRules,
-  type Exchange,
   type Thresholds,
 } from '@replay-parity/core';
 import { Command } from 'commander';
@@ -27,7 +25,8 @@ import {
   hasError,
   probeHealth,
   probeReset,
-  tagCounts,
+  scanRecording,
+  type RecordingScan,
   type Check,
 } from '../preflight.js';
 
@@ -100,15 +99,15 @@ export async function runValidate(
     }
   }
 
-  let exchanges: Exchange[];
+  let scan: RecordingScan;
   try {
-    exchanges = await readRecording(options.recording);
+    scan = await scanRecording(options.recording);
   } catch (e) {
     print(failure('recording', e));
     return EXIT_CODES.error;
   }
-  print(checkRecording(options.recording, exchanges));
-  const tags = tagCounts(exchanges);
+  print(checkRecording(options.recording, scan));
+  const tags = scan.tags;
 
   if (options.thresholds !== undefined) {
     let thresholds: Thresholds | undefined;
@@ -129,7 +128,11 @@ export async function runValidate(
     } catch (e) {
       print(failure('rules', e));
     }
-    if (rules !== undefined) for (const c of checkRules(rules, exchanges)) print(c);
+    if (rules !== undefined) {
+      // A second pass over the stream gathers the facts these rules ask about.
+      const ruleScan = await scanRecording(options.recording, rules);
+      for (const c of checkRules(rules, ruleScan)) print(c);
+    }
   }
 
   for (const c of checkBarrierTags(options.barrierTag, tags)) print(c);
