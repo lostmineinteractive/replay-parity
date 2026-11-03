@@ -37,7 +37,10 @@ export interface ResetStrategyOptions {
   upstream?: ResetUpstream | undefined;
   /** What to print in place of the URL, for a URL that held a secret. */
   urlLabel?: string | undefined;
-  /** The text that replaces `{target}` in the command. */
+  /**
+   * The candidate this reset serves. It replaces `{target}` in the command and
+   * the health URL and is passed to a module's `reset` as `{ target }`.
+   */
   target?: string | undefined;
 }
 
@@ -129,7 +132,12 @@ export async function waitForHealth(
   );
 }
 
-async function loadResetModule(path: string): Promise<() => Promise<void>> {
+/** What a reset module's `reset` receives. */
+export interface ResetContext {
+  target: string | undefined;
+}
+
+async function loadResetModule(path: string): Promise<(context: ResetContext) => Promise<void>> {
   let mod: Record<string, unknown>;
   try {
     mod = (await import(pathToFileURL(resolve(path)).href)) as Record<string, unknown>;
@@ -146,8 +154,8 @@ async function loadResetModule(path: string): Promise<() => Promise<void>> {
   if (typeof fn !== 'function') {
     throw new ConfigError(`reset module ${path} does not export a reset function`);
   }
-  return async () => {
-    await (fn as () => Promise<void> | void).call(holder);
+  return async (context) => {
+    await (fn as (context: ResetContext) => Promise<void> | void).call(holder, context);
   };
 }
 
@@ -185,9 +193,14 @@ export async function buildReset(options: ResetStrategyOptions): Promise<() => P
         : options.command.split('{target}').join(options.target);
     strategy = () => runResetCommand(command, timeoutMs);
   } else {
-    strategy = await loadResetModule(options.module as string);
+    const call = await loadResetModule(options.module as string);
+    const context: ResetContext = { target: options.target };
+    strategy = () => call(context);
   }
-  const health = options.health;
+  const health =
+    options.health === undefined || options.target === undefined
+      ? options.health
+      : options.health.split('{target}').join(options.target);
   if (health === undefined) return strategy;
   return async () => {
     await strategy();

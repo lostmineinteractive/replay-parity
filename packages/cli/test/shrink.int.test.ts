@@ -331,3 +331,93 @@ describe('rp shrink value lowering from the rules file', () => {
     expect(res.out).toMatch(/\(quantity reduced\)\s*\(changed \$\.qty \d+ -> \d+/);
   }, 60_000);
 });
+
+describe('rp shrink --targets', () => {
+  it('shrinks against several targets to the same reproduction as one', async () => {
+    const a = await candidate(['drop-late-precancel-shipment']);
+    const b = await candidate(['drop-late-precancel-shipment']);
+    const script = await resetScript();
+    const base = (runPath: string): string[] => [
+      'shrink',
+      '--run',
+      runPath,
+      '--recording',
+      RECORDING,
+      '--out',
+      join(dir, 'targets.jsonl'),
+    ];
+    const singlePath = await failingRun(a, 'targets-single');
+    const single = await rp([
+      ...base(singlePath),
+      '--target',
+      a,
+      '--reset-url',
+      `${a}/admin/reset`,
+    ]);
+    expect(single.code).toBe(0);
+    const expected = await readReproduction(singlePath);
+
+    const byUrl = await failingRun(a, 'targets-url');
+    const viaUrls = await rp([
+      ...base(byUrl),
+      '--targets',
+      `${a},${b}`,
+      '--reset-url',
+      `${a}/admin/reset,${b}/admin/reset`,
+    ]);
+    expect(viaUrls.code).toBe(0);
+    expect(viaUrls.err).toContain('shrinking against 2 targets');
+    const urlRepro = await readReproduction(byUrl);
+    expect(urlRepro.steps).toEqual(expected.steps);
+    expect(urlRepro.attempts).toBe(expected.attempts);
+
+    const byCommand = await failingRun(a, 'targets-command');
+    const marker = join(dir, 'targets-marker.txt');
+    const viaCommand = await rp([
+      ...base(byCommand),
+      '--targets',
+      `${a},${b}`,
+      '--reset-command',
+      `"${process.execPath}" "${script}" "{target}/admin/reset" "${marker}"`,
+    ]);
+    expect(viaCommand.code).toBe(0);
+    const commandRepro = await readReproduction(byCommand);
+    expect(commandRepro.steps).toEqual(expected.steps);
+    const marked = lines(await readFile(marker, 'utf8'));
+    expect(marked.some((l) => l.includes(`${a}/admin/reset`))).toBe(true);
+    expect(marked.some((l) => l.includes(`${b}/admin/reset`))).toBe(true);
+  }, 120_000);
+
+  it('refuses a target list that does not match the resets', async () => {
+    const a = await candidate(['shipment-applied-twice']);
+    const b = await candidate(['shipment-applied-twice']);
+    const runPath = await failingRun(a, 'targets-errors');
+    const base = ['shrink', '--run', runPath, '--recording', RECORDING];
+    const fewResets = await rp([
+      ...base,
+      '--targets',
+      `${a},${b}`,
+      '--reset-url',
+      `${a}/admin/reset`,
+    ]);
+    expect(fewResets.code).toBe(1);
+    expect(fewResets.err).toContain('--reset-url lists 1 URL for 2 targets; give one per target');
+    const noPlaceholder = await rp([...base, '--targets', `${a},${b}`, '--reset-command', 'true']);
+    expect(noPlaceholder.code).toBe(1);
+    expect(noPlaceholder.err).toContain('--reset-command must contain {target}');
+    const both = await rp([
+      ...base,
+      '--target',
+      a,
+      '--targets',
+      `${a},${b}`,
+      '--reset-command',
+      'true',
+    ]);
+    expect(both.code).toBe(1);
+    expect(both.err).toContain('give --target or --targets, not both');
+    const neither = await rp([...base, '--reset-command', 'true']);
+    expect(neither.code).toBe(1);
+    expect(neither.err).toContain('--target or --targets is required');
+  }, 60_000);
+});

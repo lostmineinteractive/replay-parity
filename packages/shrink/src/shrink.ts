@@ -16,11 +16,13 @@ import {
 } from '@replay-parity/core';
 import {
   replayExchanges,
+  type Adapter,
   writeExchanges,
   type ReplayExchangesOptions,
 } from '@replay-parity/replay';
 import { AttemptBudgetExceeded, ddmin } from './ddmin.js';
 import { minimalValue, setAt, valueAt } from './lowering.js';
+import { Pool } from './pool.js';
 import { Prerequisites } from './prerequisites.js';
 import { formatRule, reproduces, witnessOf, type ShrinkRule } from './rule.js';
 
@@ -30,11 +32,26 @@ import { formatRule, reproduces, witnessOf, type ShrinkRule } from './rule.js';
  * candidate is replayed against a freshly reset candidate system and judged
  * by the same rule. The result is a reduced reproduction, not a minimal one.
  */
+/** One candidate system an attempt can run against. */
+export interface ShrinkTarget {
+  target: string;
+  /** Returns this candidate to its initial state. Called before every attempt on it. */
+  reset: () => Promise<void>;
+  /** The adapter for this target. Default: the HTTP adapter for `target`. */
+  adapter?: Adapter | undefined;
+}
+
 export interface ShrinkOptions {
   exchanges: readonly Exchange[];
   target: string;
   /** Returns the candidate to its initial state. Called before every attempt. */
   reset: () => Promise<void>;
+  /**
+   * More candidates, each with its own reset. When given, the chunks of one
+   * removal round run against `target` and these at once. The first chunk in
+   * order that reproduces is taken, so the reduction equals the sequential one.
+   */
+  extraTargets?: readonly ShrinkTarget[] | undefined;
   rule: ShrinkRule;
   /** Replay settings shared by every attempt. Pacing is always `max` with one in flight. */
   replay?:
@@ -89,6 +106,12 @@ export interface ShrinkResult {
   exchanges: Exchange[];
   /** True when `signal` stopped the attempts before the reduction was done. */
   aborted: boolean;
+  /**
+   * Replays that ran ahead of the chunk that was accepted and were not needed.
+   * They are not counted in `reproduction.attempts`, which equals the
+   * sequential count. Zero with one target.
+   */
+  speculative: number;
 }
 
 export const DEFAULT_MAX_ATTEMPTS = 64;
@@ -192,16 +215,38 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
   const signal = options.signal;
   const stopped = (): boolean => signal?.aborted === true;
 
+  const { adapter: primaryAdapter, ...sharedReplay } = options.replay ?? {};
+  const slots = new Pool<ShrinkTarget>([
+    { target: options.target, reset: options.reset, adapter: primaryAdapter },
+    ...(options.extraTargets ?? []),
+  ]);
+  const width = 1 + (options.extraTargets?.length ?? 0);
+  let speculative = 0;
+  // The subsets whose replay counted as an attempt, so a discarded one can be taken back.
+  const replayed = new WeakSet<readonly number[]>();
+
   const judge = async (indices: readonly number[], phase: AttemptPhase): Promise<boolean> => {
     if (stopped()) throw new AttemptBudgetExceeded('stopped by signal');
     if (attempts >= maxAttempts || now() - started > timeBudgetMs)
       throw new AttemptBudgetExceeded();
     attempts += 1;
-    await options.reset();
+    replayed.add(indices);
+    const attempt = attempts;
+    return slots.use((slot) => replayOn(slot, indices, phase, attempt));
+  };
+
+  const replayOn = async (
+    slot: ShrinkTarget,
+    indices: readonly number[],
+    phase: AttemptPhase,
+    attempt: number,
+  ): Promise<boolean> => {
+    await slot.reset();
     const run = await replayExchanges(listOf(indices), {
-      ...options.replay,
+      ...sharedReplay,
+      ...(slot.adapter === undefined ? {} : { adapter: slot.adapter }),
       recording: 'shrink attempt',
-      target: options.target,
+      target: slot.target,
       pace: 'max',
       concurrency: 1,
       rules,
@@ -212,7 +257,7 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
     // An attempt cut short by the signal is spent but not judged.
     if (stopped()) throw new AttemptBudgetExceeded('stopped by signal');
     const reproduced = reproduces(run, options.rule);
-    options.onAttempt?.({ attempt: attempts, phase, steps: indices.length, reproduced });
+    options.onAttempt?.({ attempt, phase, steps: indices.length, reproduced });
     return reproduced;
   };
 
@@ -225,6 +270,15 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
       current = await ddmin(all, {
         closure: (subset) => prerequisites.closure(subset, always),
         test: (subset) => judge(subset, 'remove'),
+        parallel: width,
+        limit: () => maxAttempts - attempts,
+        onDiscard: (discarded) => {
+          for (const subset of discarded) {
+            if (!replayed.has(subset)) continue;
+            attempts -= 1;
+            speculative += 1;
+          }
+        },
       });
       const lowerPaths =
         options.lower ??
@@ -262,7 +316,7 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
           toStep({ index, exchange, quantityReduced: false, changed: new Map() }),
         ),
   };
-  return { reproduction, exchanges: finalExchanges, aborted: stopped() };
+  return { reproduction, exchanges: finalExchanges, aborted: stopped(), speculative };
 }
 
 type Judge = (indices: readonly number[], phase: AttemptPhase) => Promise<boolean>;

@@ -19,6 +19,7 @@ export {
   type RecordingHashOptions,
   type ShrinkOptions,
   type ShrinkResult,
+  type ShrinkTarget,
 } from './shrink.js';
 export {
   DEFAULT_RESET_TIMEOUT_MS,
@@ -26,6 +27,7 @@ export {
   chosenStrategies,
   runResetCommand,
   waitForHealth,
+  type ResetContext,
   type ResetStrategyOptions,
   type ResetUpstream,
 } from './reset.js';

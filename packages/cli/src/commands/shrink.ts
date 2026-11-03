@@ -48,7 +48,10 @@ import {
 export interface ShrinkCommandOptions extends UpstreamFlags, AdapterModuleFlags {
   run: string;
   recording: string;
-  target: string;
+  /** One candidate. Exactly one of `target` and `targets` is required. */
+  target?: string;
+  /** Several candidates, comma separated, for parallel attempts. */
+  targets?: string;
   /** The reset URL, an alias of `resetUrl`. */
   reset?: string;
   resetUrl?: string;
@@ -103,6 +106,27 @@ function formatChanged(changed: ReproductionStep['changed']): string {
   return ` (changed ${parts.join(', ')})`;
 }
 
+function splitList(text: string): string[] {
+  return text
+    .split(',')
+    .map((t) => t.trim())
+    .filter((t) => t !== '');
+}
+
+/** The candidates the flags name, in order. The first is the primary. */
+function resolveTargets(options: ShrinkCommandOptions): string[] {
+  if (options.target !== undefined && options.targets !== undefined) {
+    throw new ConfigError('give --target or --targets, not both');
+  }
+  if (options.targets !== undefined) {
+    const list = splitList(options.targets);
+    if (list.length === 0) throw new ConfigError('--targets lists no URL');
+    return list;
+  }
+  if (options.target === undefined) throw new ConfigError('--target or --targets is required');
+  return [options.target];
+}
+
 export async function runShrink(
   options: ShrinkCommandOptions,
   streams: CliStreams,
@@ -131,6 +155,8 @@ export async function runShrink(
       `${options.run} has no violated invariant and no mismatched exchange to reproduce`,
     );
   }
+  const targets = resolveTargets(options);
+  const primary = targets[0] as string;
   const upstream = await resolveUpstream(options);
   if (
     options.reset !== undefined &&
@@ -140,6 +166,19 @@ export async function runShrink(
     throw new ConfigError('--reset is an alias of --reset-url; give one of them');
   }
   const resetUrl = options.resetUrl ?? options.reset;
+  // With several targets the reset URLs are a comma separated list, one per target.
+  const resetUrls =
+    resetUrl === undefined ? [] : targets.length > 1 ? splitList(resetUrl) : [resetUrl];
+  if (resetUrls.length > 0 && resetUrls.length !== targets.length) {
+    throw new ConfigError(
+      `--reset-url lists ${resetUrls.length} URL${resetUrls.length === 1 ? '' : 's'} for ${targets.length} targets; give one per target`,
+    );
+  }
+  if (targets.length > 1 && options.resetCommand?.includes('{target}') === false) {
+    throw new ConfigError(
+      'with several targets a --reset-command must contain {target}, which becomes each target in turn',
+    );
+  }
   if (options.preflight !== false) {
     const probe = options.preflightProbe === true;
     const checks = await preflight({
@@ -149,11 +188,11 @@ export async function runShrink(
       barrierTags: options.barrierTag,
       target:
         probe && options.adapterModule === undefined
-          ? { url: options.target, label: options.targetLabel ?? options.target, upstream }
+          ? { url: primary, label: options.targetLabel ?? primary, upstream }
           : undefined,
       reset:
-        probe && resetUrl !== undefined
-          ? { url: resetUrl, label: options.resetLabel ?? resetUrl, upstream }
+        probe && resetUrls[0] !== undefined
+          ? { url: resetUrls[0], label: options.resetLabel ?? resetUrls[0], upstream }
           : undefined,
     });
     for (const check of checks) {
@@ -169,15 +208,23 @@ export async function runShrink(
   }
   const headers = await resolveHeaders(options.header, options.headersFile, env);
   const queryOverrides = resolveQuery(options.query);
-  const reset = await buildReset({
-    url: resetUrl,
-    command: options.resetCommand,
-    module: options.resetModule,
-    health: options.resetHealth,
-    timeoutMs: options.resetTimeoutMs ?? DEFAULT_RESET_TIMEOUT_MS,
-    upstream,
-    urlLabel: options.resetLabel ?? resetUrl,
-  });
+  const resets = await Promise.all(
+    targets.map((target, i) =>
+      buildReset({
+        url: resetUrls[i],
+        command: options.resetCommand,
+        module: options.resetModule,
+        health: options.resetHealth,
+        timeoutMs: options.resetTimeoutMs ?? DEFAULT_RESET_TIMEOUT_MS,
+        upstream,
+        urlLabel: targets.length === 1 ? (options.resetLabel ?? resetUrls[i]) : resetUrls[i],
+        target,
+      }),
+    ),
+  );
+  if (targets.length > 1) {
+    log.info(`shrinking against ${targets.length} targets`, { targets: targets.length });
+  }
   const startedAt = Date.now();
   const state: ShrinkProgressState = { attempts: 0, bestSteps: null };
   const progress =
@@ -193,26 +240,37 @@ export async function runShrink(
           }),
         })
       : undefined;
-  // One adapter serves every attempt, so the connection settings are applied once.
-  const adapter: Adapter | undefined =
-    (await loadAdapterFromFlags(options, {
-      target: options.target,
-      timeoutMs: options.timeoutMs,
-      connections: 1,
-    })) ??
-    (customUpstream(upstream)
-      ? new HttpAdapter(options.target, {
-          ...upstream,
+  // One adapter per target serves every attempt, so the connection settings are applied once.
+  const adapters: (Adapter | undefined)[] = [];
+  try {
+    for (const target of targets) {
+      adapters.push(
+        (await loadAdapterFromFlags(options, {
+          target,
           timeoutMs: options.timeoutMs,
           connections: 1,
-        })
-      : undefined);
+        })) ??
+          (customUpstream(upstream)
+            ? new HttpAdapter(target, { ...upstream, timeoutMs: options.timeoutMs, connections: 1 })
+            : undefined),
+      );
+    }
+  } catch (err) {
+    for (const adapter of adapters) await adapter?.close?.();
+    throw err;
+  }
+  const adapter = adapters[0];
   let result: Awaited<ReturnType<typeof shrink>>;
   try {
     result = await shrink({
       exchanges,
-      target: options.target,
-      reset,
+      target: primary,
+      reset: resets[0] as () => Promise<void>,
+      extraTargets: targets.slice(1).map((target, i) => ({
+        target,
+        reset: resets[i + 1] as () => Promise<void>,
+        adapter: adapters[i + 1],
+      })),
       rule,
       lower: rules.shrink?.lower,
       simplify: rules.shrink?.simplify,
@@ -242,7 +300,7 @@ export async function runShrink(
     });
   } finally {
     if (progress !== undefined) endProgress(streams, progress);
-    await adapter?.close?.();
+    for (const each of adapters) await each?.close?.();
   }
   const { reproduction, aborted } = result;
   await writeRun(options.run, { ...run, reproduction });
@@ -283,10 +341,14 @@ export function shrinkCommand(
     )
     .requiredOption('--run <path>', 'the failing run file')
     .requiredOption('--recording <path>', 'the recording the run replayed')
-    .requiredOption('--target <url>', 'base URL of the candidate system')
+    .option('--target <url>', 'base URL of the candidate system')
+    .option(
+      '--targets <urls>',
+      'comma separated base URLs of several candidates; the chunks of a removal round run on them at once, with one --reset-url each or a --reset-command that contains {target}',
+    )
     .option(
       '--reset-url <url>',
-      'URL that receives a POST before every attempt and returns the candidate to its initial state',
+      'URL that receives a POST before every attempt and returns the candidate to its initial state; with --targets, one per target, comma separated',
     )
     .option('--reset <url>', 'alias of --reset-url')
     .option(
@@ -369,7 +431,7 @@ export function shrinkCommand(
       await runShrink(
         {
           ...opts,
-          targetLabel: displayText(command, 'target', opts.target),
+          targetLabel: displayText(command, 'target', opts.target ?? ''),
           resetLabel: displayText(
             command,
             opts.resetUrl === undefined ? 'reset' : 'resetUrl',

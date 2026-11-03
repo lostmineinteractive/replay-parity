@@ -143,6 +143,26 @@ export default { async reset() { appendFileSync(${JSON.stringify(marker)}, 'defa
     expect(await readFile(marker, 'utf8')).toBe('named\ndefault\n');
   });
 
+  it('passes the target to a module reset and puts it in the health URL', async () => {
+    const marker = join(dir, 'context-marker.txt');
+    const module = join(dir, 'context-reset.mjs');
+    await writeFile(
+      module,
+      `import { appendFileSync } from 'node:fs';
+export async function reset(context) { appendFileSync(${JSON.stringify(marker)}, context.target + '\\n'); }
+`,
+    );
+    const health = await stub(() => 200);
+    const reset = await buildReset({
+      module,
+      target: health.url,
+      health: '{target}/ready',
+    });
+    await reset();
+    expect(await readFile(marker, 'utf8')).toBe(`${health.url}\n`);
+    expect(health.hits).toEqual([{ method: 'GET', path: '/ready' }]);
+  });
+
   it('refuses a module that is missing, broken, or has no reset', async () => {
     await expect(buildReset({ module: join(dir, 'nope.mjs') })).rejects.toThrow(
       /reset module .*nope\.mjs failed to load/,

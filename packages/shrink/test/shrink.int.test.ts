@@ -269,4 +269,31 @@ describe('shrink', () => {
     expect(reproduction.successful).toBe(false);
     expect(reproduction.reduced_steps).toBe(283);
   });
+
+  it('runs the chunks of a round on two demo candidates with the same result and attempt count', async () => {
+    const first = await candidate(['drop-late-precancel-shipment']);
+    const second = await candidate(['drop-late-precancel-shipment']);
+    const run = await failingRun(first);
+    const rule = defaultRule(run) as ShrinkRule;
+    const single = await shrink({
+      exchanges: recording,
+      target: first,
+      reset: resetter(first),
+      rule,
+      replay: { rules: RULES },
+    });
+    expect(single.speculative).toBe(0);
+    const both = await shrink({
+      exchanges: recording,
+      target: first,
+      reset: resetter(first),
+      extraTargets: [{ target: second, reset: resetter(second) }],
+      rule,
+      replay: { rules: RULES },
+    });
+    expect(both.reproduction.steps).toEqual(single.reproduction.steps);
+    expect(both.reproduction.attempts).toBe(single.reproduction.attempts);
+    expect(both.exchanges.map((e) => e.id)).toEqual(single.exchanges.map((e) => e.id));
+    expect(both.reproduction.reduced_steps).toBe(3);
+  }, 60_000);
 });

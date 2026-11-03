@@ -56,6 +56,83 @@ describe('ddmin', () => {
     ).rejects.toBeInstanceOf(AttemptBudgetExceeded);
   });
 
+  describe('with a window of parallel tests', () => {
+    const needs =
+      (...wanted: number[]) =>
+      (s: readonly number[]): Promise<boolean> =>
+        Promise.resolve(wanted.every((w) => s.includes(w)));
+
+    it('gives the sequential result for several predicates and widths', async () => {
+      for (const wanted of [[3, 11], [1], [20], [2, 9, 17], [5, 6]]) {
+        const sequential = await ddmin(items, { closure: (s) => [...s], test: needs(...wanted) });
+        for (const parallel of [2, 3, 4, 8]) {
+          const result = await ddmin(items, {
+            closure: (s) => [...s],
+            test: needs(...wanted),
+            parallel,
+          });
+          expect(result, `${wanted.join(',')} x${parallel}`).toEqual(sequential);
+        }
+      }
+    });
+
+    it('runs the tests of a window at the same time and takes the first that reproduces', async () => {
+      let inFlight = 0;
+      let peak = 0;
+      const discarded: number[][][] = [];
+      const result = await ddmin(items, {
+        closure: (s) => [...s],
+        test: async (s) => {
+          inFlight += 1;
+          peak = Math.max(peak, inFlight);
+          await new Promise((r) => setTimeout(r, 5));
+          inFlight -= 1;
+          return s.includes(3) && s.includes(11);
+        },
+        parallel: 4,
+        onDiscard: (d) => discarded.push(d.map((x) => [...x])),
+      });
+      expect(result).toEqual([3, 11]);
+      expect(peak).toBe(4);
+      expect(discarded.length).toBeGreaterThan(0);
+    });
+
+    it('narrows the window to the limit and always runs at least one test', async () => {
+      let peak = 0;
+      let inFlight = 0;
+      await ddmin(items, {
+        closure: (s) => [...s],
+        test: async (s) => {
+          inFlight += 1;
+          peak = Math.max(peak, inFlight);
+          await new Promise((r) => setTimeout(r, 2));
+          inFlight -= 1;
+          return s.includes(3);
+        },
+        parallel: 6,
+        limit: () => 0,
+      });
+      expect(peak).toBe(1);
+    });
+
+    it('throws the error of a test before the first reproducing one and ignores a later one', async () => {
+      const early = ddmin(items, {
+        closure: (s) => [...s],
+        test: () => Promise.reject(new AttemptBudgetExceeded()),
+        parallel: 2,
+      });
+      await expect(early).rejects.toBeInstanceOf(AttemptBudgetExceeded);
+      // The first candidate of every window reproduces and the second would have failed.
+      const late = await ddmin([1, 2, 3, 4], {
+        closure: (s) => [...s],
+        test: (s) =>
+          s.includes(4) ? Promise.resolve(true) : Promise.reject(new AttemptBudgetExceeded()),
+        parallel: 2,
+      });
+      expect(late).toEqual([4]);
+    });
+  });
+
   it('chunks evenly', () => {
     expect(chunk([1, 2, 3, 4, 5], 2)).toEqual([
       [1, 2, 3],

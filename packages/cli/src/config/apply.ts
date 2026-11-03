@@ -16,6 +16,7 @@ export const INTERPOLATED_FLAGS: ReadonlySet<string> = new Set([
   'header',
   'headers-file',
   'target',
+  'targets',
   'reference',
   'reset',
   'reset-url',
