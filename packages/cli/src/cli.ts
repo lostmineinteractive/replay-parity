@@ -15,7 +15,7 @@ import { captureCommand } from './commands/capture.js';
 import { compareCommand } from './commands/compare.js';
 import { doctorCommand } from './commands/doctor.js';
 import { invariantsCommand } from './commands/invariants.js';
-import { recordingCommand } from './commands/recording.js';
+import { importCommand, recordingCommand } from './commands/recording.js';
 import { replayCommand } from './commands/replay.js';
 import { rulesCommand } from './commands/rules.js';
 import { reportCommand } from './commands/report.js';
@@ -97,6 +97,7 @@ export function buildProgram(
   program.addCommand(shrinkCommand(streams, signal, exit, context));
   program.addCommand(agentCommand(streams, signal, exit));
   program.addCommand(recordingCommand(streams, exit, CLI_VERSION, context.env));
+  program.addCommand(importCommand(streams, exit, CLI_VERSION, context.env));
   program.addCommand(validateCommand(streams, exit, context));
   program.addCommand(rulesCommand(streams, exit));
   program.addCommand(doctorCommand(streams, exit, { ...context, version: CLI_VERSION }));

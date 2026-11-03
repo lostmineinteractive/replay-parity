@@ -1,6 +1,7 @@
 import { randomInt } from 'node:crypto';
 import {
   ConfigError,
+  DEFAULT_MAX_BODY_BYTES,
   DEFAULT_REDACTED_HEADERS,
   DEFAULT_REDACTED_QUERY,
   EXIT_CODES,
@@ -11,6 +12,7 @@ import {
   Redactor,
   anonymizeRecording,
   buildManifest,
+  importHarFile,
   loadCaptureRules,
   loadDiffRules,
   mergeRecordings,
@@ -27,7 +29,7 @@ import {
   type ScanReport,
   type ValidationResult,
 } from '@replay-parity/core';
-import { parseTagRule } from '@replay-parity/capture';
+import { formatTagRule, parseTagRule, tagsFor } from '@replay-parity/capture';
 import { DependencyIndex } from '@replay-parity/replay';
 import { Command, Option } from 'commander';
 import { err, out, type CliStreams } from '../io.js';
@@ -360,13 +362,9 @@ export async function runMigrate(
   version: string,
 ): Promise<number> {
   for (const rule of options.tagRule) parseTagRule(rule);
-  const createdAt = options.createdAt ?? new Date().toISOString();
-  if (Number.isNaN(Date.parse(createdAt)) || !createdAt.includes('T')) {
-    throw new ConfigError(`--created-at must be an ISO 8601 date and time, got ${createdAt}`);
-  }
   const manifest = buildManifest({
     tool_version: version,
-    created_at: new Date(createdAt).toISOString(),
+    created_at: createdAtOf(options.createdAt),
     target: options.target ?? null,
     tag_rules: options.tagRule,
     headers: options.redactHeader.length === 0 ? DEFAULT_REDACTED_HEADERS : options.redactHeader,
@@ -409,6 +407,113 @@ export async function runAnonymize(
     `anonymized ${result.exchanges} exchanges to ${options.out}${result.manifest ? ', manifest kept with the rules added' : ''}`,
   );
   return EXIT_CODES.pass;
+}
+
+/** Reads `--created-at`, an ISO 8601 date and time, as the manifest wants it. */
+function createdAtOf(text: string | undefined): string {
+  if (text === undefined) return new Date().toISOString();
+  if (Number.isNaN(Date.parse(text)) || !text.includes('T')) {
+    throw new ConfigError(`--created-at must be an ISO 8601 date and time, got ${text}`);
+  }
+  return new Date(text).toISOString();
+}
+
+export interface ImportHarCommandOptions {
+  out: string;
+  tagRule: string[];
+  redactHeader: string[];
+  redactQuery: string[];
+  captureRules?: string;
+  maxBodyBytes: number;
+  createdAt?: string;
+}
+
+export async function runImportHar(
+  harPath: string,
+  options: ImportHarCommandOptions,
+  streams: CliStreams,
+  version: string,
+  env: NodeJS.ProcessEnv,
+): Promise<number> {
+  const tagRules = options.tagRule.map(parseTagRule);
+  const headers =
+    options.redactHeader.length === 0 ? DEFAULT_REDACTED_HEADERS : options.redactHeader;
+  const query = options.redactQuery.length === 0 ? DEFAULT_REDACTED_QUERY : options.redactQuery;
+  const rules =
+    options.captureRules === undefined ? undefined : await loadCaptureRules(options.captureRules);
+  const redactor = new Redactor({ headers, query, rules, key: env[REDACTION_KEY_ENV] });
+  const result = await importHarFile(harPath, options.out, {
+    toolVersion: version,
+    createdAt: createdAtOf(options.createdAt),
+    tags: (method, path) => tagsFor(tagRules, method, path),
+    tagRuleTexts: tagRules.map(formatTagRule),
+    redactor,
+    redactedHeaders: headers,
+    redactedQuery: query,
+    maxBodyBytes: options.maxBodyBytes,
+  });
+  for (const skip of result.skipped) {
+    err(streams, `skipped entry ${skip.index}: ${skip.reason}`);
+  }
+  out(
+    streams,
+    `imported ${result.exchanges} exchanges from ${harPath} to ${options.out}${result.skipped.length > 0 ? `, ${result.skipped.length} entries skipped` : ''}`,
+  );
+  return EXIT_CODES.pass;
+}
+
+export function importCommand(
+  streams: CliStreams,
+  exit: (code: number) => void,
+  version = '0.0.0',
+  env: NodeJS.ProcessEnv = process.env,
+): Command {
+  const command = new Command('import').description(
+    'Produce a recording from traffic exported by another tool.',
+  );
+  command.addCommand(
+    configure(
+      new Command('har')
+        .description(
+          'Read a HAR 1.2 file and write a recording with a manifest: one exchange per entry in order of startedDateTime, latency from time, bodies by the capture rules, and redaction applied. Entries without a response are skipped.',
+        )
+        .argument('<file>', 'the HAR file')
+        .requiredOption('--out <path>', 'the recording to write; .gz writes gzip')
+        .option(
+          '--tag-rule <rule>',
+          'tag rule "[METHOD ]<glob>=<tag>", first match wins, repeatable',
+          collect,
+          [],
+        )
+        .option(
+          '--redact-header <name>',
+          'header to redact, repeatable, replaces the default list',
+          collect,
+          [],
+        )
+        .option(
+          '--redact-query <name>',
+          'query parameter to redact, repeatable, replaces the default list',
+          collect,
+          [],
+        )
+        .option(
+          '--capture-rules <path>',
+          `YAML capture rules with the redact section; hash rules need ${REDACTION_KEY_ENV}`,
+        )
+        .addOption(
+          new Option('--max-body-bytes <n>', 'bodies above this size are stored as a hash')
+            .default(DEFAULT_MAX_BODY_BYTES)
+            .argParser(nonNegativeInt),
+        )
+        .option('--created-at <iso>', 'the creation time for the manifest; default: now')
+        .action(async (file: string, opts: ImportHarCommandOptions) => {
+          exit(await runImportHar(file, opts, streams, version, env));
+        }),
+      streams,
+    ),
+  );
+  return command;
 }
 
 /** Applies the program's stream and exit settings to a nested command, which commander does not inherit. */

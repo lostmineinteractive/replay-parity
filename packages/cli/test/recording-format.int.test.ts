@@ -521,3 +521,95 @@ describe('body redaction through the CLI', () => {
     ]);
   });
 });
+
+describe('rp import har', () => {
+  const HAR = join(ROOT, 'packages/cli/test/fixtures/session.har');
+
+  it('writes a recording from the fixture with tags, timing, bodies, and redaction', async () => {
+    const out = join(dir, 'from-har.jsonl');
+    const res = await rp([
+      'import',
+      'har',
+      HAR,
+      '--out',
+      out,
+      '--tag-rule',
+      'POST /v1/orders=create-order',
+      '--tag-rule',
+      'GET /v1/orders/*=get-order',
+      '--created-at',
+      '2026-11-01T12:00:00Z',
+    ]);
+    expect(res.code, res.err).toBe(0);
+    expect(res.out).toContain('imported 3 exchanges');
+    expect(res.out).toContain('1 entries skipped');
+    expect(res.err).toContain('skipped entry 3: no response (status 0)');
+    const exchanges = await readRecording(out);
+    expect(exchanges.map((e) => [e.request.method, e.request.path, e.offset_ms, e.tags])).toEqual([
+      ['POST', '/v1/orders', 0, ['create-order']],
+      ['GET', '/v1/orders/ord-1', 250, ['get-order']],
+      ['GET', '/logo.png', 1000, []],
+    ]);
+    const [create, read, logo] = exchanges;
+    expect(create?.request.body).toEqual({ sku: 'A-100', qty: 3 });
+    expect(create?.request.headers).toEqual({ 'content-type': 'application/json' });
+    expect(create?.response).toMatchObject({ status: 201, latency_ms: 30 });
+    expect(read?.request.query).toEqual({
+      expand: 'items',
+      api_key: '<redacted>',
+      tag: ['a', 'b'],
+    });
+    expect(read?.request.headers).toEqual({
+      accept: 'application/json',
+      authorization: '<redacted>',
+    });
+    expect(read?.response).toMatchObject({
+      latency_ms: 12.5,
+      content_encoding: 'gzip',
+      body: { order_id: 'ord-1', total: { $num: '12345678901234567890' } },
+    });
+    expect(read?.response.headers['set-cookie']).toBe('<redacted>');
+    expect(logo?.response).toMatchObject({ encoding: 'base64', body: 'iVBORw==' });
+    expect(await readRecordingManifest(out)).toMatchObject({
+      target: 'https://api.example.test',
+      created_at: '2026-11-01T12:00:00.000Z',
+      source: 'har:session.har',
+      tag_rules: ['POST /v1/orders=create-order', 'GET /v1/orders/*=get-order'],
+    });
+    const validate = await rp(['recording', 'validate', out]);
+    expect(validate.code, validate.out).toBe(0);
+  });
+
+  it('gives the same file for the same input and applies capture rules', async () => {
+    const rules = join(dir, 'har-rules.yaml');
+    await writeFile(rules, "redact:\n  body:\n    - { path: '$..order_id', mode: hash }\n");
+    const args = (out: string) => [
+      'import',
+      'har',
+      HAR,
+      '--out',
+      out,
+      '--capture-rules',
+      rules,
+      '--created-at',
+      '2026-11-01T12:00:00Z',
+    ];
+    const a = join(dir, 'har-a.jsonl');
+    const b = join(dir, 'har-b.jsonl');
+    expect((await rp(args(a), { RP_REDACTION_KEY: 'k' })).code).toBe(0);
+    expect((await rp(args(b), { RP_REDACTION_KEY: 'k' })).code).toBe(0);
+    expect(await readFile(a, 'utf8')).toBe(await readFile(b, 'utf8'));
+    // Body values are hashed; the URL path is not covered by body rules.
+    const bodies = (await readRecording(a)).map((e) => e.response.body as JsonObject);
+    expect(bodies[0]?.order_id).toBe(hashRedaction('k', 'ord-1'));
+    expect(bodies[1]?.order_id).toBe(hashRedaction('k', 'ord-1'));
+    const refused = await rp(args(join(dir, 'har-c.jsonl')));
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain('RP_REDACTION_KEY');
+  });
+
+  it('names a file that is not HAR', async () => {
+    const res = await rp(['import', 'har', DEMO, '--out', join(dir, 'not-har.jsonl')]);
+    expect(res.code).toBe(1);
+  });
+});
