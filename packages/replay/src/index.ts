@@ -27,6 +27,14 @@ export {
 } from './pacing.js';
 export { DependencyIndex, SubstitutionTable, type CaptureRequests } from './substitutions.js';
 export {
+  DEFAULT_RETRY_BASE_MS,
+  RETRY_KINDS,
+  backoffMs,
+  isIdempotent,
+  parseRetryOn,
+  type RetryKind,
+} from './retry.js';
+export {
   NO_SESSION,
   cookieValue,
   parseSessionKey,

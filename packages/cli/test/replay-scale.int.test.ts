@@ -127,4 +127,26 @@ describe('rp replay at scale', () => {
     expect(wrong.code).toBe(1);
     expect(wrong.err).toContain('as-recorded pacing only');
   });
+
+  it('passes the retry policy to the engine and rejects an unknown kind', async () => {
+    const out = join(dir, 'retry.json');
+    const result = await rp(
+      replayArgs(await candidate('off'), out, [
+        '--retry',
+        '2',
+        '--retry-on',
+        'timeout',
+        '--retry-base-ms',
+        '5',
+      ]),
+    );
+    expect(result.code).toBe(0);
+    const run = await readRun(out);
+    expect(run.pacing.retry).toEqual({ max: 2, on: ['timeout'], base_ms: 5, unsafe: false });
+    expect(run.stats.retried).toEqual({ overall: 0, by_tag: {} });
+    expect(validate(run), validate.errors ?? '').toBe(true);
+    const bad = await rp(replayArgs('http://127.0.0.1:9', out, ['--retry-on', 'protocol']));
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain('--retry-on protocol: expected timeout or connection');
+  });
 });

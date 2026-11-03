@@ -52,6 +52,21 @@ export const PacingSchema = z
     speed: z.number().positive().nullable().optional(),
     /** How many times the selection was replayed, from `--loop`. Absent in an older run. */
     loop: z.number().int().positive().optional(),
+    /** The retry policy from `--retry`, or null when sends are not retried. Absent in an older run. */
+    retry: z
+      .object({
+        /** Most retries after the first attempt. */
+        max: z.number().int().positive(),
+        /** The transport failures that are retried. */
+        on: z.array(z.enum(['timeout', 'connection'])),
+        /** The first backoff before jitter, doubled on every further retry. */
+        base_ms: nonneg,
+        /** Whether methods that are not idempotent were retried too. */
+        unsafe: z.boolean(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
   })
   .strict();
 
@@ -84,8 +99,35 @@ export const ExchangeResultSchema = z
     candidate: EndpointResultSchema.nullable(),
     error: z.string().nullable(),
     diff: DiffSchema.nullable(),
+    /**
+     * How many times the request was sent, present only when it was retried. `error` and
+     * `candidate` describe the last attempt.
+     */
+    attempts: z.number().int().min(2).optional(),
+    /** The transport failure of the first attempt, present only when the request was retried. */
+    first_error: z.string().optional(),
   })
   .strict();
+
+/** A count over the counted exchanges, overall and per tag. */
+export const TagCountsSchema = z
+  .object({
+    overall: count,
+    by_tag: z.record(z.string(), count),
+  })
+  .strict();
+
+/**
+ * The run's statistics: the collector's summary plus the counts the engine adds. Each added
+ * count is present only when the run used the feature that produces it.
+ */
+export const RunFileStatsSchema = RunStatsSchema.extend({
+  /**
+   * Exchanges that were sent more than once under `--retry`, whatever the last attempt
+   * returned, so a candidate that only answers on a retry is visible.
+   */
+  retried: TagCountsSchema.optional(),
+}).strict();
 
 const identifier = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'must be an identifier');
 
@@ -264,7 +306,7 @@ export const RunSchema = z
     rules: DiffRulesSchema,
     thresholds: ThresholdsSchema,
     threshold_results: z.array(ThresholdResultSchema),
-    stats: RunStatsSchema,
+    stats: RunFileStatsSchema,
     exchanges: z.array(ExchangeResultSchema),
     /** Path of the candidate's observed log written by `--candidate-recording`, or null. */
     candidate_recording: z.string().nullable(),
@@ -286,6 +328,8 @@ export type Reproduction = z.output<typeof ReproductionSchema>;
 export type PacingMode = z.output<typeof PacingModeSchema>;
 export type Pacing = z.output<typeof PacingSchema>;
 export type ExchangeResult = z.output<typeof ExchangeResultSchema>;
+export type TagCounts = z.output<typeof TagCountsSchema>;
+export type RunFileStats = z.output<typeof RunFileStatsSchema>;
 export type GeneratedCaseStep = z.output<typeof GeneratedCaseStepSchema>;
 export type GeneratedCase = z.output<typeof GeneratedCaseSchema>;
 export type CaseLatency = z.output<typeof CaseLatencySchema>;

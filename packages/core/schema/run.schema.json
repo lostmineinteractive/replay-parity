@@ -219,6 +219,39 @@
           "type": "integer",
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "max": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "on": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["timeout", "connection"]
+                  }
+                },
+                "base_ms": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "unsafe": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["max", "on", "base_ms", "unsafe"],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -1612,6 +1645,29 @@
             ],
             "additionalProperties": false
           }
+        },
+        "retried": {
+          "type": "object",
+          "properties": {
+            "overall": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "by_tag": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            }
+          },
+          "required": ["overall", "by_tag"],
+          "additionalProperties": false
         }
       },
       "required": ["histogram_edges_ms", "overall", "by_tag"],
@@ -1769,6 +1825,14 @@
                 "type": "null"
               }
             ]
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 9007199254740991
+          },
+          "first_error": {
+            "type": "string"
           }
         },
         "required": [

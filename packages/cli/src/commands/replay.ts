@@ -25,11 +25,14 @@ import {
   DEFAULT_BARRIER_TIMEOUT_MS,
   DEFAULT_CONCURRENCY,
   DEFAULT_MAX_GAP_MS,
+  DEFAULT_RETRY_BASE_MS,
   HttpAdapter,
   RedisStreamsBus,
+  parseRetryOn,
   replayExchanges,
   type Adapter,
   type ReplayProgress,
+  type RetryKind,
 } from '@replay-parity/replay';
 import { renderTerminal } from '@replay-parity/report';
 import { Command, InvalidArgumentError, Option } from 'commander';
@@ -88,6 +91,11 @@ export interface ReplayCommandOptions extends UpstreamFlags, AdapterModuleFlags 
   barrierTimeoutMs: number;
   /** `header:<name>`, `cookie:<name>`, or a JSONPath into the request body. */
   sessionKey?: string;
+  /** Most retries of a send that failed in transport. Default 0. */
+  retry?: number;
+  retryOn?: RetryKind[];
+  retryBaseMs?: number;
+  retryUnsafe?: boolean;
   candidateRecording?: string;
   invariants: boolean;
   timeoutMs: number;
@@ -182,6 +190,14 @@ export async function serveMetrics(
         server.closeAllConnections();
       }),
   };
+}
+
+function retryKinds(value: string): RetryKind[] {
+  try {
+    return parseRetryOn(value);
+  } catch (e) {
+    throw new InvalidArgumentError((e as Error).message);
+  }
 }
 
 function portNumber(value: string): number {
@@ -347,6 +363,10 @@ export async function runReplay(
       barrierTags: options.barrierTag,
       barrierTimeoutMs: options.barrierTimeoutMs,
       sessionKey: options.sessionKey ?? null,
+      retry: options.retry ?? 0,
+      retryOn: options.retryOn,
+      retryBaseMs: options.retryBaseMs ?? DEFAULT_RETRY_BASE_MS,
+      retryUnsafe: options.retryUnsafe ?? false,
       candidateRecording: options.candidateRecording ?? null,
       invariants: options.invariants,
       timeoutMs: options.timeoutMs,
@@ -494,6 +514,33 @@ export function replayCommand(
     .option(
       '--session-key <key>',
       'header:<name>, cookie:<name>, or a JSONPath into the request body naming the session of each recorded request; order is then kept within a session, and sessions overlap up to --concurrency',
+    )
+    .addOption(
+      new Option(
+        '--retry <n>',
+        'retry a send that failed in transport up to n times with jittered exponential backoff',
+      )
+        .default(0)
+        .argParser(nonNegativeInt),
+    )
+    .addOption(
+      new Option(
+        '--retry-on <kinds>',
+        'the failures --retry retries, a comma separated list of timeout and connection',
+      ).argParser(retryKinds),
+    )
+    .addOption(
+      new Option(
+        '--retry-base-ms <n>',
+        'the first backoff before jitter, doubled on every further retry',
+      )
+        .default(DEFAULT_RETRY_BASE_MS)
+        .argParser(nonNegativeInt),
+    )
+    .option(
+      '--retry-unsafe',
+      'also retry methods that are not idempotent, such as POST, which may apply a request twice',
+      false,
     )
     .option(
       '--candidate-recording <path>',

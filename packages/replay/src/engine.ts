@@ -32,15 +32,24 @@ import {
   type RecordedRequest,
   type RecordedResponse,
   type Run,
+  type RunFileStats,
+  type TagCounts,
   type SubstitutionRule,
   type Thresholds,
 } from '@replay-parity/core';
 import { evaluateInvariants } from '@replay-parity/invariants';
-import { describeSendError, type Adapter } from './adapter.js';
+import { toSendError, type Adapter } from './adapter.js';
 import { candidateExchanges, writeExchanges, type SentExchange } from './candidate-recording.js';
 import { HttpAdapter } from './http-adapter.js';
 import { ScheduleBuilder, round3, summarizeSlip } from './pacing.js';
 import { parseSessionKey, sessionOf } from './sessions.js';
+import {
+  DEFAULT_RETRY_BASE_MS,
+  RETRY_KINDS,
+  backoffMs,
+  isIdempotent,
+  type RetryKind,
+} from './retry.js';
 import { DependencyIndex, SubstitutionTable } from './substitutions.js';
 
 /**
@@ -128,6 +137,16 @@ export interface ReplayOptions {
   sessionKey?: string | null | undefined;
   /** Default 10000. */
   barrierTimeoutMs?: number | undefined;
+  /** Most retries of a send that failed in transport. Default 0. */
+  retry?: number | undefined;
+  /** The failures that are retried. Default both, timeout and connection. */
+  retryOn?: readonly RetryKind[] | undefined;
+  /** The first backoff before jitter, doubled on every further retry. Default 100. */
+  retryBaseMs?: number | undefined;
+  /** Retry methods that are not idempotent too. Default false. See `retry.ts` for why. */
+  retryUnsafe?: boolean | undefined;
+  /** The jitter source, a number from 0 to 1. Default `Math.random`. */
+  random?: (() => number) | undefined;
   /** Write the requests as sent and the candidate responses here, in recording format. */
   candidateRecording?: string | null | undefined;
   /** Header names redacted in the candidate recording. Default: the capture list. */
@@ -270,6 +289,24 @@ function validate(options: ReplayExchangesOptions): void {
       );
     }
   }
+  const retry = options.retry ?? 0;
+  if (!Number.isInteger(retry) || retry < 0) {
+    throw new ConfigError(`--retry must be a non negative integer, got ${retry}`);
+  }
+  const retryBase = options.retryBaseMs ?? DEFAULT_RETRY_BASE_MS;
+  if (!(Number.isFinite(retryBase) && retryBase >= 0)) {
+    throw new ConfigError(`--retry-base-ms must be a non negative number, got ${retryBase}`);
+  }
+  if (options.retryOn !== undefined) {
+    if (options.retryOn.length === 0) {
+      throw new ConfigError('--retry-on needs at least one of timeout, connection');
+    }
+    for (const kind of options.retryOn) {
+      if (!RETRY_KINDS.includes(kind)) {
+        throw new ConfigError(`--retry-on ${String(kind)}: expected timeout or connection`);
+      }
+    }
+  }
   const loop = options.loop ?? 1;
   if (!Number.isInteger(loop) || loop < 1) {
     throw new ConfigError(`--loop must be a positive integer, got ${loop}`);
@@ -324,6 +361,23 @@ export async function replay(options: ReplayOptions): Promise<Run> {
   ]);
   const run = await replayExchanges(all, options);
   return { ...run, recording: { ...run.recording, recording_sha256: hash.sha256 } };
+}
+
+/** Counts exchanges overall and per tag, each tag of an exchange once. */
+class TagCounter {
+  private overall = 0;
+  private readonly byTag = new Map<string, number>();
+
+  add(tags: readonly string[], n = 1): void {
+    this.overall += n;
+    for (const tag of new Set(tags)) this.byTag.set(tag, (this.byTag.get(tag) ?? 0) + n);
+  }
+
+  finish(): TagCounts {
+    const by_tag: Record<string, number> = {};
+    for (const tag of [...this.byTag.keys()].sort()) by_tag[tag] = this.byTag.get(tag) as number;
+    return { overall: this.overall, by_tag };
+  }
 }
 
 /** A promise with its resolver. */
@@ -399,6 +453,11 @@ export async function replayExchanges(
       : parseSessionKey(options.sessionKey);
   const windowSize = DEFAULT_WINDOW;
   const speed = pace === 'as-recorded' ? (options.speed ?? 1) : null;
+  const retry = options.retry ?? 0;
+  const retryOn = new Set<string>(options.retryOn ?? RETRY_KINDS);
+  const retryBaseMs = options.retryBaseMs ?? DEFAULT_RETRY_BASE_MS;
+  const retryUnsafe = options.retryUnsafe ?? false;
+  const random = options.random ?? Math.random;
   const loop = options.loop ?? 1;
   const now = options.now ?? (() => new Date());
   const signal = options.signal;
@@ -536,18 +595,34 @@ export async function replayExchanges(
     const sentAt = rel();
     const sentWall = Date.now();
     let candidate: RecordedResponse | null = null;
-    let error: string | null = null;
-    try {
-      candidate = await adapter.send(request, {
-        id: e.id,
-        index: i,
-        tags: e.tags,
-        signal: shutdown.signal,
-        log,
-        traceparent: traceId === undefined ? undefined : traceparent(traceId, spanIdFor(e.id)),
-      });
-    } catch (err) {
-      error = describeSendError(err);
+    let error: string | null;
+    let firstError: string | null = null;
+    let attempts = 0;
+    const retryable = retry > 0 && (retryUnsafe || isIdempotent(request.method));
+    for (;;) {
+      attempts += 1;
+      try {
+        candidate = await adapter.send(request, {
+          id: e.id,
+          index: i,
+          tags: e.tags,
+          signal: shutdown.signal,
+          log,
+          traceparent: traceId === undefined ? undefined : traceparent(traceId, spanIdFor(e.id)),
+        });
+        error = null;
+        break;
+      } catch (err) {
+        const failure = toSendError(err);
+        error = `${failure.kind}: ${failure.message}`;
+        firstError ??= error;
+        if (!retryable || attempts > retry || !retryOn.has(failure.kind)) break;
+        if (shutdown.signal.aborted) break;
+        await sleep(backoffMs(attempts, retryBaseMs, random), undefined, {
+          signal: shutdown.signal,
+        }).catch(() => undefined);
+        if (shutdown.signal.aborted) break;
+      }
     }
     const ackedAt = candidate === null ? null : rel();
     let diff: Diff | null = null;
@@ -586,6 +661,10 @@ export async function replayExchanges(
       error,
       diff,
     };
+    if (attempts > 1) {
+      result.attempts = attempts;
+      result.first_error = firstError as string;
+    }
     slot.result = result;
     slot.sent = {
       exchange: e,
@@ -823,11 +902,13 @@ export async function replayExchanges(
   }
 
   const collector = new StatsCollector();
+  const retried = new TagCounter();
   const slips: number[] = [];
   for (const r of replayed) {
     if (r.control) continue;
     slips.push(r.sent_at_ms - r.scheduled_at_ms);
     if (r.warmup || r.dependency) continue;
+    if (r.attempts !== undefined) retried.add(r.tags);
     collector.record({
       tags: r.tags,
       verdict: r.diff?.verdict ?? null,
@@ -835,7 +916,8 @@ export async function replayExchanges(
       referenceLatencyMs: r.reference.latency_ms,
     });
   }
-  const stats = collector.finish();
+  const stats: RunFileStats = collector.finish();
+  if (retry > 0) stats.retried = retried.finish();
   const slip = summarizeSlip(slips);
 
   const candidateLog = candidateExchanges({
@@ -904,6 +986,15 @@ export async function replayExchanges(
       sessions: sessionKeys.size,
       speed,
       loop,
+      retry:
+        retry === 0
+          ? null
+          : {
+              max: retry,
+              on: [...retryOn].sort() as RetryKind[],
+              base_ms: retryBaseMs,
+              unsafe: retryUnsafe,
+            },
     },
     warmup,
     filter: {
