@@ -7,6 +7,12 @@ import {
   fmtPercent,
   invariantSummary,
   mismatchedExchanges,
+  baselineLine,
+  openConditions,
+  outcomeLabel,
+  toleratedConditions,
+  toleratedHeading,
+  toleratedRowIds,
   pacingLine,
   describeTopPath,
   topMismatchPaths,
@@ -56,19 +62,28 @@ export function renderTerminal(run: Run): string {
   lines.push(
     `duration ${fmtDuration(run.duration_ms)}, warmup ${run.warmup}, filter ${run.filter.tag ?? 'none'}, limit ${run.limit ?? 'none'}`,
   );
-  if (run.inconclusive.length > 0) {
+  const baseline = baselineLine(run);
+  if (baseline !== null) lines.push(`baseline ${baseline}`);
+  const open = openConditions(run);
+  if (open.length > 0) {
     lines.push('inconclusive because:');
-    for (const c of run.inconclusive) lines.push(`  - ${c.kind}: ${c.detail}`);
+    for (const c of open) lines.push(`  - ${c.kind}: ${c.detail}`);
+  }
+  const tolerated = toleratedConditions(run);
+  if (tolerated.length > 0) {
+    lines.push(`${toleratedHeading(run).toLowerCase()}:`);
+    for (const c of tolerated) lines.push(`  - ${c.kind}: ${c.detail}`);
   }
 
   lines.push('thresholds:');
   if (run.threshold_results.length === 0) {
     lines.push('  none configured');
   } else {
+    const toleratedRows = toleratedRowIds(run);
     lines.push(
       ...table(
         run.threshold_results.map((r) => [
-          r.outcome,
+          outcomeLabel(r, toleratedRows),
           r.id,
           `limit ${fmtNumber(r.limit)}`,
           `measured ${r.measured === null ? 'n/a' : fmtNumber(r.measured)}`,

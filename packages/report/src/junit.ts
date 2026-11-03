@@ -1,5 +1,5 @@
 import type { InvariantReport, Run, ThresholdResult } from '@replay-parity/core';
-import { fmtNumber } from './format.js';
+import { baselineLine, fmtNumber, toleratedRowIds } from './format.js';
 
 /**
  * JUnit XML for CI systems. One suite per threshold section that has rows,
@@ -12,6 +12,9 @@ const SECTIONS: readonly ThresholdResult['section'][] = [
   'latency',
   'correctness',
   'errors',
+  'throughput',
+  'status',
+  'baseline',
   'pacing',
   'invariants',
 ];
@@ -50,14 +53,22 @@ function measure(r: ThresholdResult): string {
   return `measured ${r.measured === null ? 'n/a' : fmtNumber(r.measured)}, limit ${fmtNumber(r.limit)}`;
 }
 
-function thresholdCase(r: ThresholdResult): JunitCase {
+function thresholdCase(r: ThresholdResult, tolerated: ReadonlySet<string>): JunitCase {
+  const reason = r.detail ?? 'inconclusive';
   const body = `${r.id}: ${r.metric} on ${r.scope} ${measure(r)}${r.detail === undefined ? '' : `. ${r.detail}`}`;
   return {
     name: r.id,
     classname: r.section,
     time: 0,
     failure: r.outcome === 'fail' ? { message: measure(r), body } : undefined,
-    skipped: r.outcome === 'inconclusive' ? { message: r.detail ?? 'inconclusive' } : undefined,
+    skipped:
+      r.outcome === 'inconclusive'
+        ? {
+            message: tolerated.has(r.id)
+              ? `tolerated by the inconclusive budget: ${reason}`
+              : reason,
+          }
+        : undefined,
   };
 }
 
@@ -120,6 +131,9 @@ function verdictSuite(run: Run): JunitSuite {
       ['recording', run.recording.path],
       ['target', run.target],
       ['created_at', run.created_at],
+      ...(baselineLine(run) === null
+        ? []
+        : ([['baseline', baselineLine(run) as string]] as [string, string][])),
     ],
   };
 }
@@ -156,10 +170,11 @@ function renderSuite(s: JunitSuite, run: Run): string {
 
 export function renderJunit(run: Run): string {
   const suites: JunitSuite[] = [];
+  const tolerated = toleratedRowIds(run);
   for (const section of SECTIONS) {
     const rows = run.threshold_results.filter((r) => r.section === section);
     if (rows.length === 0) continue;
-    suites.push({ name: section, cases: rows.map(thresholdCase) });
+    suites.push({ name: section, cases: rows.map((r) => thresholdCase(r, tolerated)) });
   }
   for (const report of [run.invariants.reference, run.invariants.candidate]) {
     if (report !== null) suites.push(invariantSuite(report));

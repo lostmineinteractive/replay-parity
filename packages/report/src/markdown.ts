@@ -5,7 +5,13 @@ import {
   fmtNumber,
   fmtPercent,
   invariantSummary,
+  baselineLine,
+  openConditions,
+  outcomeLabel,
   pacingLine,
+  toleratedConditions,
+  toleratedHeading,
+  toleratedRowIds,
   topMismatchPaths,
   verdictLabel,
 } from './format.js';
@@ -70,9 +76,17 @@ function header(run: Run): string[] {
     `- Pacing: ${cell(pacingLine(run))}`,
     `- Duration: ${fmtDuration(run.duration_ms)}, warmup ${run.warmup}, filter ${cell(run.filter.tag ?? 'none')}, limit ${run.limit ?? 'none'}`,
   ];
-  if (run.inconclusive.length > 0) {
+  const baseline = baselineLine(run);
+  if (baseline !== null) lines.push(`- Baseline: ${cell(baseline)}`);
+  const open = openConditions(run);
+  if (open.length > 0) {
     lines.push('', '**Inconclusive because**', '');
-    for (const c of run.inconclusive) lines.push(`- ${code(c.kind)}: ${cell(c.detail)}`);
+    for (const c of open) lines.push(`- ${code(c.kind)}: ${cell(c.detail)}`);
+  }
+  const tolerated = toleratedConditions(run);
+  if (tolerated.length > 0) {
+    lines.push('', `**${toleratedHeading(run)}**`, '');
+    for (const c of tolerated) lines.push(`- ${code(c.kind)}: ${cell(c.detail)}`);
   }
   return lines;
 }
@@ -80,13 +94,14 @@ function header(run: Run): string[] {
 function thresholds(run: Run): string[] {
   const lines = ['', '## Thresholds', ''];
   if (run.threshold_results.length === 0) return [...lines, 'No thresholds configured.'];
+  const tolerated = toleratedRowIds(run);
   return [
     ...lines,
     ...table(
       ['Outcome', 'Row', 'Limit', 'Measured', 'Detail'],
       ['left', 'left', 'right', 'right', 'left'],
       run.threshold_results.map((r) => [
-        r.outcome,
+        outcomeLabel(r, tolerated),
         code(r.id),
         fmtNumber(r.limit),
         r.measured === null ? 'n/a' : fmtNumber(r.measured),

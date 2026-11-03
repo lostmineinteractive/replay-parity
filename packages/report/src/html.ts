@@ -1,13 +1,19 @@
 import type { ExchangeResult, JsonValue, Run, TagStats } from '@replay-parity/core';
 import {
+  baselineLine,
   controlExchanges,
   fmtDuration,
   fmtMs,
   fmtNumber,
   fmtPercent,
   invariantSummary,
+  openConditions,
+  outcomeLabel,
   pacingLine,
   planDrillDown,
+  toleratedConditions,
+  toleratedHeading,
+  toleratedRowIds,
   topMismatchPaths,
   verdictLabel,
 } from './format.js';
@@ -55,6 +61,7 @@ code { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-spac
 .absent { color: #999; font-style: italic; }
 .conditions { background: #fff4e0; border: 1px solid #f0c070; padding: 10px 14px; border-radius: 4px; }
 .conditions li { margin: 2px 0; }
+.conditions.tolerated { background: #f3f6f3; border-color: #b8cbb8; }
 .legend span { display: inline-block; width: 12px; height: 12px; margin: 0 4px 0 12px; vertical-align: middle; }
 .charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
 .charts figure { margin: 0; background: #fff; border: 1px solid #e6e6e6; padding: 6px; }
@@ -85,24 +92,41 @@ function metaRows(run: Run): string {
     ],
   ];
   if (run.candidate_recording !== null) rows.push(['Candidate recording', run.candidate_recording]);
+  const baseline = baselineLine(run);
+  if (baseline !== null) rows.push(['Baseline', baseline]);
   return rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
 }
 
+function conditionList(list: Run['inconclusive']): string {
+  return `<ul>${list.map((c) => `<li><code>${esc(c.kind)}</code> ${esc(c.detail)}</li>`).join('')}</ul>`;
+}
+
 function conditions(run: Run): string {
-  if (run.inconclusive.length === 0) return '';
-  return `<div class="conditions"><strong>Inconclusive because</strong><ul>${run.inconclusive
-    .map((c) => `<li><code>${esc(c.kind)}</code> ${esc(c.detail)}</li>`)
-    .join('')}</ul></div>`;
+  const open = openConditions(run);
+  const tolerated = toleratedConditions(run);
+  const blocks: string[] = [];
+  if (open.length > 0) {
+    blocks.push(
+      `<div class="conditions"><strong>Inconclusive because</strong>${conditionList(open)}</div>`,
+    );
+  }
+  if (tolerated.length > 0) {
+    blocks.push(
+      `<div class="conditions tolerated"><strong>${esc(toleratedHeading(run))}</strong>${conditionList(tolerated)}</div>`,
+    );
+  }
+  return blocks.join('');
 }
 
 function thresholds(run: Run): string {
   if (run.threshold_results.length === 0) {
     return '<section id="thresholds"><h2>Thresholds</h2><p class="muted">No thresholds configured.</p></section>';
   }
+  const tolerated = toleratedRowIds(run);
   const rows = run.threshold_results
     .map(
       (r) =>
-        `<tr class="${r.outcome}" data-id="${esc(r.id)}"><td class="outcome">${esc(r.outcome)}</td><td><code>${esc(r.id)}</code></td><td>${esc(r.section)}</td><td>${esc(r.scope)}</td><td>${esc(r.metric)}</td><td class="num">${fmtNumber(r.limit)}</td><td class="num">${r.measured === null ? 'n/a' : fmtNumber(r.measured)}</td><td>${esc(r.detail ?? '')}</td></tr>`,
+        `<tr class="${r.outcome}" data-id="${esc(r.id)}"><td class="outcome">${esc(outcomeLabel(r, tolerated))}</td><td><code>${esc(r.id)}</code></td><td>${esc(r.section)}</td><td>${esc(r.scope)}</td><td>${esc(r.metric)}</td><td class="num">${fmtNumber(r.limit)}</td><td class="num">${r.measured === null ? 'n/a' : fmtNumber(r.measured)}</td><td>${esc(r.detail ?? '')}</td></tr>`,
     )
     .join('');
   return `<section id="thresholds"><h2>Thresholds</h2><table><thead><tr><th>Outcome</th><th>Row</th><th>Section</th><th>Scope</th><th>Metric</th><th class="num">Limit</th><th class="num">Measured</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table></section>`;

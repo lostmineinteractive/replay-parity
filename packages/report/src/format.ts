@@ -1,4 +1,4 @@
-import type { ExchangeResult, Run } from '@replay-parity/core';
+import { isTolerated, type ExchangeResult, type Run } from '@replay-parity/core';
 
 /** Number formatting shared by the renderers. Deterministic, locale free. */
 
@@ -175,4 +175,46 @@ export function invariantSummary(report: NonNullable<Run['invariants']['referenc
   if (by.inconclusive > 0) parts.push(`${by.inconclusive} inconclusive`);
   if (by.not_applicable > 0) parts.push(`${by.not_applicable} not applicable`);
   return parts.join(', ');
+}
+
+/** The conditions that make the run inconclusive, without those the budget tolerated. */
+export function openConditions(run: Run): Run['inconclusive'] {
+  return run.inconclusive.filter((c) => !isTolerated(c));
+}
+
+/** The insufficient sample conditions the `inconclusive.max_rows` budget tolerated. */
+export function toleratedConditions(run: Run): Run['inconclusive'] {
+  return run.inconclusive.filter(isTolerated);
+}
+
+/** The heading of the tolerated conditions, naming the budget. */
+export function toleratedHeading(run: Run): string {
+  const budget = run.thresholds.inconclusive?.max_rows;
+  return `Tolerated by the inconclusive budget${budget === undefined ? '' : ` of ${budget} row${budget === 1 ? '' : 's'}`}`;
+}
+
+/** The ids of the threshold rows a tolerated condition names. */
+export function toleratedRowIds(run: Run): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const c of toleratedConditions(run)) {
+    for (const r of run.threshold_results) {
+      if (r.outcome === 'inconclusive' && c.detail.startsWith(`${r.id}: `)) ids.add(r.id);
+    }
+  }
+  return ids;
+}
+
+/** A row's outcome as the reports print it, with a row the budget tolerated marked. */
+export function outcomeLabel(
+  row: Run['threshold_results'][number],
+  tolerated: ReadonlySet<string>,
+): string {
+  return tolerated.has(row.id) ? `${row.outcome} (tolerated)` : row.outcome;
+}
+
+/** The baseline the run was compared with, or null when there was none. */
+export function baselineLine(run: Run): string | null {
+  const b = run.baseline;
+  if (b === null) return null;
+  return `run ${b.run_id} from ${b.path}${b.recording_sha256 === null ? ', no recording hash' : ''}`;
 }

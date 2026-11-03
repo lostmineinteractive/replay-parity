@@ -1,0 +1,120 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`reports of a run with baselines, noise, and a tolerated row > gives the new sections their own JUnit suites 1`] = `
+"<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="replay-parity 01M52Z67EP0000000000000099" tests="10" failures="0" errors="0" skipped="1" time="0.3">
+  <testsuite name="latency" tests="2" failures="0" errors="0" skipped="1" time="0" timestamp="2026-10-16T18:22:03.123Z">
+    <testcase classname="latency" name="latency.by_tag.create-item.p99_ms" time="0">
+      <skipped message="tolerated by the inconclusive budget: 1 successful sample, minimum 2"/>
+    </testcase>
+    <testcase classname="latency" name="latency.relative_to_reference.by_tag.get-items.p50_ratio_max" time="0"/>
+  </testsuite>
+  <testsuite name="correctness" tests="2" failures="0" errors="0" skipped="0" time="0" timestamp="2026-10-16T18:22:03.123Z">
+    <testcase classname="correctness" name="correctness.mismatch_rate_max" time="0"/>
+    <testcase classname="correctness" name="correctness.noise_rate_max" time="0"/>
+  </testsuite>
+  <testsuite name="errors" tests="1" failures="0" errors="0" skipped="0" time="0" timestamp="2026-10-16T18:22:03.123Z">
+    <testcase classname="errors" name="errors.by_tag.get-items.rate_max" time="0"/>
+  </testsuite>
+  <testsuite name="throughput" tests="1" failures="0" errors="0" skipped="0" time="0" timestamp="2026-10-16T18:22:03.123Z">
+    <testcase classname="throughput" name="throughput.achieved_rps_min" time="0"/>
+  </testsuite>
+  <testsuite name="status" tests="1" failures="0" errors="0" skipped="0" time="0" timestamp="2026-10-16T18:22:03.123Z">
+    <testcase classname="status" name="status.by_tag.get-items.500.rate_max" time="0"/>
+  </testsuite>
+  <testsuite name="baseline" tests="2" failures="0" errors="0" skipped="0" time="0" timestamp="2026-10-16T18:22:03.123Z">
+    <testcase classname="baseline" name="baseline.latency.by_tag.get-items.p99_ratio_max" time="0"/>
+    <testcase classname="baseline" name="baseline.correctness.mismatch_rate_delta_max" time="0"/>
+  </testsuite>
+  <testsuite name="run" tests="1" failures="0" errors="0" skipped="0" time="0.3" timestamp="2026-10-16T18:22:03.123Z">
+    <properties>
+      <property name="run_id" value="01M52Z67EP0000000000000099"/>
+      <property name="verdict" value="pass"/>
+      <property name="recording" value="recording.jsonl"/>
+      <property name="target" value="http://localhost:3001"/>
+      <property name="created_at" value="2026-10-16T18:22:03.123Z"/>
+      <property name="baseline" value="run previous-night from nightly/run.json, no recording hash"/>
+    </properties>
+    <testcase classname="run" name="verdict" time="0.3"/>
+  </testsuite>
+</testsuites>
+"
+`;
+
+exports[`reports of a run with baselines, noise, and a tolerated row > renders the Markdown summary 1`] = `
+"# replay-parity: PASS (run 01M52Z67EP0000000000000099)
+
+- Recording: \`recording.jsonl\` (3 exchanges, 3 selected)
+- Target: \`http://localhost:3001\` via http
+- Pacing: as-recorded, concurrency 4, requested n/a, achieved 10.0 rps, schedule slip p50 1.00 ms, max 3.00 ms
+- Duration: 300 ms, warmup 0, filter none, limit none
+- Baseline: run previous-night from nightly/run.json, no recording hash
+
+**Tolerated by the inconclusive budget of 1 row**
+
+- \`insufficient_samples\`: latency.by\\_tag.create-item.p99\\_ms: 1 successful sample, minimum 2
+
+## Thresholds
+
+| Outcome | Row | Limit | Measured | Detail |
+| --- | --- | ---: | ---: | --- |
+| inconclusive (tolerated) | \`latency.by_tag.create-item.p99_ms\` | 100 | n/a | 1 successful sample, minimum 2 |
+| pass | \`latency.relative_to_reference.by_tag.get-items.p50_ratio_max\` | 2 | 1.1999 |  |
+| pass | \`correctness.mismatch_rate_max\` | 1 | 0.5 | 1 noise finding excluded |
+| pass | \`correctness.noise_rate_max\` | 1 | 0.5 | 1 noise finding over 2 compared exchanges |
+| pass | \`errors.by_tag.get-items.rate_max\` | 0.5 | 0.5 |  |
+| pass | \`throughput.achieved_rps_min\` | 5 | 10 |  |
+| pass | \`status.by_tag.get-items.500.rate_max\` | 0 | 0 | 0 of 1 compared exchanges answered 500 |
+| pass | \`baseline.latency.by_tag.get-items.p99_ratio_max\` | 2 | 1 | 12.007 ms now, 12.007 ms in the baseline |
+| pass | \`baseline.correctness.mismatch_rate_delta_max\` | 0 | 0 | 0.5 now, 0.5 in the baseline |
+
+## Latency
+
+Reference / candidate in milliseconds. Reference values come from the recording.
+
+| Tag | Count | Errors | p50 | p99 | max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| overall | 3 | 1 | 10.0 / 12.0 | 20.0 / 25.0 | 20.0 / 25.0 |
+| create-item | 1 | 0 | 20.0 / 25.0 | 20.0 / 25.0 | 20.0 / 25.0 |
+| get-items | 2 | 1 | 10.0 / 12.0 | 10.0 / 12.0 | 10.0 / 12.0 |
+
+## Correctness
+
+2 compared, 1 match, 0 tolerated, 1 mismatch (50.00%), 1 errors (33.33%).
+
+Top mismatching paths. Array positions are folded into \`[*]\`, so rows that moved count as one path.
+
+| Path | Findings | Exchanges |
+| --- | ---: | ---: |
+| \`$.total\` | 1 | 1 |
+"
+`;
+
+exports[`reports of a run with baselines, noise, and a tolerated row > renders the terminal summary 1`] = `
+"replay-parity run 01M52Z67EP0000000000000099: PASS
+recording recording.jsonl (3 exchanges, 3 selected) -> http://localhost:3001 via http
+pacing as-recorded, concurrency 4, requested n/a, achieved 10.0 rps, schedule slip p50 1.00 ms, max 3.00 ms
+duration 300 ms, warmup 0, filter none, limit none
+baseline run previous-night from nightly/run.json, no recording hash
+tolerated by the inconclusive budget of 1 row:
+  - insufficient_samples: latency.by_tag.create-item.p99_ms: 1 successful sample, minimum 2
+thresholds:
+  inconclusive (tolerated)  latency.by_tag.create-item.p99_ms                             limit 100  measured n/a     1 successful sample, minimum 2
+  pass                      latency.relative_to_reference.by_tag.get-items.p50_ratio_max  limit 2    measured 1.1999
+  pass                      correctness.mismatch_rate_max                                 limit 1    measured 0.5     1 noise finding excluded
+  pass                      correctness.noise_rate_max                                    limit 1    measured 0.5     1 noise finding over 2 compared exchanges
+  pass                      errors.by_tag.get-items.rate_max                              limit 0.5  measured 0.5
+  pass                      throughput.achieved_rps_min                                   limit 5    measured 10
+  pass                      status.by_tag.get-items.500.rate_max                          limit 0    measured 0       0 of 1 compared exchanges answered 500
+  pass                      baseline.latency.by_tag.get-items.p99_ratio_max               limit 2    measured 1       12.007 ms now, 12.007 ms in the baseline
+  pass                      baseline.correctness.mismatch_rate_delta_max                  limit 0    measured 0       0.5 now, 0.5 in the baseline
+latency by tag (reference/candidate, ms):
+  tag          count  errors  p50        p99        max        mismatches
+  overall      3      1       10.0/12.0  20.0/25.0  20.0/25.0  1
+  create-item  1      0       20.0/25.0  20.0/25.0  20.0/25.0  1
+  get-items    2      1       10.0/12.0  10.0/12.0  10.0/12.0  0
+correctness: 2 compared, 1 match, 0 tolerated, 1 mismatch (50.00%), 1 errors (33.33%)
+  top mismatching paths: $.total x1 in 1 exchange
+  01M52Z67BM0000000000000001 POST /v1/items [create-item] 201/201: $.total
+"
+`;
