@@ -72,7 +72,6 @@ profiles:
   nightly:
     replay:
       reference-target: ${REFERENCE_URL}
-      baseline: previous/run.json
       exchanges-sidecar: true
 ```
 
@@ -90,7 +89,7 @@ Without `--session-key` the whole recording is one session and a sequential reco
 
 ### Baselines
 
-`--baseline run.json` compares the run with an earlier one and applies the `baseline` section of the thresholds. A scheduled job keeps the last good run as an artifact and passes it the next night. A baseline from a different recording is refused unless `--baseline-any-recording` is given. `rp compare a.json b.json` prints two runs side by side and exits 0 whatever the verdicts.
+`--baseline run.json` compares the run with an earlier one and applies the `baseline` section of the thresholds. A scheduled job keeps the last good run as an artifact and passes it the next night. Pass the flag only when the file exists, because a missing baseline file is an error. `docs/real-system.md` shows a script that does this. A baseline from a different recording is refused unless `--baseline-any-recording` is given. `rp compare a.json b.json` prints two runs side by side and exits 0 whatever the verdicts.
 
 ### Long runs
 
