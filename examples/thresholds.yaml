@@ -1,6 +1,7 @@
 # thresholds.yaml, every key explained. Every section is optional. The run
 # passes only when every row passes. A row that cannot decide, for example
 # a tag with fewer samples than min_samples, makes the run inconclusive.
+# docs/thresholds.md lists every row id and when each row is inconclusive.
 latency:
   # Successful candidate samples a latency row needs before it can decide. Default 1.
   min_samples: 20
@@ -12,16 +13,53 @@ latency:
     create-order: { p99_ms: 120 }
     list-ledger: { p99_ms: 80, min_samples: 10 }
   # Ratios of the candidate's percentile over the reference's, from the recording.
+  # Any of p50_ratio_max, p90_ratio_max, p99_ratio_max, p999_ratio_max, max_ratio_max, mean_ratio_max.
   relative_to_reference:
     p99_ratio_max: 1.5
+    # The same ratios for one tag, with the tag's min_samples from latency.by_tag.
+    by_tag:
+      get-order: { p99_ratio_max: 1.5 }
 correctness:
   # Fraction of compared exchanges whose diff verdict is mismatch, overall and per tag.
+  # With --reference-target a noise finding is tolerated and never counts, and each
+  # of these rows names how many noise findings it excluded.
   mismatch_rate_max: 0.001
   by_tag:
     create-order: { mismatch_rate_max: 0 }
+  # Noise findings per compared exchange, with --reference-target. Fails the run when
+  # the reference has become unstable. Above 1 is possible. Inconclusive without the re-replay.
+  noise_rate_max: 0.5
 errors:
   # Fraction of exchanges with a transport error, no candidate response.
   rate_max: 0.0
+  # The same fraction for one tag.
+  by_tag:
+    get-order: { rate_max: 0.0 }
+throughput:
+  # The least achieved request rate, pacing.achieved_rps. Passes at or above the limit.
+  achieved_rps_min: 5
+status:
+  # Per tag and candidate status code, the largest fraction of the tag's compared
+  # exchanges that answered that code. Quote the code.
+  by_tag:
+    get-order: { '404': { rate_max: 0.1 }, '500': { rate_max: 0 } }
+baseline:
+  # Limits against an earlier run given with rp replay --baseline <run.json>. Without
+  # --baseline these produce no rows and rp replay says so. A baseline that replayed a
+  # different recording is refused unless --baseline-any-recording.
+  latency:
+    # This run's candidate percentile over the baseline's, overall and per tag.
+    overall: { p99_ratio_max: 1.2 }
+    by_tag:
+      get-order: { p99_ratio_max: 1.25 }
+  correctness:
+    # How much the mismatch rate may grow over the baseline's, as a fraction.
+    mismatch_rate_delta_max: 0
+    by_tag:
+      create-order: { mismatch_rate_delta_max: 0 }
+  errors:
+    # How much the error rate may grow over the baseline's, as a fraction.
+    rate_delta_max: 0.001
 pacing:
   # Largest schedule slip (actual send time minus scheduled time) before the run is
   # inconclusive with schedule_not_held. Unset: slip is reported and never gates.
@@ -29,3 +67,8 @@ pacing:
 invariants:
   # With --invariants, a violation on either system fails the run. Set false to report only.
   fail_on_violation: true
+inconclusive:
+  # When no row failed and at most this many rows are inconclusive for lack of samples,
+  # the run passes and the report lists them as tolerated. Run level conditions such as
+  # a barrier timeout are never tolerated. Unset: any such row makes the run inconclusive.
+  max_rows: 2

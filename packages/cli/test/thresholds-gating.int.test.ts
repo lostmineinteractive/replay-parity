@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Writable } from 'node:stream';
-import { parseRun, type Run } from '@replay-parity/core';
+import { loadThresholds, parseRun, type Run } from '@replay-parity/core';
 import { buildApp as buildCandidate } from '@replay-parity/demo-candidate';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { runCli } from '../src/index.js';
@@ -154,6 +154,19 @@ describe('rp replay with the completed threshold matrix', () => {
     } finally {
       await reference.close();
     }
+  });
+});
+
+describe('examples/thresholds.yaml', () => {
+  it('parses and sets every section', async () => {
+    const t = await loadThresholds(join(ROOT, 'examples/thresholds.yaml'));
+    expect(t.throughput?.achieved_rps_min).toBeDefined();
+    expect(t.status?.by_tag['get-order']).toBeDefined();
+    expect(t.baseline?.latency?.by_tag).toBeDefined();
+    expect(t.inconclusive?.max_rows).toBeDefined();
+    expect(t.correctness.noise_rate_max).toBeDefined();
+    expect(t.errors.by_tag).toBeDefined();
+    expect(t.latency.relative_to_reference.by_tag).toBeDefined();
   });
 });
 
