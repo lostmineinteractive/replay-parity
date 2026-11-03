@@ -125,6 +125,8 @@ const FLAGS: Record<string, string[]> = {
     '--latency-repeat',
     '--rule',
     '--rules',
+    '--invariants-module',
+    '--invariants-rules',
     '--max-attempts',
     '--time-budget-ms',
     '--out',

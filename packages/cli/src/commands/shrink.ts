@@ -22,6 +22,7 @@ import {
   shrink,
   verifyRecordingHash,
 } from '@replay-parity/shrink';
+import { loadDeclarativeRules, loadInvariantModule } from '@replay-parity/invariants';
 import { HttpAdapter, type Adapter } from '@replay-parity/replay';
 import { Command, Option } from 'commander';
 import { displayText, type CliContext } from '../config/index.js';
@@ -67,6 +68,10 @@ export interface ShrinkCommandOptions extends UpstreamFlags, AdapterModuleFlags 
   latencyRepeat?: number;
   rule?: string;
   rules?: string;
+  /** An invariant module whose rule names an `invariant:` rule refers to. */
+  invariantsModule?: string;
+  /** A declarative invariants.yaml used the same way. */
+  invariantsRules?: string;
   maxAttempts: number;
   timeBudgetMs: number;
   out: string;
@@ -155,6 +160,15 @@ export async function runShrink(
   }
   const exchanges = await readRecording(options.recording);
   const rules = options.rules === undefined ? run.rules : await loadDiffRules(options.rules);
+  if (options.invariantsModule !== undefined && options.invariantsRules !== undefined) {
+    throw new ConfigError('--invariants-module and --invariants-rules cannot be used together');
+  }
+  const invariantsModule =
+    options.invariantsModule !== undefined
+      ? await loadInvariantModule(options.invariantsModule)
+      : options.invariantsRules !== undefined
+        ? await loadDeclarativeRules(options.invariantsRules)
+        : undefined;
   const rule = options.rule === undefined ? defaultRule(run) : parseRule(options.rule);
   if (rule === null) {
     throw new ConfigError(
@@ -291,6 +305,7 @@ export async function runShrink(
         barrierTags: options.barrierTag,
         timeoutMs: options.timeoutMs,
         ...(adapter === undefined ? {} : { adapter }),
+        ...(invariantsModule === undefined ? {} : { invariantsModule }),
       },
       maxAttempts: options.maxAttempts,
       timeBudgetMs: options.timeBudgetMs,
@@ -401,6 +416,14 @@ export function shrinkCommand(
         .argParser(positiveInt),
     )
     .option('--rules <path>', 'diff rules file; default: the rules embedded in the run')
+    .option(
+      '--invariants-module <path>',
+      'invariant module whose rule names an invariant: rule refers to; use the one the run was made with',
+    )
+    .option(
+      '--invariants-rules <path>',
+      'declarative invariants.yaml whose rule names an invariant: rule refers to; use the one the run was made with',
+    )
     .addOption(
       new Option('--max-attempts <n>', 'most replays to spend')
         .default(DEFAULT_MAX_ATTEMPTS)

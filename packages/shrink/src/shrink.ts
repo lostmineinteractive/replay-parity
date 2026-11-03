@@ -77,6 +77,7 @@ export interface ShrinkOptions {
           | 'timeoutMs'
           | 'maxBodyBytes'
           | 'redactHeaders'
+          | 'invariantsModule'
         >
       >
     | undefined;
@@ -278,6 +279,16 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
     sharedReplay.headers ?? null,
     sharedReplay.queryOverrides ?? null,
     sharedReplay.barrierTags ?? null,
+    // A verdict about one module's rule says nothing about another's, so the module is part of the key.
+    ...(sharedReplay.invariantsModule === undefined
+      ? []
+      : [
+          [
+            sharedReplay.invariantsModule.name,
+            sharedReplay.invariantsModule.version,
+            sharedReplay.invariantsModule.sha256 ?? null,
+          ],
+        ]),
   ]);
   // The subsets whose replay counted as an attempt, so a discarded one can be taken back.
   const replayed = new WeakSet<readonly number[]>();
