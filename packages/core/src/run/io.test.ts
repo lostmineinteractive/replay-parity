@@ -225,6 +225,19 @@ describe('run model', () => {
     (badChange.reproduction?.steps[0]?.changed as unknown[]).push({ path: '$.x', from: 1 });
     expect(RunSchema.safeParse(badChange).success).toBe(false);
     expect(validate(badChange)).toBe(false);
+    const statistical = {
+      ...run,
+      reproduction: {
+        ...run.reproduction,
+        label: 'reduced reproduction (statistical)',
+        repeat: 20,
+      },
+    };
+    expect(RunSchema.safeParse(statistical).success).toBe(true);
+    expect(validate(statistical), validate.errors ?? '').toBe(true);
+    const badRepeat = { ...statistical, reproduction: { ...statistical.reproduction, repeat: 0 } };
+    expect(RunSchema.safeParse(badRepeat).success).toBe(false);
+    expect(validate(badRepeat)).toBe(false);
     const badLabel = { ...run, reproduction: { ...run.reproduction, label: 'minimal' } };
     expect(RunSchema.safeParse(badLabel).success).toBe(false);
     expect(validate(badLabel)).toBe(false);

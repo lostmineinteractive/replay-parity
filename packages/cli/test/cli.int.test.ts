@@ -114,6 +114,7 @@ const FLAGS: Record<string, string[]> = {
     '--reset-timeout-ms',
     '--targets',
     '--cache',
+    '--latency-repeat',
     '--rule',
     '--rules',
     '--max-attempts',

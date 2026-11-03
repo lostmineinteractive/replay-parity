@@ -287,10 +287,19 @@ export const ReproductionSchema = z
     attempts: count,
     /** True when the steps are fewer than the original and still reproduce. */
     successful: z.boolean(),
-    label: z.enum(['reduced reproduction', 'reduction unsuccessful']),
+    label: z.enum([
+      'reduced reproduction',
+      'reduced reproduction (statistical)',
+      'reduction unsuccessful',
+    ]),
     duration_ms: nonneg,
     /** Path of the reduced recording, when one was written. */
     recording: z.string().nullable(),
+    /**
+     * For a latency rule, how many times each attempt replayed its subset. The
+     * judgement is over the pooled sample, so the reproduction is statistical.
+     */
+    repeat: z.number().int().positive().optional(),
     /** Attempts answered from the cache without a replay. Present only when there were any. */
     cache_hits: count.optional(),
     steps: z.array(ReproductionStepSchema),

@@ -16,6 +16,7 @@ import {
   defaultRule,
   buildReset,
   openAttemptCache,
+  DEFAULT_LATENCY_REPEAT,
   DEFAULT_RESET_TIMEOUT_MS,
   parseRule,
   shrink,
@@ -62,6 +63,8 @@ export interface ShrinkCommandOptions extends UpstreamFlags, AdapterModuleFlags 
   resetTimeoutMs?: number;
   /** A file of attempt verdicts, as JSON lines, read first and appended to. */
   cache?: string;
+  /** For a latency rule, how many times each attempt replays its subset. */
+  latencyRepeat?: number;
   rule?: string;
   rules?: string;
   maxAttempts: number;
@@ -277,6 +280,8 @@ export async function runShrink(
       })),
       rule,
       cache,
+      thresholds: run.thresholds,
+      repeat: options.latencyRepeat ?? DEFAULT_LATENCY_REPEAT,
       lower: rules.shrink?.lower,
       simplify: rules.shrink?.simplify,
       replay: {
@@ -385,7 +390,15 @@ export function shrinkCommand(
     )
     .option(
       '--rule <rule>',
-      'rule to reproduce: invariant:<system>:<name> or mismatch:<exchange id>[:<path>]; default: the first violated invariant, else the first mismatch',
+      'rule to reproduce: invariant:<system>:<name>, mismatch:<exchange id>[:<path>], or latency:<tag>:<p50|p90|p99|max>; default: the first violated invariant, else the first mismatch',
+    )
+    .addOption(
+      new Option(
+        '--latency-repeat <n>',
+        'for a latency rule, how many times each attempt replays its subset; the judgement is over the pooled sample',
+      )
+        .default(DEFAULT_LATENCY_REPEAT)
+        .argParser(positiveInt),
     )
     .option('--rules <path>', 'diff rules file; default: the rules embedded in the run')
     .addOption(

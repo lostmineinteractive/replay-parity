@@ -14,6 +14,7 @@ import {
   type ValueChange,
   type ReproductionStep,
   type Run,
+  type Thresholds,
 } from '@replay-parity/core';
 import {
   replayExchanges,
@@ -26,7 +27,14 @@ import { AttemptBudgetExceeded, ddmin } from './ddmin.js';
 import { minimalValue, setAt, valueAt } from './lowering.js';
 import { Pool } from './pool.js';
 import { Prerequisites } from './prerequisites.js';
-import { formatRule, reproduces, witnessOf, type ShrinkRule } from './rule.js';
+import {
+  formatRule,
+  latencyBreached,
+  latencySamples,
+  reproduces,
+  witnessOf,
+  type ShrinkRule,
+} from './rule.js';
 
 /**
  * Shrinking. Given a failing rule, find a shorter subsequence of the
@@ -86,6 +94,10 @@ export interface ShrinkOptions {
    * this call. `openAttemptCache` gives one that persists in a file.
    */
   cache?: AttemptCache | undefined;
+  /** The run's thresholds, which give a latency rule its limit. Required for a latency rule. */
+  thresholds?: Thresholds | undefined;
+  /** For a latency rule, how many times each attempt replays its subset. Default 20. */
+  repeat?: number | undefined;
   /** Default 64. */
   maxAttempts?: number | undefined;
   /** Default 120000. */
@@ -127,6 +139,7 @@ export interface ShrinkResult {
 }
 
 export const DEFAULT_MAX_ATTEMPTS = 64;
+export const DEFAULT_LATENCY_REPEAT = 20;
 export const DEFAULT_TIME_BUDGET_MS = 120_000;
 
 export interface RecordingHashCheck {
@@ -192,6 +205,24 @@ function toStep(step: Step): ReproductionStep {
   return out;
 }
 
+/** Fills a latency rule's limit and minimum sample count from the run's thresholds. */
+function resolveLatencyRule(options: ShrinkOptions): ShrinkRule {
+  const rule = options.rule;
+  if (rule.kind !== 'latency') return rule;
+  const latency = options.thresholds?.latency;
+  if (latency === undefined) {
+    throw new ConfigError(`rule ${formatRule(rule)} needs the thresholds of the run for its limit`);
+  }
+  const block = latency.by_tag[rule.tag];
+  const limitMs = block?.[`${rule.metric}_ms`];
+  if (limitMs === undefined) {
+    throw new ConfigError(
+      `rule ${formatRule(rule)}: the run's thresholds set no ${rule.metric}_ms limit under latency.by_tag.${rule.tag}`,
+    );
+  }
+  return { ...rule, limitMs, minSamples: block?.min_samples ?? latency.min_samples };
+}
+
 export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
   const now = options.now ?? (() => performance.now());
   const started = now();
@@ -202,10 +233,14 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
   if (!(timeBudgetMs > 0))
     throw new ConfigError(`time budget must be positive, got ${timeBudgetMs}`);
   const rules = options.replay?.rules ?? emptyRules();
+  const rule = resolveLatencyRule(options);
+  const repeat = rule.kind === 'latency' ? (options.repeat ?? DEFAULT_LATENCY_REPEAT) : 1;
+  if (!(Number.isInteger(repeat) && repeat >= 1))
+    throw new ConfigError(`repeat must be a positive integer, got ${repeat}`);
   const original = options.exchanges;
   if (original.length === 0) throw new ConfigError('nothing to shrink: the recording is empty');
 
-  const witnessId = witnessOf(options.rule);
+  const witnessId = witnessOf(rule);
   let witnessIndex = witnessId === undefined ? -1 : original.findIndex((e) => e.id === witnessId);
   if (witnessId !== undefined && witnessIndex < 0) {
     throw new ConfigError(`exchange ${witnessId} named by the rule is not in the recording`);
@@ -237,7 +272,8 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
   let cacheHits = 0;
   const cache = options.cache ?? new MemoryAttemptCache();
   const salt = cacheSalt([
-    formatRule(options.rule),
+    formatRule(rule),
+    rule.kind === 'latency' ? [rule.limitMs, rule.minSamples, repeat] : null,
     rules,
     sharedReplay.headers ?? null,
     sharedReplay.queryOverrides ?? null,
@@ -278,27 +314,35 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
     phase: AttemptPhase,
     attempt: number,
   ): Promise<{ reproduced: boolean; conclusive: boolean }> => {
-    await slot.reset();
-    const run = await replayExchanges(listOf(indices), {
-      ...sharedReplay,
-      ...(slot.adapter === undefined ? {} : { adapter: slot.adapter }),
-      recording: 'shrink attempt',
-      target: slot.target,
-      pace: 'max',
-      concurrency: 1,
-      rules,
-      thresholds: emptyThresholds(),
-      invariants: options.rule.kind === 'invariant',
-      signal,
-    });
-    // An attempt cut short by the signal is spent but not judged.
-    if (stopped()) throw new AttemptBudgetExceeded('stopped by signal');
-    const reproduced = reproduces(run, options.rule);
+    // A latency rule is judged over the samples of `repeat` replays pooled, every other rule over one.
+    const samples: number[] = [];
+    let reproduced = false;
+    for (let round = 0; round < repeat; round += 1) {
+      await slot.reset();
+      const run = await replayExchanges(listOf(indices), {
+        ...sharedReplay,
+        ...(slot.adapter === undefined ? {} : { adapter: slot.adapter }),
+        recording: 'shrink attempt',
+        target: slot.target,
+        pace: 'max',
+        concurrency: 1,
+        rules,
+        thresholds: emptyThresholds(),
+        invariants: rule.kind === 'invariant',
+        signal,
+      });
+      // An attempt cut short by the signal is spent but not judged.
+      if (stopped()) throw new AttemptBudgetExceeded('stopped by signal');
+      if (run.inconclusive.some((c) => RUN_LEVEL_INCONCLUSIVE_KINDS.has(c.kind))) {
+        options.onAttempt?.({ attempt, phase, steps: indices.length, reproduced: false });
+        return { reproduced: false, conclusive: false };
+      }
+      if (rule.kind === 'latency') samples.push(...latencySamples(run, rule.tag));
+      else reproduced = reproduces(run, rule);
+    }
+    if (rule.kind === 'latency') reproduced = latencyBreached(samples, rule);
     options.onAttempt?.({ attempt, phase, steps: indices.length, reproduced });
-    return {
-      reproduced,
-      conclusive: !run.inconclusive.some((c) => RUN_LEVEL_INCONCLUSIVE_KINDS.has(c.kind)),
-    };
+    return { reproduced, conclusive: true };
   };
 
   const all = scope.map((_, i) => i);
@@ -322,9 +366,7 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
       });
       const lowerPaths =
         options.lower ??
-        (options.rule.kind === 'invariant' && options.rule.system === 'candidate'
-          ? DEFAULT_LOWER_PATHS
-          : []);
+        (rule.kind === 'invariant' && rule.system === 'candidate' ? DEFAULT_LOWER_PATHS : []);
       await lowerValues(current, steps, judge, lowerPaths, options.simplify ?? []);
     }
   } catch (err) {
@@ -342,12 +384,17 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
     recordingPath = options.out;
   }
   const reproduction: Reproduction = {
-    rule: formatRule(options.rule),
+    rule: formatRule(rule),
     original_steps: original.length,
     reduced_steps: reducedSteps,
     attempts,
     successful,
-    label: successful ? 'reduced reproduction' : 'reduction unsuccessful',
+    label: !successful
+      ? 'reduction unsuccessful'
+      : rule.kind === 'latency'
+        ? 'reduced reproduction (statistical)'
+        : 'reduced reproduction',
+    ...(rule.kind === 'latency' ? { repeat } : {}),
     duration_ms: Math.round((now() - started) * 1000) / 1000,
     recording: recordingPath,
     ...(cacheHits > 0 ? { cache_hits: cacheHits } : {}),

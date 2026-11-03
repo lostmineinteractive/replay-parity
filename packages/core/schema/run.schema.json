@@ -2339,7 +2339,11 @@
             },
             "label": {
               "type": "string",
-              "enum": ["reduced reproduction", "reduction unsuccessful"]
+              "enum": [
+                "reduced reproduction",
+                "reduced reproduction (statistical)",
+                "reduction unsuccessful"
+              ]
             },
             "duration_ms": {
               "type": "number",
@@ -2347,6 +2351,11 @@
             },
             "recording": {
               "type": ["string", "null"]
+            },
+            "repeat": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
             },
             "cache_hits": {
               "type": "integer",

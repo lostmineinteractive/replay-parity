@@ -2,13 +2,18 @@ export { AttemptBudgetExceeded, chunk, ddmin, type DdminOptions } from './ddmin.
 export { Prerequisites } from './prerequisites.js';
 export {
   defaultRule,
+  SHRINK_LATENCY_METRICS,
   formatRule,
+  latencyBreached,
+  latencySamples,
   parseRule,
   reproduces,
   witnessOf,
+  type ShrinkLatencyMetric,
   type ShrinkRule,
 } from './rule.js';
 export {
+  DEFAULT_LATENCY_REPEAT,
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_TIME_BUDGET_MS,
   shrink,
