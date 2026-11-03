@@ -1,6 +1,9 @@
 import {
   ConfigError,
+  DEFAULT_HEARTBEAT_MS,
+  DEFAULT_PROGRESS_EVERY,
   EXIT_CODES,
+  formatDuration,
   loadDiffRules,
   readRecording,
   readRun,
@@ -16,8 +19,15 @@ import {
 } from '@replay-parity/shrink';
 import { Command, Option } from 'commander';
 import { displayText, type CliContext } from '../config/index.js';
-import { err, out, type CliStreams } from '../io.js';
-import { collect, collectQuery, positiveInt, resolveHeaders, resolveQuery } from '../options.js';
+import { endProgress, logger, out, startProgress, type CliStreams } from '../io.js';
+import {
+  collect,
+  collectQuery,
+  nonNegativeInt,
+  positiveInt,
+  resolveHeaders,
+  resolveQuery,
+} from '../options.js';
 import { formatCheck, hasError, preflight } from '../preflight.js';
 
 export interface ShrinkCommandOptions {
@@ -45,6 +55,23 @@ export interface ShrinkCommandOptions {
   /** The URLs as they should be printed, which is the unresolved text when one held a secret. */
   targetLabel?: string;
   resetLabel?: string;
+  /** Print a progress line to stderr. Default false. */
+  progress?: boolean;
+  /** Attempts between progress lines, besides one every second. Default 100. */
+  progressEvery?: number;
+  /** With `--progress`, print the line again after this long without one. 0 disables. Default 60000. */
+  heartbeatMs?: number;
+}
+
+/** What the progress line of a shrink reports. */
+export interface ShrinkProgressState {
+  attempts: number;
+  /** The fewest steps that reproduced so far, null before the first reproduction. */
+  bestSteps: number | null;
+}
+
+export function formatShrinkProgress(state: ShrinkProgressState, elapsedMs: number): string {
+  return `shrink ${state.attempts} attempt${state.attempts === 1 ? '' : 's'}, best ${state.bestSteps ?? '?'} steps, elapsed ${formatDuration(elapsedMs)}`;
 }
 
 export async function runShrink(
@@ -53,6 +80,7 @@ export async function runShrink(
   signal?: AbortSignal,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
+  const log = logger(streams);
   const run = await readRun(options.run);
   // The run names the file it replayed by hash. A different file is refused unless asked.
   const check = await verifyRecordingHash({
@@ -61,9 +89,9 @@ export async function runShrink(
     allowMismatch: options.allowRecordingMismatch,
   });
   if (check.mismatch) {
-    err(
-      streams,
+    log.warn(
       `warning: ${options.recording} has sha256 ${check.actual}, the run recorded ${check.expected}; shrinking it anyway`,
+      { actual: check.actual, expected: check.expected },
     );
   }
   const exchanges = await readRecording(options.recording);
@@ -87,11 +115,11 @@ export async function runShrink(
       reset: probe ? { url: options.reset, label: options.resetLabel ?? options.reset } : undefined,
     });
     for (const check of checks) {
-      if (check.level !== 'ok') err(streams, `preflight: ${formatCheck(check)}`);
+      if (check.level === 'warn') log.warn(`preflight: ${formatCheck(check)}`);
+      else if (check.level === 'error') log.error(`preflight: ${formatCheck(check)}`);
     }
     if (hasError(checks)) {
-      err(
-        streams,
+      log.error(
         'preflight failed, nothing was sent. rp validate prints every check, --no-preflight skips them.',
       );
       return EXIT_CODES.error;
@@ -106,33 +134,60 @@ export async function runShrink(
       throw new ConfigError(`reset ${options.resetLabel ?? resetUrl} answered ${res.status}`);
     }
   };
-  const { reproduction, aborted } = await shrink({
-    exchanges,
-    target: options.target,
-    reset,
-    rule,
-    replay: {
-      rules,
-      headers,
-      queryOverrides,
-      barrierTags: options.barrierTag,
-      timeoutMs: options.timeoutMs,
-    },
-    maxAttempts: options.maxAttempts,
-    timeBudgetMs: options.timeBudgetMs,
-    out: options.out,
-    onAttempt: (e) =>
-      err(
-        streams,
-        `attempt ${e.attempt} (${e.phase}, ${e.steps} steps): ${e.reproduced ? 'reproduced' : 'did not reproduce'}`,
-      ),
-    signal,
-  });
+  const startedAt = Date.now();
+  const state: ShrinkProgressState = { attempts: 0, bestSteps: null };
+  const progress =
+    options.progress === true
+      ? startProgress(streams, {
+          every: options.progressEvery ?? DEFAULT_PROGRESS_EVERY,
+          heartbeatMs: options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS,
+          render: () => formatShrinkProgress(state, Date.now() - startedAt),
+          fields: () => ({
+            attempts: state.attempts,
+            best_steps: state.bestSteps,
+            elapsed_ms: Date.now() - startedAt,
+          }),
+        })
+      : undefined;
+  let result;
+  try {
+    result = await shrink({
+      exchanges,
+      target: options.target,
+      reset,
+      rule,
+      replay: {
+        rules,
+        headers,
+        queryOverrides,
+        barrierTags: options.barrierTag,
+        timeoutMs: options.timeoutMs,
+      },
+      maxAttempts: options.maxAttempts,
+      timeBudgetMs: options.timeBudgetMs,
+      out: options.out,
+      onAttempt: (e) => {
+        state.attempts = e.attempt;
+        if (e.reproduced && (state.bestSteps === null || e.steps < state.bestSteps)) {
+          state.bestSteps = e.steps;
+        }
+        log.info(
+          `attempt ${e.attempt} (${e.phase}, ${e.steps} steps): ${e.reproduced ? 'reproduced' : 'did not reproduce'}`,
+          { attempt: e.attempt, phase: e.phase, steps: e.steps, reproduced: e.reproduced },
+        );
+        progress?.update();
+      },
+      signal,
+    });
+  } finally {
+    if (progress !== undefined) endProgress(streams, progress);
+  }
+  const { reproduction, aborted } = result;
   await writeRun(options.run, { ...run, reproduction });
   if (aborted) {
-    err(
-      streams,
+    log.warn(
       `shrink stopped by signal after ${reproduction.attempts} attempt${reproduction.attempts === 1 ? '' : 's'}, keeping the best reduction so far`,
+      { attempts: reproduction.attempts },
     );
   }
   out(
@@ -145,7 +200,12 @@ export async function runShrink(
       `  ${s.method} ${s.path}${s.body === undefined ? '' : ` ${JSON.stringify(s.body)}`}${s.quantity_reduced ? ' (quantity reduced)' : ''}`,
     );
   }
-  err(streams, `wrote ${options.out} and updated ${options.run}`);
+  log.info(`wrote ${options.out} and updated ${options.run}`, {
+    out: options.out,
+    run: options.run,
+    reduced_steps: reproduction.reduced_steps,
+    attempts: reproduction.attempts,
+  });
   return aborted ? EXIT_CODES.inconclusive : 0;
 }
 
@@ -204,6 +264,24 @@ export function shrinkCommand(
       'skip the checks of the rules and barrier tags against the recording before the first attempt',
     )
     .option('--preflight-probe', 'also probe the target and the reset URL first', false)
+    .option(
+      '--progress',
+      'print a progress line to stderr every second or every --progress-every attempts',
+      false,
+    )
+    .addOption(
+      new Option('--progress-every <n>', 'attempts between progress lines')
+        .default(DEFAULT_PROGRESS_EVERY)
+        .argParser(positiveInt),
+    )
+    .addOption(
+      new Option(
+        '--heartbeat-ms <n>',
+        'with --progress, print the line again after this long without one; 0 disables',
+      )
+        .default(DEFAULT_HEARTBEAT_MS)
+        .argParser(nonNegativeInt),
+    )
     .action(async (opts: ShrinkCommandOptions, command: Command) => {
       exit(
         await runShrink(

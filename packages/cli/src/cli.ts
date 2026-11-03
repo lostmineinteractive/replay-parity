@@ -1,9 +1,15 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ConfigError, EXIT_CODES, RecordingParseError } from '@replay-parity/core';
+import {
+  ConfigError,
+  EXIT_CODES,
+  LOG_FORMATS,
+  LOG_LEVELS,
+  RecordingParseError,
+} from '@replay-parity/core';
 import { TagRuleError } from '@replay-parity/capture';
-import { CommanderError, Command, InvalidArgumentError } from 'commander';
+import { CommanderError, Command, InvalidArgumentError, Option } from 'commander';
 import { agentCommand } from './commands/agent.js';
 import { captureCommand } from './commands/capture.js';
 import { doctorCommand } from './commands/doctor.js';
@@ -14,7 +20,14 @@ import { reportCommand } from './commands/report.js';
 import { shrinkCommand } from './commands/shrink.js';
 import { validateCommand } from './commands/validate.js';
 import { installConfig, type CliContext } from './config/index.js';
-import { err, type CliStreams } from './io.js';
+import {
+  LOG_FORMAT_ENV,
+  LOG_LEVEL_ENV,
+  cliLogger,
+  logger,
+  scanLogFlags,
+  type CliStreams,
+} from './io.js';
 
 /** The version in this package's package.json. From src/ the file is one directory up, from dist/src/ two up. */
 export function readPackageVersion(): string {
@@ -53,12 +66,24 @@ export function buildProgram(
     )
     .version(CLI_VERSION, '--version', 'print the version')
     .helpOption('-h, --help', 'print help')
+    .addOption(
+      new Option(
+        '--log-level <level>',
+        `least level written to stderr; default ${LOG_LEVEL_ENV}, then info`,
+      ).choices([...LOG_LEVELS]),
+    )
+    .addOption(
+      new Option(
+        '--log-format <format>',
+        `text, or json with one object per line; default ${LOG_FORMAT_ENV}, then text`,
+      ).choices([...LOG_FORMATS]),
+    )
     .configureOutput({
       writeOut: (text) => {
         streams.stdout.write(text);
       },
       writeErr: (text) => {
-        streams.stderr.write(text);
+        logger(streams).error(text);
       },
     })
     .exitOverride();
@@ -71,6 +96,10 @@ export function buildProgram(
   program.addCommand(recordingCommand(streams, exit));
   program.addCommand(validateCommand(streams, exit, context));
   program.addCommand(doctorCommand(streams, exit, { ...context, version: CLI_VERSION }));
+  // Registered before the configuration hook, so a configuration error carries the command too.
+  program.hook('preSubcommand', (_program, sub) => {
+    streams.log = logger(streams).child({ command: sub.name() });
+  });
   installConfig(program, context);
   for (const sub of program.commands) {
     sub.configureOutput({
@@ -78,7 +107,7 @@ export function buildProgram(
         streams.stdout.write(text);
       },
       writeErr: (text) => {
-        streams.stderr.write(text);
+        logger(streams).error(text);
       },
     });
     sub.exitOverride();
@@ -115,6 +144,12 @@ export async function runCli(
     env: options.env ?? process.env,
     cwd: options.cwd ?? process.cwd(),
   };
+  try {
+    streams.log = cliLogger(streams, scanLogFlags(argv, context.env));
+  } catch (e) {
+    logger(streams).error(`rp: ${(e as Error).message}`);
+    return EXIT_CODES.error;
+  }
   let code: number | null = null;
   const program = buildProgram(
     streams,
@@ -133,11 +168,11 @@ export async function runCli(
       return EXIT_CODES.error;
     }
     if (isToolError(e)) {
-      err(streams, `rp: ${e.message}`);
+      logger(streams).error(`rp: ${e.message}`);
       return EXIT_CODES.error;
     }
     const message = e instanceof Error ? (e.stack ?? e.message) : String(e);
-    err(streams, `rp: unexpected error: ${message}`);
+    logger(streams).error(`rp: unexpected error: ${message}`);
     return EXIT_CODES.error;
   }
   return code ?? 0;

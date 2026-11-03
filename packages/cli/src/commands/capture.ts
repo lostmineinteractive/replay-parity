@@ -1,12 +1,15 @@
 import { once } from 'node:events';
-import { CaptureServer, parseTagRule } from '@replay-parity/capture';
+import { CaptureServer, parseTagRule, type CaptureStats } from '@replay-parity/capture';
 import {
+  DEFAULT_HEARTBEAT_MS,
   DEFAULT_MAX_BODY_BYTES,
+  DEFAULT_PROGRESS_EVERY,
   DEFAULT_REDACTED_HEADERS,
   DEFAULT_REDACTED_QUERY,
+  formatDuration,
 } from '@replay-parity/core';
 import { Command, Option } from 'commander';
-import { err, type CliStreams } from '../io.js';
+import { endProgress, logger, startProgress, type CliStreams } from '../io.js';
 import {
   collect,
   fraction,
@@ -27,6 +30,19 @@ export interface CaptureCommandOptions {
   maxBodyBytes: number;
   append: boolean;
   upstreamTimeoutMs: number;
+  /** Print a progress line to stderr. Default false. */
+  progress?: boolean;
+  /** Requests between progress lines, besides one every second. Default 100. */
+  progressEvery?: number;
+  /** With `--progress`, print the line again after this long without one. 0 disables. Default 60000. */
+  heartbeatMs?: number;
+}
+
+/** How often the progress reads the server's counters. */
+export const CAPTURE_POLL_MS = 250;
+
+export function formatCaptureProgress(stats: CaptureStats, elapsedMs: number): string {
+  return `capture seen ${stats.seen} recorded ${stats.recorded} failed ${stats.failed} elapsed ${formatDuration(elapsedMs)}`;
 }
 
 /** Runs the capture proxy until `signal` aborts, then flushes and returns 0. */
@@ -35,6 +51,7 @@ export async function runCapture(
   streams: CliStreams,
   signal: AbortSignal,
 ): Promise<number> {
+  const log = logger(streams);
   const capture = await CaptureServer.create({
     target: options.target,
     out: options.out,
@@ -46,19 +63,46 @@ export async function runCapture(
     redactQuery: options.redactQuery.length === 0 ? DEFAULT_REDACTED_QUERY : options.redactQuery,
     maxBodyBytes: options.maxBodyBytes,
     upstreamTimeoutMs: options.upstreamTimeoutMs,
-    onError: (error, context) => err(streams, `capture: ${context}: ${String(error)}`),
+    onError: (error, context) =>
+      log.error(`capture: ${context}: ${String(error)}`, { context, error: String(error) }),
   });
   const address = await capture.listen({ port: options.listen.port, host: options.listen.host });
-  err(
-    streams,
+  log.info(
     `capturing on ${address.address}:${address.port} -> ${options.target}, writing ${options.out}`,
+    { address: address.address, port: address.port, out: options.out },
   );
+  const startedAt = Date.now();
+  const progress =
+    options.progress === true
+      ? startProgress(streams, {
+          every: options.progressEvery ?? DEFAULT_PROGRESS_EVERY,
+          heartbeatMs: options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS,
+          render: () => formatCaptureProgress(capture.stats, Date.now() - startedAt),
+          fields: () => ({ ...capture.stats, elapsed_ms: Date.now() - startedAt }),
+        })
+      : undefined;
+  // The server has no per request hook, so the progress reads its counters on a timer.
+  let polled = 0;
+  const sync = (): void => {
+    const { seen } = capture.stats;
+    if (seen > polled) {
+      progress?.advance(seen - polled);
+      polled = seen;
+    }
+  };
+  const poll = progress === undefined ? undefined : setInterval(sync, CAPTURE_POLL_MS);
+  poll?.unref();
   if (!signal.aborted) await once(signal, 'abort');
+  if (poll !== undefined) clearInterval(poll);
   await capture.close();
+  if (progress !== undefined) {
+    sync();
+    endProgress(streams, progress);
+  }
   const { seen, recorded, failed } = capture.stats;
-  err(
-    streams,
+  log.info(
     `capture closed: ${seen} requests seen, ${recorded} recorded, ${failed} failed upstream`,
+    { seen, recorded, failed },
   );
   return 0;
 }
@@ -112,6 +156,24 @@ export function captureCommand(
       new Option('--upstream-timeout-ms <n>', 'upstream headers and body timeout')
         .default(30_000)
         .argParser(positiveInt),
+    )
+    .option(
+      '--progress',
+      'print a progress line to stderr every second or every --progress-every requests',
+      false,
+    )
+    .addOption(
+      new Option('--progress-every <n>', 'requests between progress lines')
+        .default(DEFAULT_PROGRESS_EVERY)
+        .argParser(positiveInt),
+    )
+    .addOption(
+      new Option(
+        '--heartbeat-ms <n>',
+        'with --progress, print the line again after this long without one; 0 disables',
+      )
+        .default(DEFAULT_HEARTBEAT_MS)
+        .argParser(nonNegativeInt),
     )
     .action(async (opts: CaptureCommandOptions) => {
       exit(await runCapture(opts, streams, signal));
