@@ -1,0 +1,15 @@
+# A rule pack for identifiers that each system generates on its own. A masked value
+# is tolerated only when both sides have the expected shape, so a malformed id on
+# either side is still reported.
+mask:
+  # Request ids at any depth: 32 lower case hex digits.
+  - path: '$..request_id'
+    pattern: '[0-9a-f]{32}'
+  # Trace ids at any depth: a UUID.
+  - path: '$..trace_id'
+    pattern: '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+headers:
+  compare: [x-request-id]
+  masks:
+    - name: x-request-id
+      pattern: '[0-9a-f]{32}'

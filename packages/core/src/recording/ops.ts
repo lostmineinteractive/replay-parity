@@ -5,7 +5,8 @@ import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { matchGlob } from '../glob.js';
 import { canonicalJson, isJsonObject, type JsonValue } from '../json.js';
-import { get, parsePath, renderPath, type Segment } from '../jsonpath/index.js';
+import { get, isPlainPath, parsePath, renderPath, type Segment } from '../jsonpath/index.js';
+import { captureSource, captureValue } from '../rules/capture.js';
 import type { SubstitutionRule } from '../rules/schema.js';
 import { ConfigError } from '../yaml.js';
 import { bodyKind, type BodyFields } from './body.js';
@@ -212,7 +213,6 @@ function bump(table: Record<string, number>, key: string): void {
 
 interface ProducerCounter {
   rule: SubstitutionRule;
-  segments: Segment[];
   producers: number;
   values: Set<string>;
 }
@@ -242,7 +242,6 @@ export class RecordingStatsCollector {
   constructor(rules: readonly SubstitutionRule[] = []) {
     this.counters = rules.map((rule) => ({
       rule,
-      segments: parsePath(rule.capture.path),
       producers: 0,
       values: new Set<string>(),
     }));
@@ -277,7 +276,7 @@ export class RecordingStatsCollector {
     if (responseBytes !== null) this.responseSizes.push(responseBytes);
     for (const counter of this.counters) {
       if (!e.tags.includes(counter.rule.capture.tag)) continue;
-      const value = get(e.response.body, counter.segments);
+      const value = captureValue(counter.rule.capture, e.response, e.request);
       if (typeof value !== 'string' && typeof value !== 'number') continue;
       counter.producers += 1;
       counter.values.add(canonicalJson(value));
@@ -297,7 +296,7 @@ export class RecordingStatsCollector {
     s.producers = this.counters.map((c) => ({
       name: c.rule.name,
       tag: c.rule.capture.tag,
-      path: c.rule.capture.path,
+      path: captureSource(c.rule.capture),
       producers: c.producers,
       distinct_values: c.values.size,
     }));
@@ -552,10 +551,16 @@ export async function sampleRecording(
     throw new ConfigError(`fraction must be above 0 and at most 1, got ${options.fraction}`);
   }
   if (options.bySession?.startsWith('$')) {
+    let plain: boolean;
     try {
-      parsePath(options.bySession);
+      plain = isPlainPath(parsePath(options.bySession));
     } catch (err) {
       throw new ConfigError(`session selector: ${(err as Error).message}`);
+    }
+    if (!plain) {
+      throw new ConfigError(
+        'session selector: filters and recursive descent apply to diff rules only',
+      );
     }
   }
   const random = createRandom(options.seed);

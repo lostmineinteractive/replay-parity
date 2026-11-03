@@ -1,10 +1,12 @@
 # The demo rules with inventory rows compared as a set keyed by SKU, so the
-# insertion order divergence of the candidate is accepted.
+# insertion order divergence of the candidate is accepted. The unordered rule
+# is scoped to the list-inventory exchanges, the only ones that return rows.
 ignore:
   - '$.created_at'
 unordered:
   - path: '$.items'
     key: '$.sku'
+    when: { tags: [list-inventory] }
 substitutions:
   - name: order_id
     capture: { tag: create-order, path: '$.order_id' }

@@ -4,8 +4,10 @@ import {
   JsonPathError,
   get,
   isValidPath,
+  isValidRulePath,
   keyValueText,
   matches,
+  matchesIn,
   parsePath,
   renderPath,
   rowKeyText,
@@ -93,9 +95,11 @@ describe('parsePath', () => {
   it('rejects unsupported syntax with a clear message', () => {
     const bad: [string, RegExp][] = [
       ['items', /must start with \$/],
-      ['$..a', /recursive descent/],
+      ['$..', /recursive descent needs a name/],
       ['$[1:2]', /slices/],
-      ['$[?(@.x)]', /filters/],
+      ['$[?(@.x)]', /bad filter/],
+      ['$[?(@.x > 1)]', /bad filter/],
+      ['$[?(@.x == true)]', /bad filter/],
       ['$.a.', /bad key ""/],
       ['$[unclosed', /missing "\]"/],
       ['$x', /unexpected character/],
@@ -107,6 +111,12 @@ describe('parsePath', () => {
       expect(isValidPath(path)).toBe(false);
     }
     expect(isValidPath('$.ok[0]')).toBe(true);
+    // Filters and descent parse, but only rule paths accept them.
+    expect(isValidPath('$..a')).toBe(false);
+    expect(isValidPath("$.a[?(@.t=='x')]")).toBe(false);
+    expect(isValidRulePath('$..a')).toBe(true);
+    expect(isValidRulePath("$.a[?(@.t=='x')]")).toBe(true);
+    expect(isValidRulePath('$[1:2]')).toBe(false);
     expect(parsePath('$[""]')).toEqual([{ type: 'key', name: '' }]);
     expect(parsePath("$['']")).toEqual([{ type: 'key', name: '' }]);
   });
@@ -265,5 +275,78 @@ describe('keyValueText', () => {
         { type: 'keyed', name: 'k', value: rowKeyText(value), dup: 1 },
       ]);
     }
+  });
+});
+
+describe('filters and recursive descent', () => {
+  const doc: JsonValue = {
+    items: [
+      { type: 'fee', amount: 1 },
+      { type: 'item', amount: 10 },
+      { type: 'fee', amount: 2, meta: { request_id: 'r2' } },
+      { n: 3 },
+    ],
+    request_id: 'r0',
+  };
+
+  it('parses filters in their spellings and renders them back', () => {
+    expect(parsePath("$.items[?(@.type=='fee')].amount")).toEqual([
+      { type: 'key', name: 'items' },
+      { type: 'filter', key: 'type', op: '==', literal: 'fee' },
+      { type: 'key', name: 'amount' },
+    ]);
+    expect(parsePath('$.items[?( @["type"] != "fee" )]')).toEqual(
+      parsePath("$.items[?(@.type!='fee')]"),
+    );
+    expect(parsePath('$.items[?(@.n==3)]')[1]).toEqual({
+      type: 'filter',
+      key: 'n',
+      op: '==',
+      literal: 3,
+    });
+    expect(renderPath(parsePath('$.items[?(@["a b"]=="it\'s")]'))).toBe(
+      "$.items[?(@['a b']=='it\\'s')]",
+    );
+    expect(renderPath(parsePath('$..request_id'))).toBe('$..request_id');
+    expect(renderPath(parsePath('$.a..[0]'))).toBe('$.a..[0]');
+  });
+
+  it('selects the elements a filter admits, in order', () => {
+    expect(select(doc, "$.items[?(@.type=='fee')].amount").map((m) => [m.path, m.value])).toEqual([
+      ['$.items[0].amount', 1],
+      ['$.items[2].amount', 2],
+    ]);
+    // Under != an element without the child matches.
+    expect(select(doc, "$.items[?(@.type!='fee')]").map((m) => m.path)).toEqual([
+      '$.items[1]',
+      '$.items[3]',
+    ]);
+    // A number literal never equals a string child.
+    expect(select(doc, "$.items[?(@.amount=='1')]")).toEqual([]);
+  });
+
+  it('selects by descent at every depth, the shallowest first', () => {
+    expect(select(doc, '$..request_id').map((m) => m.path)).toEqual([
+      '$.request_id',
+      '$.items[2].meta.request_id',
+    ]);
+  });
+
+  it('matches a filter only against a document, and a descent with or without one', () => {
+    const rule = "$.items[?(@.type=='fee')].amount";
+    expect(matches(rule, '$.items[0].amount')).toBe(false);
+    expect(matchesIn(rule, '$.items[0].amount', doc)).toBe(true);
+    expect(matchesIn(rule, '$.items[1].amount', doc)).toBe(false);
+    expect(matchesIn(rule, '$.items[9].amount', doc)).toBe(false);
+    expect(matches('$..request_id', '$.items[2].meta.request_id')).toBe(true);
+    expect(matches('$..request_id', '$.request_id')).toBe(true);
+    expect(matches('$..request_id', '$.request_id.x')).toBe(false);
+    expect(matchesIn('$..meta.request_id', '$.items[2].meta.request_id', doc)).toBe(true);
+  });
+
+  it('resolves keyed segments for a filter inside an unordered array', () => {
+    expect(matchesIn("$.items[?(@.type=='item')].amount", '$.items[amount=10].amount', doc)).toBe(
+      true,
+    );
   });
 });

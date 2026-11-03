@@ -1,0 +1,18 @@
+# A rule pack for timestamps that the two systems stamp independently. Include it
+# from a rules file with `include: [rule-packs/timestamps.yaml]`; its lists are
+# placed before the including file's own entries.
+time:
+  # Creation and update times written as ISO 8601, at any depth, within five seconds.
+  - path: '$..created_at'
+    abs_ms: 5000
+    format: iso8601
+  - path: '$..updated_at'
+    abs_ms: 5000
+    format: iso8601
+  # Server clocks in epoch milliseconds, within five seconds.
+  - path: '$..server_time_ms'
+    abs_ms: 5000
+    format: epoch_ms
+headers:
+  # The date header is never compared, even when an including file lists it.
+  ignore: [date]

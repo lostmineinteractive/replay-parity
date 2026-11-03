@@ -49,9 +49,23 @@ export function explainFinding(f: Finding): string {
       break;
   }
   if (f.tolerated) {
-    text += ` Tolerated by rule ${f.rule ?? 'unknown'}.`;
+    text += ` Tolerated by rule ${f.rule ?? 'unknown'}${ruleReason(f)}.`;
   }
   return text.replace(/\.\.$/, '.');
+}
+
+/** The rule kinds whose reason follows the rule name, as in `decimal[0]: equal after rounding to 2 places`. */
+const REASONED =
+  /^(decimal|time|mask|headers\.masks|extra_fields|extra_fields_rules|equivalences)(\[|\.|$)/;
+
+/**
+ * The reason a rule tolerated a finding, for the rule kinds that state one in
+ * `detail`. A tolerance, a status class, and a substitution keep the sentence
+ * they always had, and a type finding already states its detail above.
+ */
+function ruleReason(f: Finding): string {
+  if (f.rule === undefined || f.detail === undefined || f.kind === 'type') return '';
+  return REASONED.test(f.rule) ? `: ${f.detail}` : '';
 }
 
 function capitalize(s: string): string {

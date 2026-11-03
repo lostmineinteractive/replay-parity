@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ConfigError } from '../yaml.js';
-import { emptyRules, loadDiffRules, parseDiffRules } from './schema.js';
+import { loadDiffRules } from './load.js';
+import { emptyRules, parseDiffRules } from './schema.js';
 
 const example = `
 ignore:
@@ -57,7 +58,13 @@ describe('parseDiffRules', () => {
       tolerances: [],
       unordered: [],
       status: { equivalent: [] },
-      headers: { compare: [] },
+      headers: { compare: [], ignore: [], masks: [] },
+      extra_fields: 'deny',
+      extra_fields_rules: [],
+      equivalences: { null_absent: false, empty_absent: false, numeric_strings: false },
+      decimal: [],
+      time: [],
+      mask: [],
       substitutions: [],
       controls: { tags: [] },
     });
@@ -85,8 +92,13 @@ describe('parseDiffRules', () => {
   });
 
   it('rejects unsupported JSONPaths at load time', () => {
-    expect(() => parseDiffRules('ignore:\n  - "$..deep"\n')).toThrow(
+    expect(() => parseDiffRules('ignore:\n  - "$.a[1:2]"\n')).toThrow(
       /unsupported JSONPath .* at ignore\[0\]/,
+    );
+    // Rule paths accept filters and descent; keys and captures keep the plain subset.
+    expect(() => parseDiffRules('ignore:\n  - "$..deep"\n')).not.toThrow();
+    expect(() => parseDiffRules('unordered:\n  - path: "$.items"\n    key: "$..sku"\n')).toThrow(
+      /unsupported JSONPath .* at unordered\[0\]\.key/,
     );
   });
 

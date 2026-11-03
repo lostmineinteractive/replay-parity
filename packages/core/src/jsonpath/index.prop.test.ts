@@ -5,6 +5,8 @@ import {
   get,
   keyValueText,
   matches,
+  matchesIn,
+  resolveConcrete,
   parsePath,
   renderPath,
   rowKeyText,
@@ -183,6 +185,94 @@ describe('select and get properties', () => {
     fc.assert(
       fc.property(docAndRule, ({ doc, rule }) => {
         expect(select(doc, renderPath(rule))).toEqual(select(doc, rule));
+      }),
+      params,
+    );
+  });
+});
+
+/**
+ * A document, one of its concrete paths, and that path with every index whose
+ * element is an object holding a string or number child replaced by a filter
+ * the element satisfies, under `==` on the child or `!=` on another literal.
+ */
+const docAndFilterRule = docAndRule.chain(({ doc, concrete }) =>
+  fc
+    .array(fc.tuple(fc.boolean(), fc.boolean(), fc.nat()), {
+      minLength: concrete.length,
+      maxLength: concrete.length,
+    })
+    .map((choices) => {
+      const rule = concrete.map((s, i): Segment => {
+        const [replace, equal, pick] = choices[i] as [boolean, boolean, number];
+        if (!replace || s.type !== 'index') return s;
+        const element = resolveConcrete(doc, concrete.slice(0, i + 1));
+        if (!isJsonObject(element)) return s;
+        const names = Object.keys(element).filter((k) => {
+          const v = element[k];
+          return typeof v === 'string' || typeof v === 'number';
+        });
+        const name = names[pick % Math.max(names.length, 1)];
+        if (name === undefined) return s;
+        const child = element[name] as string | number;
+        return equal
+          ? { type: 'filter', key: name, op: '==', literal: child }
+          : {
+              type: 'filter',
+              key: name,
+              op: '!=',
+              literal: typeof child === 'number' ? child + 1 : `${child}~`,
+            };
+      });
+      return { doc, concrete, rule };
+    }),
+);
+
+describe('filter and descent properties', () => {
+  it('a filter the element satisfies matches its concrete path', () => {
+    fc.assert(
+      fc.property(docAndFilterRule, ({ doc, concrete, rule }) => {
+        expect(matchesIn(rule, concrete, doc)).toBe(true);
+        expect(matchesIn(renderPath(rule), renderPath(concrete), doc)).toBe(true);
+        expect(select(doc, rule).map((m) => m.path)).toContain(renderPath(concrete));
+      }),
+      params,
+    );
+  });
+
+  it('a filter rule round trips through renderPath and parsePath', () => {
+    fc.assert(
+      fc.property(docAndFilterRule, ({ rule }) => {
+        expect(parsePath(renderPath(rule))).toEqual(rule);
+      }),
+      params,
+    );
+  });
+
+  it('a descent to the last segment of a concrete path matches it at any depth', () => {
+    fc.assert(
+      fc.property(docAndRule, ({ doc, concrete }) => {
+        const last = concrete[concrete.length - 1];
+        if (last === undefined) return;
+        const rule: Segment[] = [{ type: 'descent' }, last];
+        expect(matches(rule, concrete)).toBe(true);
+        expect(matchesIn(rule, concrete, doc)).toBe(true);
+        expect(select(doc, rule).map((m) => m.path)).toContain(renderPath(concrete));
+        expect(parsePath(renderPath(rule))).toEqual(rule);
+      }),
+      params,
+    );
+  });
+
+  it('select under a descent finds each concrete path at most once', () => {
+    fc.assert(
+      fc.property(docArb, fc.constantFrom(...KEYS), (doc, name) => {
+        const found = select(doc, [
+          { type: 'descent' },
+          { type: 'descent' },
+          { type: 'key', name },
+        ]);
+        expect(new Set(found.map((m) => m.path)).size).toBe(found.length);
       }),
       params,
     );
