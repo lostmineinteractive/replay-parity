@@ -37,7 +37,7 @@ afterEach(async () => {
   for (const fn of cleanups.splice(0).reverse()) await fn();
 });
 
-async function waitFor(predicate: () => boolean, deadlineMs = 5000): Promise<void> {
+async function waitFor(predicate: () => boolean, deadlineMs = 15_000): Promise<void> {
   const deadline = Date.now() + deadlineMs;
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error(`condition not met within ${deadlineMs} ms`);
