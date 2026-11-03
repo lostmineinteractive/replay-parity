@@ -32,6 +32,11 @@ export function parseTagRule(text: string): TagRule {
   return { method: method ? method.toUpperCase() : null, glob: glob as string, tag: tag as string };
 }
 
+/** The text form of a rule, which `parseTagRule` reads back. */
+export function formatTagRule(rule: TagRule): string {
+  return `${rule.method === null ? '' : `${rule.method} `}${rule.glob}=${rule.tag}`;
+}
+
 export function tagsFor(rules: readonly TagRule[], method: string, path: string): string[] {
   const upper = method.toUpperCase();
   for (const rule of rules) {

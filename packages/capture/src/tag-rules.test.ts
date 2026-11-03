@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TagRuleError, parseTagRule, tagsFor } from './tag-rules.js';
+import { TagRuleError, formatTagRule, parseTagRule, tagsFor } from './tag-rules.js';
 
 describe('parseTagRule', () => {
   it('parses rules with and without a method', () => {
@@ -43,5 +43,14 @@ describe('tagsFor', () => {
     expect(tagsFor(rules, 'GET', '/v1/orders')).toEqual([]);
     expect(tagsFor(rules, 'GET', '/healthz')).toEqual([]);
     expect(tagsFor([], 'GET', '/v1/orders')).toEqual([]);
+  });
+});
+
+describe('formatTagRule', () => {
+  it('writes the text form that parses back to the same rule', () => {
+    for (const text of ['POST /v1/orders=create-order', '/v1/inventory/*=stock']) {
+      expect(formatTagRule(parseTagRule(text))).toBe(text);
+    }
+    expect(formatTagRule(parseTagRule('  get /a=b '))).toBe('GET /a=b');
   });
 });

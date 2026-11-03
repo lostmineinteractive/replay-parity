@@ -40,6 +40,8 @@ export interface CaptureCommandOptions extends UpstreamFlags {
   progressEvery?: number;
   /** With `--progress`, print the line again after this long without one. 0 disables. Default 60000. */
   heartbeatMs?: number;
+  /** The version written in the manifest of a new file. Default 0.0.0. */
+  toolVersion?: string;
 }
 
 /** How often the progress reads the server's counters. */
@@ -80,6 +82,7 @@ export async function runCapture(
     redactQuery: options.redactQuery.length === 0 ? DEFAULT_REDACTED_QUERY : options.redactQuery,
     maxBodyBytes: options.maxBodyBytes,
     upstreamTimeoutMs: options.upstreamTimeoutMs,
+    toolVersion: options.toolVersion ?? '0.0.0',
     onError: (error, context) =>
       log.error(`capture: ${context}: ${String(error)}`, { context, error: String(error) }),
   });
@@ -128,6 +131,7 @@ export function captureCommand(
   streams: CliStreams,
   signal: AbortSignal,
   exit: (code: number) => void,
+  version = '0.0.0',
 ): Command {
   const command = new Command('capture')
     .description(
@@ -196,6 +200,6 @@ export function captureCommand(
     .option('--tls-key <path>', 'PEM private key for --tls-cert');
   addUpstreamOptions(command, false);
   return command.action(async (opts: CaptureCommandOptions) => {
-    exit(await runCapture(opts, streams, signal));
+    exit(await runCapture({ ...opts, toolVersion: version }, streams, signal));
   });
 }

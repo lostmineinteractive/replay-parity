@@ -209,6 +209,7 @@ describe('validateRecording', () => {
       first_offset_ms: null,
       last_offset_ms: null,
       by_tag: {},
+      manifest: null,
     });
     const missing = join(dir, 'missing.jsonl');
     await expect(validateRecording(missing)).rejects.toThrow(ConfigError);

@@ -89,14 +89,14 @@ export function buildProgram(
       },
     })
     .exitOverride();
-  program.addCommand(captureCommand(streams, signal, exit));
+  program.addCommand(captureCommand(streams, signal, exit, CLI_VERSION));
   program.addCommand(replayCommand(streams, signal, exit, context));
   program.addCommand(reportCommand(streams, exit));
   program.addCommand(compareCommand(streams, exit));
   program.addCommand(invariantsCommand(streams, exit));
   program.addCommand(shrinkCommand(streams, signal, exit, context));
   program.addCommand(agentCommand(streams, signal, exit));
-  program.addCommand(recordingCommand(streams, exit));
+  program.addCommand(recordingCommand(streams, exit, CLI_VERSION));
   program.addCommand(validateCommand(streams, exit, context));
   program.addCommand(rulesCommand(streams, exit));
   program.addCommand(doctorCommand(streams, exit, { ...context, version: CLI_VERSION }));

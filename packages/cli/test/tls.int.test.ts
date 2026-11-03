@@ -6,7 +6,13 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Writable } from 'node:stream';
 import type { TLSSocket } from 'node:tls';
-import { jsonResponse, makeExchange, makeRequest, parseRun } from '@replay-parity/core';
+import {
+  jsonResponse,
+  makeExchange,
+  makeRequest,
+  parseRecordingText,
+  parseRun,
+} from '@replay-parity/core';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { runCli } from '../src/index.js';
@@ -240,7 +246,8 @@ describe('rp capture over TLS', () => {
     expect(await running).toBe(0);
     expect(seen.paths).toContain('/v1/items');
     expect(stderr.text).toContain('1 recorded');
-    expect((await readFile(out, 'utf8')).trim().split('\n')).toHaveLength(1);
+    // The file starts with a manifest line, then the one exchange.
+    expect(parseRecordingText(await readFile(out, 'utf8'))).toHaveLength(1);
   });
 
   it('needs the certificate and the key together', async () => {

@@ -1,5 +1,18 @@
+import { Buffer } from 'node:buffer';
 import { open, type FileHandle } from 'node:fs/promises';
+import { manifestLine, type RecordingManifest } from './manifest.js';
 import { ExchangeSchema, type Exchange } from './types.js';
+
+export interface RecordingWriterOptions {
+  /** Append to an existing file (default) or truncate it. */
+  append?: boolean | undefined;
+  /**
+   * Written as the first line when the file starts empty: a new file, a
+   * truncated one, or an empty one opened for append. A file that already
+   * has content is appended to without one.
+   */
+  manifest?: RecordingManifest | undefined;
+}
 
 /**
  * Append only JSON Lines writer. Writes are serialized in call order and
@@ -10,6 +23,8 @@ export class RecordingWriter {
   private queue: Promise<void> = Promise.resolve();
   private lastOffset = -Infinity;
   private written = 0;
+  private bytesWritten = 0;
+  private manifestWritten = false;
   private readonly filePath: string;
 
   private constructor(handle: FileHandle, filePath: string) {
@@ -17,9 +32,33 @@ export class RecordingWriter {
     this.filePath = filePath;
   }
 
-  static async open(path: string, options: { append?: boolean } = {}): Promise<RecordingWriter> {
+  static async open(path: string, options: RecordingWriterOptions = {}): Promise<RecordingWriter> {
     const handle = await open(path, options.append === false ? 'w' : 'a');
-    return new RecordingWriter(handle, path);
+    const writer = new RecordingWriter(handle, path);
+    if (options.manifest !== undefined) {
+      try {
+        if ((await handle.stat()).size === 0) {
+          const line = manifestLine(options.manifest);
+          await handle.write(line, null, 'utf8');
+          writer.bytesWritten += Buffer.byteLength(line);
+          writer.manifestWritten = true;
+        }
+      } catch (err) {
+        await handle.close();
+        throw err;
+      }
+    }
+    return writer;
+  }
+
+  /** True when this writer started the file with a manifest line. */
+  get wroteManifest(): boolean {
+    return this.manifestWritten;
+  }
+
+  /** Bytes this writer has written, the manifest line included. */
+  get bytes(): number {
+    return this.bytesWritten;
   }
 
   get path(): string {
@@ -48,6 +87,7 @@ export class RecordingWriter {
     this.queue = this.queue.then(async () => {
       await handle.write(line, null, 'utf8');
       this.written += 1;
+      this.bytesWritten += Buffer.byteLength(line);
     });
     return this.queue;
   }

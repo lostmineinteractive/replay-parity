@@ -1,8 +1,6 @@
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { createInterface } from 'node:readline';
 import { matchGlob } from '../glob.js';
 import { canonicalJson, isJsonObject, type JsonValue } from '../json.js';
 import { get, isPlainPath, parsePath, renderPath, type Segment } from '../jsonpath/index.js';
@@ -10,8 +8,14 @@ import { captureSource, captureValue } from '../rules/capture.js';
 import type { SubstitutionRule } from '../rules/schema.js';
 import { ConfigError } from '../yaml.js';
 import { bodyKind, type BodyFields } from './body.js';
-import { iterateRecording, parseExchangeLine, RecordingParseError } from './reader.js';
+import {
+  iterateNumbered,
+  iterateRecording,
+  RecordingParseError,
+  type NumberedExchange,
+} from './reader.js';
 import { REDACTED } from './redact.js';
+import type { RecordingManifest } from './manifest.js';
 import type { Exchange } from './types.js';
 import { RecordingWriter } from './writer.js';
 
@@ -40,38 +44,15 @@ async function withPath<T>(path: string, fn: () => Promise<T>): Promise<T> {
 
 // Validate
 
-export interface NumberedExchange {
-  /** 1 based line number in the file. */
-  line: number;
-  exchange: Exchange;
-}
-
 /**
  * Streams a recording like `iterateRecording` and yields the line number of
- * each exchange with it. Blank lines are skipped and counted.
+ * each exchange with it. Blank lines and a leading manifest are skipped and
+ * counted.
  */
-export async function* iterateRecordingLines(
+export function iterateRecordingLines(
   path: string,
 ): AsyncGenerator<NumberedExchange, void, undefined> {
-  const rl = createInterface({
-    input: createReadStream(path, { encoding: 'utf8' }),
-    crlfDelay: Infinity,
-  });
-  let line = 0;
-  let last = -Infinity;
-  for await (const text of rl) {
-    line += 1;
-    if (text.trim().length === 0) continue;
-    const exchange = parseExchangeLine(text, line);
-    if (exchange.offset_ms < last) {
-      throw new RecordingParseError(
-        line,
-        `offset_ms ${exchange.offset_ms} is lower than the previous offset ${last}`,
-      );
-    }
-    last = exchange.offset_ms;
-    yield { line, exchange };
-  }
+  return iterateNumbered(path);
 }
 
 export interface ValidationProblem {
@@ -88,6 +69,8 @@ export interface ValidationResult {
   first_offset_ms: number | null;
   last_offset_ms: number | null;
   by_tag: Record<string, number>;
+  /** The manifest on the first line, or null when the file has none. */
+  manifest: RecordingManifest | null;
 }
 
 /**
@@ -103,11 +86,15 @@ export async function validateRecording(path: string): Promise<ValidationResult>
     first_offset_ms: null,
     last_offset_ms: null,
     by_tag: {},
+    manifest: null,
   };
   const seen = new Map<string, number>();
   await withPath(path, async () => {
     try {
-      for await (const { line, exchange } of iterateRecordingLines(path)) {
+      const numbered = iterateNumbered(path, (manifest) => {
+        result.manifest = manifest;
+      });
+      for await (const { line, exchange } of numbered) {
         const first = seen.get(exchange.id);
         if (first !== undefined) {
           throw new RecordingParseError(

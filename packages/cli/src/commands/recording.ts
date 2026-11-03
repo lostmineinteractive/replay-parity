@@ -1,12 +1,16 @@
 import { randomInt } from 'node:crypto';
 import {
   ConfigError,
+  DEFAULT_REDACTED_HEADERS,
+  DEFAULT_REDACTED_QUERY,
   EXIT_CODES,
   compileFilter,
   filterExchanges,
   filterRecording,
+  buildManifest,
   loadDiffRules,
   mergeRecordings,
+  migrateRecording,
   readRecording,
   recordingStats,
   sampleRecording,
@@ -14,10 +18,12 @@ import {
   splitRecording,
   validateRecording,
   writeRebased,
+  type RecordingManifest,
   type RecordingStats,
   type ScanReport,
   type ValidationResult,
 } from '@replay-parity/core';
+import { parseTagRule } from '@replay-parity/capture';
 import { DependencyIndex } from '@replay-parity/replay';
 import { Command, Option } from 'commander';
 import { err, out, type CliStreams } from '../io.js';
@@ -59,6 +65,13 @@ function countRows(table: Record<string, number>): string[][] {
     .map(([key, count]) => [key, String(count)]);
 }
 
+/** One line naming what a manifest says: version, tool, creation time, and target. */
+export function describeManifest(manifest: RecordingManifest): string {
+  const target = manifest.target === null ? '' : `, target ${manifest.target}`;
+  const part = manifest.part === undefined ? '' : `, part ${manifest.part}`;
+  return `manifest ${manifest.manifest}: rp ${manifest.tool_version}, created ${manifest.created_at}${target}${part}`;
+}
+
 export function renderValidation(path: string, result: ValidationResult): string {
   const lines: string[] = [];
   if (result.ok) {
@@ -67,6 +80,7 @@ export function renderValidation(path: string, result: ValidationResult): string
         ? 'no exchanges'
         : `offsets ${result.first_offset_ms} to ${result.last_offset_ms} ms`;
     lines.push(`${path}: valid, ${result.exchanges} exchanges, ${offsets}`);
+    if (result.manifest !== null) lines.push(`  ${describeManifest(result.manifest)}`);
   } else {
     const problem = result.problem as NonNullable<ValidationResult['problem']>;
     lines.push(
@@ -323,6 +337,48 @@ export async function runScan(
   return EXIT_CODES.pass;
 }
 
+export interface MigrateCommandOptions {
+  out: string;
+  target?: string;
+  tagRule: string[];
+  redactHeader: string[];
+  redactQuery: string[];
+  sample: number;
+  sampleSeed?: number;
+  sessionKey?: string;
+  createdAt?: string;
+}
+
+export async function runMigrate(
+  inPath: string,
+  options: MigrateCommandOptions,
+  streams: CliStreams,
+  version: string,
+): Promise<number> {
+  for (const rule of options.tagRule) parseTagRule(rule);
+  const createdAt = options.createdAt ?? new Date().toISOString();
+  if (Number.isNaN(Date.parse(createdAt)) || !createdAt.includes('T')) {
+    throw new ConfigError(`--created-at must be an ISO 8601 date and time, got ${createdAt}`);
+  }
+  const manifest = buildManifest({
+    tool_version: version,
+    created_at: new Date(createdAt).toISOString(),
+    target: options.target ?? null,
+    tag_rules: options.tagRule,
+    headers: options.redactHeader.length === 0 ? DEFAULT_REDACTED_HEADERS : options.redactHeader,
+    query: options.redactQuery.length === 0 ? DEFAULT_REDACTED_QUERY : options.redactQuery,
+    fraction: options.sample,
+    seed: options.sampleSeed ?? null,
+    session_key: options.sessionKey ?? null,
+  });
+  const result = await migrateRecording(inPath, options.out, manifest);
+  out(
+    streams,
+    `wrote ${options.out}: a manifest line and ${result.exchanges} exchanges copied byte for byte (${result.copied_bytes} bytes)`,
+  );
+  return EXIT_CODES.pass;
+}
+
 /** Applies the program's stream and exit settings to a nested command, which commander does not inherit. */
 function configure(cmd: Command, streams: CliStreams): Command {
   return cmd
@@ -338,9 +394,13 @@ function configure(cmd: Command, streams: CliStreams): Command {
     .showHelpAfterError('(run with --help for the list of flags)');
 }
 
-export function recordingCommand(streams: CliStreams, exit: (code: number) => void): Command {
+export function recordingCommand(
+  streams: CliStreams,
+  exit: (code: number) => void,
+  version = '0.0.0',
+): Command {
   const recording = new Command('recording').description(
-    'Validate, summarize, filter, sample, split, merge, and scan a recording file. Every subcommand streams its input and never alters it.',
+    'Validate, summarize, filter, sample, split, merge, scan, and migrate a recording file. Every subcommand streams its input and never alters it.',
   );
   recording.addCommand(
     configure(
@@ -489,6 +549,44 @@ export function recordingCommand(streams: CliStreams, exit: (code: number) => vo
         .option('--json', 'print JSON instead of a table', false)
         .action(async (path: string, opts: ScanCommandOptions) => {
           exit(await runScan(path, opts, streams));
+        }),
+      streams,
+    ),
+  );
+  recording.addCommand(
+    configure(
+      new Command('migrate')
+        .description(
+          'Write a copy of a recording that starts with a manifest line built from the flags, followed by every byte of the input unchanged. Refuses an input that already has a manifest.',
+        )
+        .argument('<in>', 'the recording to read')
+        .requiredOption('--out <path>', 'the recording to write')
+        .option('--target <url>', 'the reference system the recording was captured against')
+        .option('--tag-rule <rule>', 'a tag rule the capture used, repeatable', collect, [])
+        .option(
+          '--redact-header <name>',
+          'a header the capture redacted, repeatable; default: the capture default list',
+          collect,
+          [],
+        )
+        .option(
+          '--redact-query <name>',
+          'a query parameter the capture redacted, repeatable; default: the capture default list',
+          collect,
+          [],
+        )
+        .addOption(
+          new Option('--sample <fraction>', 'the fraction the capture recorded')
+            .default(1)
+            .argParser(fraction),
+        )
+        .addOption(
+          new Option('--sample-seed <n>', 'the seed of a session sample').argParser(nonNegativeInt),
+        )
+        .option('--session-key <selector>', 'the --sample-by selector the capture used')
+        .option('--created-at <iso>', 'the creation time to record; default: now')
+        .action(async (inPath: string, opts: MigrateCommandOptions) => {
+          exit(await runMigrate(inPath, opts, streams, version));
         }),
       streams,
     ),

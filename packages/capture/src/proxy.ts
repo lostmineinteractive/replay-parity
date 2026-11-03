@@ -9,6 +9,7 @@ import {
   DEFAULT_REDACTED_HEADERS,
   DEFAULT_REDACTED_QUERY,
   RecordingWriter,
+  buildManifest,
   normalizeHeaders,
   redactHeaders,
   redactQuery,
@@ -20,7 +21,7 @@ import {
 import { Pool, type Dispatcher } from 'undici';
 import { CappedBody } from './capped-body.js';
 import { OrderedSink } from './ordered-sink.js';
-import { tagsFor, type TagRule } from './tag-rules.js';
+import { formatTagRule, tagsFor, type TagRule } from './tag-rules.js';
 
 /**
  * The capture proxy. Forwards every request to the target, streams the
@@ -66,6 +67,12 @@ export interface CaptureOptions {
   maxBodyBytes?: number;
   /** Upstream headers and body timeout in milliseconds. Default 30000. */
   upstreamTimeoutMs?: number;
+  /**
+   * The version written in the manifest. When given, a manifest line starts
+   * the file if the file is new or empty. A file that already has content is
+   * appended to without one.
+   */
+  toolVersion?: string | undefined;
   /** Injectable clock and randomness for tests. */
   now?: () => number;
   random?: () => number;
@@ -285,7 +292,26 @@ export class CaptureServer {
   }
 
   static async create(options: CaptureOptions): Promise<CaptureServer> {
-    const writer = await RecordingWriter.open(options.out, { append: options.append ?? true });
+    const sample = options.sample ?? 1;
+    if (!(sample > 0 && sample <= 1)) {
+      throw new RangeError(`sample must be greater than 0 and at most 1, got ${sample}`);
+    }
+    const manifest =
+      options.toolVersion === undefined
+        ? undefined
+        : buildManifest({
+            tool_version: options.toolVersion,
+            created_at: new Date((options.now ?? Date.now)()).toISOString(),
+            target: options.target,
+            tag_rules: (options.tagRules ?? []).map(formatTagRule),
+            headers: options.redactHeaders ?? DEFAULT_REDACTED_HEADERS,
+            query: options.redactQuery ?? DEFAULT_REDACTED_QUERY,
+            fraction: options.sample ?? 1,
+          });
+    const writer = await RecordingWriter.open(options.out, {
+      append: options.append ?? true,
+      manifest,
+    });
     try {
       return new CaptureServer(options, writer);
     } catch (err) {
