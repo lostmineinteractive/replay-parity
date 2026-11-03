@@ -462,106 +462,114 @@ describe('rp shrink --cache', () => {
 });
 
 describe('rp shrink --rule latency', () => {
-  it('shrinks a latency breach to the slow steps and labels it statistical', async () => {
-    // The slow route answers after 20 ms times the number of slow requests since the last reset.
-    let slowSeen = 0;
-    const server = createServer((req, res) => {
-      void (async () => {
-        if (req.url === '/reset') slowSeen = 0;
-        if (req.url === '/slow') {
-          slowSeen += 1;
-          await new Promise((r) => setTimeout(r, 20 * slowSeen));
-        }
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
-      })();
-    });
-    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-    cleanups.push(
-      () =>
-        new Promise<void>((r) => {
-          server.closeAllConnections();
-          server.close(() => r());
+  // Retried, and the margins are 20 ms either side of the limit, because a shrink attempt with
+  // three slow steps reproduces only through a stall: one full run under load judged a three
+  // step subset as breaching when the limit sat 10 ms above three slow requests.
+  it(
+    'shrinks a latency breach to the slow steps and labels it statistical',
+    { retry: 2, timeout: 60_000 },
+    async () => {
+      // The slow route answers after 40 ms times the number of slow requests since the last reset,
+      // so three slow requests peak at 120 ms and four at 160 ms, against a limit of 140 ms.
+      let slowSeen = 0;
+      const server = createServer((req, res) => {
+        void (async () => {
+          if (req.url === '/reset') slowSeen = 0;
+          if (req.url === '/slow') {
+            slowSeen += 1;
+            await new Promise((r) => setTimeout(r, 40 * slowSeen));
+          }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        })();
+      });
+      await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+      cleanups.push(
+        () =>
+          new Promise<void>((r) => {
+            server.closeAllConnections();
+            server.close(() => r());
+          }),
+      );
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const exchanges = Array.from({ length: 12 }, (_, index) =>
+        makeExchange({
+          index,
+          request: makeRequest({ path: index % 2 === 1 ? '/slow' : '/fast' }),
+          response: jsonResponse({ ok: true }),
+          tags: [index % 2 === 1 ? 'slow' : 'fast'],
         }),
-    );
-    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    const exchanges = Array.from({ length: 12 }, (_, index) =>
-      makeExchange({
-        index,
-        request: makeRequest({ path: index % 2 === 1 ? '/slow' : '/fast' }),
-        response: jsonResponse({ ok: true }),
-        tags: [index % 2 === 1 ? 'slow' : 'fast'],
-      }),
-    );
-    const recording = join(dir, 'latency.jsonl');
-    await writeFile(recording, `${exchanges.map((e) => JSON.stringify(e)).join('\n')}\n`);
-    const thresholds = join(dir, 'latency-thresholds.yaml');
-    await writeFile(thresholds, 'latency:\n  by_tag:\n    slow: { max_ms: 70 }\n');
-    const runPath = join(dir, 'latency-run.json');
-    const replayed = await rp([
-      'replay',
-      '--recording',
-      recording,
-      '--target',
-      url,
-      '--pace',
-      'max',
-      '--concurrency',
-      '1',
-      '--thresholds',
-      thresholds,
-      '--out',
-      runPath,
-      '--quiet',
-      '--no-preflight',
-    ]);
-    expect(replayed.code).toBe(2);
+      );
+      const recording = join(dir, 'latency.jsonl');
+      await writeFile(recording, `${exchanges.map((e) => JSON.stringify(e)).join('\n')}\n`);
+      const thresholds = join(dir, 'latency-thresholds.yaml');
+      await writeFile(thresholds, 'latency:\n  by_tag:\n    slow: { max_ms: 140 }\n');
+      const runPath = join(dir, 'latency-run.json');
+      const replayed = await rp([
+        'replay',
+        '--recording',
+        recording,
+        '--target',
+        url,
+        '--pace',
+        'max',
+        '--concurrency',
+        '1',
+        '--thresholds',
+        thresholds,
+        '--out',
+        runPath,
+        '--quiet',
+        '--no-preflight',
+      ]);
+      expect(replayed.code).toBe(2);
 
-    const res = await rp([
-      'shrink',
-      '--run',
-      runPath,
-      '--recording',
-      recording,
-      '--target',
-      url,
-      '--reset-url',
-      `${url}/reset`,
-      '--rule',
-      'latency:slow:max',
-      '--latency-repeat',
-      '2',
-      '--out',
-      join(dir, 'latency-reduced.jsonl'),
-    ]);
-    expect(res.code).toBe(0);
-    expect(res.out).toMatch(
-      /^reduced reproduction \(statistical\): 12 -> 4 steps in \d+ attempts for latency:slow:max/,
-    );
-    const reproduction = await readReproduction(runPath);
-    expect(reproduction).toMatchObject({
-      label: 'reduced reproduction (statistical)',
-      repeat: 2,
-      reduced_steps: 4,
-      rule: 'latency:slow:max',
-    });
-    const run = parseRun(await readFile(runPath, 'utf8'));
-    expect(run.reproduction?.steps.every((s) => s.path === '/slow')).toBe(true);
+      const res = await rp([
+        'shrink',
+        '--run',
+        runPath,
+        '--recording',
+        recording,
+        '--target',
+        url,
+        '--reset-url',
+        `${url}/reset`,
+        '--rule',
+        'latency:slow:max',
+        '--latency-repeat',
+        '2',
+        '--out',
+        join(dir, 'latency-reduced.jsonl'),
+      ]);
+      expect(res.code).toBe(0);
+      expect(res.out).toMatch(
+        /^reduced reproduction \(statistical\): 12 -> 4 steps in \d+ attempts for latency:slow:max/,
+      );
+      const reproduction = await readReproduction(runPath);
+      expect(reproduction).toMatchObject({
+        label: 'reduced reproduction (statistical)',
+        repeat: 2,
+        reduced_steps: 4,
+        rule: 'latency:slow:max',
+      });
+      const run = parseRun(await readFile(runPath, 'utf8'));
+      expect(run.reproduction?.steps.every((s) => s.path === '/slow')).toBe(true);
 
-    const noLimit = await rp([
-      'shrink',
-      '--run',
-      runPath,
-      '--recording',
-      recording,
-      '--target',
-      url,
-      '--reset-url',
-      `${url}/reset`,
-      '--rule',
-      'latency:slow:p50',
-    ]);
-    expect(noLimit.code).toBe(1);
-    expect(noLimit.err).toContain('set no p50_ms limit under latency.by_tag.slow');
-  }, 60_000);
+      const noLimit = await rp([
+        'shrink',
+        '--run',
+        runPath,
+        '--recording',
+        recording,
+        '--target',
+        url,
+        '--reset-url',
+        `${url}/reset`,
+        '--rule',
+        'latency:slow:p50',
+      ]);
+      expect(noLimit.code).toBe(1);
+      expect(noLimit.err).toContain('set no p50_ms limit under latency.by_tag.slow');
+    },
+  );
 });

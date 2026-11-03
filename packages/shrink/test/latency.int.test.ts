@@ -39,7 +39,7 @@ async function degradingCandidate(): Promise<{ stand: StandIn; reset: () => Prom
   const stand = await startStandIn(async (req, res) => {
     if (req.path === '/slow') {
       slowSeen += 1;
-      await new Promise((r) => setTimeout(r, 20 * slowSeen));
+      await new Promise((r) => setTimeout(r, 40 * slowSeen));
     }
     sendJson(res, { ok: true });
   });
@@ -53,32 +53,39 @@ async function degradingCandidate(): Promise<{ stand: StandIn; reset: () => Prom
   };
 }
 
-const thresholds = parseThresholds('latency:\n  by_tag:\n    slow: { max_ms: 70 }\n');
+// Three slow requests peak at 120 ms and four at 160 ms, 20 ms either side of the limit, so a
+// machine stall cannot make a three step subset look like a breach.
+const thresholds = parseThresholds('latency:\n  by_tag:\n    slow: { max_ms: 140 }\n');
 
 describe('shrink to a latency breach', () => {
-  it('keeps the slow steps whose pooled sample still breaches, and says it is statistical', async () => {
-    expect(slowCount).toBe(6);
-    const { stand, reset } = await degradingCandidate();
-    const { reproduction } = await shrink({
-      exchanges,
-      target: stand.url,
-      reset,
-      rule: parseRule('latency:slow:max'),
-      thresholds,
-      repeat: 2,
-      maxAttempts: 100,
-    });
-    expect(reproduction.rule).toBe('latency:slow:max');
-    expect(reproduction.label).toBe('reduced reproduction (statistical)');
-    expect(reproduction.repeat).toBe(2);
-    expect(reproduction.successful).toBe(true);
-    // Only the slow route matters, and four of its requests are needed to pass 70 ms.
-    expect(reproduction.steps.every((s) => s.path === '/slow')).toBe(true);
-    expect(reproduction.reduced_steps).toBe(4);
-    // Every attempt replayed its subset twice.
-    const replays = stand.requests.length;
-    expect(replays).toBeGreaterThanOrEqual(2 * reproduction.attempts);
-  }, 60_000);
+  // Retried because the judgement rests on real latencies; see the margin note above.
+  it(
+    'keeps the slow steps whose pooled sample still breaches, and says it is statistical',
+    { retry: 2, timeout: 60_000 },
+    async () => {
+      expect(slowCount).toBe(6);
+      const { stand, reset } = await degradingCandidate();
+      const { reproduction } = await shrink({
+        exchanges,
+        target: stand.url,
+        reset,
+        rule: parseRule('latency:slow:max'),
+        thresholds,
+        repeat: 2,
+        maxAttempts: 100,
+      });
+      expect(reproduction.rule).toBe('latency:slow:max');
+      expect(reproduction.label).toBe('reduced reproduction (statistical)');
+      expect(reproduction.repeat).toBe(2);
+      expect(reproduction.successful).toBe(true);
+      // Only the slow route matters, and four of its requests are needed to pass 70 ms.
+      expect(reproduction.steps.every((s) => s.path === '/slow')).toBe(true);
+      expect(reproduction.reduced_steps).toBe(4);
+      // Every attempt replayed its subset twice.
+      const replays = stand.requests.length;
+      expect(replays).toBeGreaterThanOrEqual(2 * reproduction.attempts);
+    },
+  );
 
   it('judges the sample of all the repeats, not one replay', async () => {
     const { stand, reset } = await degradingCandidate();
