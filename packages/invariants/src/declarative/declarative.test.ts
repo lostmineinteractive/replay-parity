@@ -442,3 +442,57 @@ describe('conservation', () => {
     expect(only(yaml, keyless).detail).toContain(`command ${keyless.id(1)} has no key`);
   });
 });
+
+describe('a body the recording did not keep', () => {
+  /** Replaces the response body of the last exchange with the hash a capped capture stores. */
+  function truncate(log: Log): Log {
+    const response = (log.exchanges[log.exchanges.length - 1] as Exchange).response;
+    delete response.body;
+    response.truncated = true;
+    response.body_sha256 = 'a'.repeat(64);
+    response.body_size = 4_000_000;
+    return log;
+  }
+
+  it('is inconclusive rather than a violation for every rule kind that reads it', () => {
+    const monotonic = truncate(
+      new Log()
+        .add('get', 'GET', '/kv/a', null, 200, { id: 'a', v: 1 })
+        .add('get', 'GET', '/kv/a', null, 200, {}),
+    );
+    expect(only("monotonic: [{ path: '$.v', key: 'path:^/kv/(.+)$' }]", monotonic).status).toBe(
+      'inconclusive',
+    );
+    const ryw = truncate(
+      new Log()
+        .add('put', 'PUT', '/kv/a', { value: 'x' }, 200, {})
+        .add('get', 'GET', '/kv/a', null, 200, {}),
+    );
+    const rywRules =
+      "read_your_writes: [{ write_tag: put, read_tag: get, substitution: 'path:^/kv/(.+)$', fields: ['$.value'] }]";
+    expect(only(rywRules, ryw)).toMatchObject({ status: 'inconclusive' });
+    expect(only(rywRules, ryw).detail).toContain(`the body of read ${ryw.id(1)} was not kept`);
+    const transitions = truncate(
+      new Log()
+        .add('get', 'GET', '/o/1', null, 200, { status: 'A' })
+        .add('get', 'GET', '/o/1', null, 200, {}),
+    );
+    expect(
+      only(
+        "transitions: { path: '$.status', key: 'path:^/o/(.+)$', allowed: { A: [B] } }",
+        transitions,
+      ).status,
+    ).toBe('inconclusive');
+    const conservation = truncate(
+      new Log()
+        .add('get', 'GET', '/c', null, 200, { value: 1 })
+        .add('get', 'GET', '/c', null, 200, {}),
+    );
+    expect(
+      only(
+        "conservation: [{ delta_of: { tag: incr, path: 'request:$.by' }, equals_change_in: { tag: get, path: '$.value' } }]",
+        conservation,
+      ).status,
+    ).toBe('inconclusive');
+  });
+});

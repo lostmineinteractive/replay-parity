@@ -81,6 +81,13 @@ export function readSource(src: Source, exchange: Exchange): JsonValue | undefin
   }
 }
 
+/** True when the source reads a body the recording kept only as a hash or as raw bytes. */
+export function unreadable(src: Source, exchange: Exchange): boolean {
+  if (src.source.type !== 'body') return false;
+  const side = src.source.from === 'request' ? exchange.request : exchange.response;
+  return side.truncated === true || side.encoding === 'base64';
+}
+
 /** The value as a key: a string, or a number in its text form. Anything else is no key. */
 export function readKey(src: Source, exchange: Exchange): string | undefined {
   const value = readSource(src, exchange);

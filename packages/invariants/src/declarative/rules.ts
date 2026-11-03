@@ -18,6 +18,7 @@ import {
   readSource,
   sameAmount,
   tagged,
+  unreadable,
   type ExchangeCommand,
   type Source,
 } from './source.js';
@@ -142,7 +143,11 @@ export function monotonicCheck(entry: MonotonicInvariant): Check {
       const k = readKey(key, command.exchange);
       if (k === undefined) continue;
       const raw = readSource(path, command.exchange);
-      if (raw === undefined) continue;
+      if (raw === undefined) {
+        if (unreadable(path, command.exchange))
+          c.undecided(`the body of ${command.id} was not kept`);
+        continue;
+      }
       const value = asNumber(raw);
       if (value === undefined) {
         c.undecided(`${path.text} in ${command.id} is not a number`);
@@ -222,6 +227,10 @@ export function readYourWritesCheck(entry: ReadYourWritesInvariant): Check {
           continue;
         }
         const shown = readSource(field.read, command.exchange);
+        if (shown === undefined && unreadable(field.read, command.exchange)) {
+          c.undecided(`the body of read ${command.id} was not kept`);
+          continue;
+        }
         if (shown === undefined || canonicalJson(shown) !== canonicalJson(written)) {
           c.violation(
             `${substitution.text} ${k} at ${field.label}`,
@@ -281,6 +290,10 @@ export function transitionsCheck(entry: TransitionsInvariant): Check {
       const k = readKey(key, command.exchange);
       if (k === undefined) continue;
       const raw = readSource(path, command.exchange);
+      if (raw === undefined && unreadable(path, command.exchange)) {
+        c.undecided(`the body of ${command.id} was not kept`);
+        continue;
+      }
       if (typeof raw !== 'string' && typeof raw !== 'number' && typeof raw !== 'boolean') continue;
       const state = String(raw);
       const previous = last.get(k);
@@ -336,7 +349,13 @@ export function conservationCheck(entry: ConservationInvariant): Check {
         const k = readKeySource === undefined ? NO_KEY : readKey(readKeySource, command.exchange);
         const raw = readSource(readPath, command.exchange);
         const value = asNumber(raw);
-        if (k === undefined || raw === undefined) continue;
+        if (k === undefined) continue;
+        if (raw === undefined) {
+          if (unreadable(readPath, command.exchange)) {
+            c.undecided(`the body of ${command.id} was not kept`);
+          }
+          continue;
+        }
         if (value === undefined) {
           c.undecided(`${readPath.text} in ${command.id} is not a number`);
           continue;
