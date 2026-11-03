@@ -92,7 +92,7 @@ export function checkRecording(recording: string, exchanges: readonly Exchange[]
   return exchanges.length === 0 ? warn('recording', detail) : ok('recording', detail);
 }
 
-/** Every tag named in `latency.by_tag` and `correctness.by_tag` must exist in the recording. */
+/** Every tag named in any `by_tag` section of the thresholds must exist in the recording. */
 export function checkThresholds(
   thresholds: Thresholds,
   tags: ReadonlyMap<string, number>,
@@ -101,6 +101,11 @@ export function checkThresholds(
   const sections: [string, Record<string, unknown>][] = [
     ['latency.by_tag', thresholds.latency.by_tag],
     ['correctness.by_tag', thresholds.correctness.by_tag],
+    ['errors.by_tag', thresholds.errors.by_tag ?? {}],
+    ['latency.relative_to_reference.by_tag', thresholds.latency.relative_to_reference.by_tag ?? {}],
+    ['status.by_tag', thresholds.status?.by_tag ?? {}],
+    ['baseline.latency.by_tag', thresholds.baseline?.latency?.by_tag ?? {}],
+    ['baseline.correctness.by_tag', thresholds.baseline?.correctness?.by_tag ?? {}],
   ];
   for (const [section, byTag] of sections) {
     for (const tag of Object.keys(byTag)) {
