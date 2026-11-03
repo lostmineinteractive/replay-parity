@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import type { RunFinding } from '../run/schema.js';
 import { StatsCollector } from '../stats/collector.js';
+import { makeExchangeResult, makeRun } from '../testing.js';
 import type { RunStats } from '../stats/schema.js';
 import { evaluateThresholds } from './evaluate.js';
 import { emptyThresholds, parseThresholds } from './schema.js';
@@ -480,5 +482,97 @@ describe('evaluateThresholds', () => {
       'errors.rate_max',
       'pacing.slip_max_ms',
     ]);
+  });
+
+  describe('noise aware gating', () => {
+    const noiseFinding: RunFinding = {
+      path: '$.updated_at',
+      kind: 'value',
+      tolerated: true,
+      rule: 'noise:reference',
+      noise: true,
+      reference: 'a',
+      candidate: 'b',
+    };
+    const realFinding: RunFinding = {
+      path: '$.total',
+      kind: 'value',
+      tolerated: false,
+      reference: 1,
+      candidate: 2,
+    };
+    // Built the way the engine records noise: noise findings are tolerated and the verdict
+    // is recomputed, so an exchange whose only differences are noise is tolerated.
+    const run = makeRun({
+      exchanges: [
+        makeExchangeResult({
+          id: 'noise-only',
+          diff: { verdict: 'tolerated', findings: [noiseFinding] },
+        }),
+        makeExchangeResult({
+          id: 'noise-and-real',
+          diff: { verdict: 'mismatch', findings: [noiseFinding, realFinding] },
+        }),
+        makeExchangeResult({ id: 'clean' }),
+      ],
+    });
+    const stats = { ...run.stats, noise_findings: { overall: 2, by_tag: { 'get-items': 2 } } };
+
+    it('counts an exchange as mismatched only for an untolerated finding that is not noise', () => {
+      expect(run.stats.overall).toMatchObject({ compared: 3, tolerated: 1, mismatches: 1 });
+      const t = parseThresholds(
+        'correctness:\n  mismatch_rate_max: 0.34\n  by_tag:\n    get-items: { mismatch_rate_max: 0.3 }\n',
+      );
+      const { results } = evaluateThresholds(t, stats);
+      expect(results.map((r) => [r.id, r.outcome, r.measured, r.detail])).toEqual([
+        ['correctness.mismatch_rate_max', 'pass', 0.333333, '2 noise findings excluded'],
+        [
+          'correctness.by_tag.get-items.mismatch_rate_max',
+          'fail',
+          0.333333,
+          '2 noise findings excluded',
+        ],
+      ]);
+      // A run without the re-replay keeps its rows exactly as before.
+      expect(evaluateThresholds(t, run.stats).results.map((r) => r.detail)).toEqual([
+        undefined,
+        undefined,
+      ]);
+      // A tag with no noise names zero.
+      const quiet = { ...run.stats, noise_findings: { overall: 0, by_tag: {} } };
+      expect(evaluateThresholds(t, quiet).results[1]?.detail).toBe('0 noise findings excluded');
+    });
+
+    it('gates noise findings per compared exchange with correctness.noise_rate_max', () => {
+      const t = parseThresholds('correctness:\n  noise_rate_max: 0.5\n');
+      const unstable = evaluateThresholds(t, stats);
+      expect(unstable.verdict).toBe('fail');
+      expect(unstable.results).toEqual([
+        {
+          id: 'correctness.noise_rate_max',
+          section: 'correctness',
+          scope: 'overall',
+          metric: 'noise_rate_max',
+          limit: 0.5,
+          measured: 0.6667,
+          outcome: 'fail',
+          detail: '2 noise findings over 3 compared exchanges',
+        },
+      ]);
+      const loose = parseThresholds('correctness:\n  noise_rate_max: 1\n');
+      expect(evaluateThresholds(loose, stats).verdict).toBe('pass');
+
+      const unmeasured = evaluateThresholds(t, run.stats);
+      expect(unmeasured.results[0]).toMatchObject({ outcome: 'inconclusive', measured: null });
+      expect(unmeasured.inconclusive[0]?.kind).toBe('not_measured');
+      const empty = {
+        ...new StatsCollector().finish(),
+        noise_findings: { overall: 0, by_tag: {} },
+      };
+      expect(evaluateThresholds(t, empty).results[0]).toMatchObject({
+        outcome: 'inconclusive',
+        detail: 'no compared exchanges',
+      });
+    });
   });
 });

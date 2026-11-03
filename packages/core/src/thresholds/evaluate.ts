@@ -16,6 +16,14 @@ export interface ThresholdEvaluation {
   inconclusive: InconclusiveCondition[];
 }
 
+/**
+ * The statistics the thresholds read: the collector's summary, plus the noise findings of a
+ * run that used the reference re-replay, as `RunFileStats` records them.
+ */
+export type GateStats = RunStats & {
+  noise_findings?: { overall: number; by_tag: Record<string, number> } | undefined;
+};
+
 /** Measurements that come from the replay rather than from the statistics. */
 export interface ThresholdMeasurements {
   /** The largest schedule slip observed, in milliseconds. */
@@ -170,11 +178,22 @@ function ratioOutcome(
   return result({ ...base, measured, outcome: measured <= base.limit ? 'pass' : 'fail' });
 }
 
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+/**
+ * A mismatch rate row. The statistics count an exchange as mismatched only when it holds an
+ * untolerated finding, and a noise finding is always tolerated, so noise never reaches the
+ * rate. When the run used the reference re-replay, `noise` is the scope's noise finding count
+ * and the detail names it.
+ */
 function correctnessRow(
   scope: string,
   limit: number,
   stats: TagStats | undefined,
   id: string,
+  noise: number | undefined,
 ): ThresholdResult {
   const base = { id, section: 'correctness' as const, scope, metric: 'mismatch_rate_max', limit };
   if (stats === undefined) {
@@ -197,6 +216,44 @@ function correctnessRow(
     ...base,
     measured: stats.mismatch_rate,
     outcome: stats.mismatch_rate <= limit ? 'pass' : 'fail',
+    detail: noise === undefined ? undefined : `${plural(noise, 'noise finding')} excluded`,
+  });
+}
+
+/** Noise findings per compared exchange, so a reference that has become unstable is caught. */
+function noiseRow(limit: number, stats: GateStats): ThresholdResult {
+  const base = {
+    id: 'correctness.noise_rate_max',
+    section: 'correctness' as const,
+    scope: 'overall',
+    metric: 'noise_rate_max',
+    limit,
+  };
+  if (stats.noise_findings === undefined) {
+    return unmeasured(
+      result({
+        ...base,
+        measured: null,
+        outcome: 'inconclusive',
+        detail: 'noise is measured only with a reference re-replay (--reference-target)',
+      }),
+    );
+  }
+  if (stats.overall.compared === 0) {
+    return result({
+      ...base,
+      measured: null,
+      outcome: 'inconclusive',
+      detail: 'no compared exchanges',
+    });
+  }
+  const noise = stats.noise_findings.overall;
+  const measured = round(noise / stats.overall.compared);
+  return result({
+    ...base,
+    measured,
+    outcome: measured <= limit ? 'pass' : 'fail',
+    detail: `${plural(noise, 'noise finding')} over ${plural(stats.overall.compared, 'compared exchange')}`,
   });
 }
 
@@ -360,7 +417,7 @@ function conditionsFor(results: readonly ThresholdResult[]): InconclusiveConditi
  */
 export function evaluateThresholds(
   thresholds: Thresholds,
-  stats: RunStats,
+  stats: GateStats,
   measurements: ThresholdMeasurements = {},
 ): ThresholdEvaluation {
   const results: ThresholdResult[] = [];
@@ -412,6 +469,7 @@ export function evaluateThresholds(
         thresholds.correctness.mismatch_rate_max,
         stats.overall,
         'correctness.mismatch_rate_max',
+        stats.noise_findings?.overall,
       ),
     );
   }
@@ -419,8 +477,17 @@ export function evaluateThresholds(
     const limit = (thresholds.correctness.by_tag[tag] as { mismatch_rate_max: number })
       .mismatch_rate_max;
     results.push(
-      correctnessRow(tag, limit, stats.by_tag[tag], `correctness.by_tag.${tag}.mismatch_rate_max`),
+      correctnessRow(
+        tag,
+        limit,
+        stats.by_tag[tag],
+        `correctness.by_tag.${tag}.mismatch_rate_max`,
+        stats.noise_findings === undefined ? undefined : (stats.noise_findings.by_tag[tag] ?? 0),
+      ),
     );
+  }
+  if (thresholds.correctness.noise_rate_max !== undefined) {
+    results.push(noiseRow(thresholds.correctness.noise_rate_max, stats));
   }
   if (thresholds.errors.rate_max !== undefined) {
     results.push(errorRow('overall', thresholds.errors.rate_max, stats.overall, 'errors.rate_max'));

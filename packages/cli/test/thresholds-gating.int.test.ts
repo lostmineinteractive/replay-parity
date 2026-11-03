@@ -127,4 +127,32 @@ describe('rp replay with the completed threshold matrix', () => {
     expect(res.code).toBe(2);
     expect(run.verdict).toBe('fail');
   });
+
+  it('names the excluded noise in the correctness rows and gates its rate', async () => {
+    // A second clean candidate stands in for the reference, so the re-replay has noise to find.
+    const reference = buildCandidate({ divergences: 'off' });
+    await reference.listen({ port: 0, host: '127.0.0.1' });
+    try {
+      const address = reference.server.address();
+      if (address === null || typeof address === 'string') throw new Error('no address');
+      const { run } = await replayWith(
+        'noise',
+        'correctness:\n  mismatch_rate_max: 1\n  noise_rate_max: 1000\n',
+        ['--reference-target', `http://127.0.0.1:${address.port}`],
+      );
+      const noise = run.stats.noise_findings;
+      expect(noise).toBeDefined();
+      const rows = Object.fromEntries(run.threshold_results.map((r) => [r.id, r]));
+      expect(rows['correctness.mismatch_rate_max']?.detail).toBe(
+        `${noise?.overall} noise finding${noise?.overall === 1 ? '' : 's'} excluded`,
+      );
+      expect(rows['correctness.noise_rate_max']).toMatchObject({
+        outcome: 'pass',
+        measured:
+          Math.round(((noise?.overall ?? 0) / run.stats.overall.compared) * 10_000) / 10_000,
+      });
+    } finally {
+      await reference.close();
+    }
+  });
 });
