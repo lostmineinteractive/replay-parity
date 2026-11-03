@@ -1,4 +1,4 @@
-import type { RecordedRequest, RecordedResponse } from '@replay-parity/core';
+import type { Logger, RecordedRequest, RecordedResponse } from '@replay-parity/core';
 
 /**
  * The transport contract. The engine prepares each request (substitutions,
@@ -14,6 +14,10 @@ export interface ReplayContext {
   tags: readonly string[];
   /** Aborted when the engine shuts down before the send completes. */
   signal: AbortSignal;
+  /** Where the adapter writes log lines. Header values never belong in one, only names. */
+  log?: Logger | undefined;
+  /** The W3C `traceparent` for this exchange when tracing is on. The HTTP adapter sends it. */
+  traceparent?: string | undefined;
 }
 
 export interface Adapter {

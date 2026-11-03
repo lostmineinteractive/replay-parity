@@ -99,7 +99,11 @@ export class HttpAdapter implements Adapter {
       const res = await this.pool.request({
         method: req.method,
         path: this.prefix + pathWithQuery(req.path, req.query),
-        headers: outgoingHeaders(req.headers),
+        // The trace header goes out over a recorded one, so the exchange maps to this run.
+        headers:
+          ctx.traceparent === undefined
+            ? outgoingHeaders(req.headers)
+            : { ...outgoingHeaders(req.headers), traceparent: ctx.traceparent },
         body,
         // undici's own timeouts tick once a second, so the exact deadline comes from a signal.
         signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(this.timeoutMs)]),

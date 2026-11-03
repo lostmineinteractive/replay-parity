@@ -13,7 +13,10 @@ import {
   evaluateThresholds,
   hashRecordingFile,
   mergeHeaders,
+  noopLogger,
   readRecording,
+  spanIdFor,
+  traceparent,
   ulid,
   type Diff,
   type DiffRules,
@@ -22,6 +25,7 @@ import {
   type ExchangeResult,
   type HeaderMap,
   type InconclusiveCondition,
+  type Logger,
   type PacingMode,
   type Query,
   type RecordedRequest,
@@ -110,7 +114,13 @@ export interface ReplayOptions {
   maxBodyBytes?: number | undefined;
   runId?: string | undefined;
   now?: (() => Date) | undefined;
+  /** Where the engine and the adapter write log lines. Default: nothing. */
+  log?: Logger | undefined;
+  /** A 32 hex character trace id. When set, every exchange's context carries a `traceparent`. */
+  traceId?: string | undefined;
   onProgress?: ((progress: ReplayProgress) => void) | undefined;
+  /** Call `onProgress` with a heartbeat this often while the run is in flight. 0 disables. Default 0. */
+  heartbeatMs?: number | undefined;
   /** Aborting stops the run early. See the ordering rules above. */
   signal?: AbortSignal | undefined;
 }
@@ -132,7 +142,14 @@ export function dropRedactedQuery(query: Query): Query {
 export interface ReplayProgress {
   completed: number;
   total: number;
-  last: ExchangeResult;
+  /** The result that just completed, or null on a heartbeat. */
+  last: ExchangeResult | null;
+  /** Exchanges sent and not yet acknowledged. */
+  inflight: number;
+  /** True for the periodic tick that reports nothing new. */
+  heartbeat: boolean;
+  /** The scheduled send time of the last exchange in milliseconds from the start, 0 under max pacing. */
+  schedule_end_ms: number;
 }
 
 export const DEFAULT_BARRIER_TIMEOUT_MS = 10_000;
@@ -278,6 +295,8 @@ export async function replayExchanges(
   const maxGapMs = pace === 'as-recorded' && maxGapOption > 0 ? maxGapOption : null;
   const now = options.now ?? (() => new Date());
   const signal = options.signal;
+  const log = options.log ?? noopLogger;
+  const traceId = options.traceId;
 
   const { selected, dependency } = selectExchanges(
     all,
@@ -332,6 +351,22 @@ export async function replayExchanges(
 
   const started = performance.now();
   const rel = (): number => performance.now() - started;
+  const scheduleEnd = schedule.times[n - 1] ?? 0;
+  const heartbeatMs = options.heartbeatMs ?? 0;
+  const heartbeat =
+    heartbeatMs > 0 && options.onProgress !== undefined
+      ? setInterval(() => {
+          options.onProgress?.({
+            completed,
+            total: n,
+            last: null,
+            inflight: pending.size,
+            heartbeat: true,
+            schedule_end_ms: scheduleEnd,
+          });
+        }, heartbeatMs)
+      : null;
+  heartbeat?.unref();
 
   const acquire = async (): Promise<void> => {
     while (inflight >= concurrency) {
@@ -370,6 +405,8 @@ export async function replayExchanges(
         index: i,
         tags: e.tags,
         signal: shutdown.signal,
+        log,
+        traceparent: traceId === undefined ? undefined : traceparent(traceId, spanIdFor(e.id)),
       });
     } catch (err) {
       error = describeSendError(err);
@@ -411,7 +448,14 @@ export async function replayExchanges(
     results[i] = result;
     sent[i] = { exchange: e, request, response: candidate, sentAtMs: sentAt, sentWallMs: sentWall };
     completed += 1;
-    options.onProgress?.({ completed, total: n, last: result });
+    options.onProgress?.({
+      completed,
+      total: n,
+      last: result,
+      inflight: pending.size - 1,
+      heartbeat: false,
+      schedule_end_ms: scheduleEnd,
+    });
   };
 
   const tasks: Promise<void>[] = [];
@@ -470,6 +514,7 @@ export async function replayExchanges(
     }
     await Promise.all(tasks);
   } finally {
+    if (heartbeat !== null) clearInterval(heartbeat);
     signal?.removeEventListener('abort', onAbort);
     shutdown.abort();
     if (ownAdapter && adapter.close) await adapter.close();
