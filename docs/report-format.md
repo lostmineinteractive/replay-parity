@@ -137,7 +137,23 @@ Each report has `system`, `recording`, `exchanges`, `commands`, `snapshots` (`le
 
 ## Reproduction
 
-`rule`, `original_steps`, `reduced_steps`, `attempts`, `successful`, `label` (`reduced reproduction` or `reduction unsuccessful`), `duration_ms`, `recording` (the reduced file or null), and `steps`, each with `id`, `method`, `path`, `tags`, optional `body`, and `quantity_reduced`.
+Written by `rp shrink`; see `docs/shrinking.md` for how the reduction is found.
+
+| Field            | Type            | Meaning                                                                                                                                                              |
+| ---------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rule`           | string          | `invariant:<system>:<name>`, `mismatch:<exchange id>[:<path>]`, or `latency:<tag>:<metric>`.                                                                         |
+| `original_steps` | integer         | Steps in the recording.                                                                                                                                              |
+| `reduced_steps`  | integer         | Steps that remain.                                                                                                                                                   |
+| `attempts`       | integer         | Replays spent, each after a reset. With `--targets`, replays that ran ahead of the chunk that was taken are not counted. Zero when every answer came from the cache. |
+| `successful`     | boolean         | True when the steps are fewer than the original or a value was lowered, and the rule still reproduces.                                                               |
+| `label`          | string          | `reduced reproduction`, `reduced reproduction (statistical)` for a latency rule, or `reduction unsuccessful`. The label never says minimal.                          |
+| `duration_ms`    | number          | Time the shrink took.                                                                                                                                                |
+| `recording`      | string or null  | Path of the reduced recording, or null when none was written.                                                                                                        |
+| `repeat`         | integer         | Optional. Present for a latency rule: how many times each attempt replayed its subset, so the judgement is over the pooled sample.                                   |
+| `cache_hits`     | integer         | Optional. Present when attempts were answered from the cache without a replay.                                                                                       |
+| `steps`          | array of object | The remaining steps in recorded order.                                                                                                                               |
+
+Each step has `id`, `method`, `path`, `tags`, an optional `body` (the body as sent, with lowered and simplified values), `quantity_reduced` (true when a lowered integer was reduced), and an optional `changed`: a list of `{ path, from, to }`, one per value that differs from the recording. `path` is the concrete JSONPath in the body, such as `$.items[1].quantity`, `from` is the recorded value, and `to` is the value that was kept. `changed` is absent when nothing changed.
 
 ## Agent
 
