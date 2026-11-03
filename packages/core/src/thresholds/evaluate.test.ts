@@ -746,4 +746,57 @@ describe('evaluateThresholds', () => {
       ).toEqual([]);
     });
   });
+
+  describe('the inconclusive budget', () => {
+    const thin =
+      'latency:\n  min_samples: 3\n  by_tag:\n    a: { p99_ms: 100 }\n    b: { p99_ms: 100 }\n    ghost: { p99_ms: 100 }\n';
+
+    it('passes when at most max_rows rows lack samples and nothing failed', () => {
+      const t = parseThresholds(`${thin}inconclusive: { max_rows: 2 }\n`);
+      const { verdict, results, inconclusive } = evaluateThresholds(t, baseline);
+      expect(results.map((r) => r.outcome)).toEqual(['pass', 'inconclusive', 'inconclusive']);
+      expect(verdict).toBe('pass');
+      expect(inconclusive).toEqual([
+        {
+          kind: 'insufficient_samples',
+          detail: 'latency.by_tag.b.p99_ms: 1 successful sample, minimum 3',
+          tolerated: true,
+        },
+        {
+          kind: 'insufficient_samples',
+          detail: 'latency.by_tag.ghost.p99_ms: no samples for tag "ghost"',
+          tolerated: true,
+        },
+      ]);
+    });
+
+    it('does not apply above the budget, beside a failed row, or to other kinds', () => {
+      const over = parseThresholds(`${thin}inconclusive: { max_rows: 1 }\n`);
+      const tight = evaluateThresholds(over, baseline);
+      expect(tight.verdict).toBe('inconclusive');
+      expect(tight.inconclusive.every((c) => c.tolerated === undefined)).toBe(true);
+
+      const failing = parseThresholds(
+        `${thin}  overall: { max_ms: 1 }\ninconclusive: { max_rows: 5 }\n`,
+      );
+      const failed = evaluateThresholds(failing, baseline);
+      expect(failed.verdict).toBe('fail');
+      expect(failed.inconclusive.every((c) => c.tolerated === undefined)).toBe(true);
+
+      const unmeasured = parseThresholds(
+        'throughput: { achieved_rps_min: 1 }\ninconclusive: { max_rows: 5 }\n',
+      );
+      expect(evaluateThresholds(unmeasured, baseline).verdict).toBe('inconclusive');
+
+      const slipped = parseThresholds(
+        'pacing: { slip_max_ms: 1 }\ninconclusive: { max_rows: 5 }\n',
+      );
+      const held = evaluateThresholds(slipped, baseline, { slip_max_ms: 9 });
+      expect(held.verdict).toBe('inconclusive');
+      expect(held.inconclusive[0]?.tolerated).toBeUndefined();
+
+      // Without a budget nothing changes.
+      expect(evaluateThresholds(parseThresholds(thin), baseline).verdict).toBe('inconclusive');
+    });
+  });
 });

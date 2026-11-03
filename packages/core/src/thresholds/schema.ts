@@ -129,6 +129,15 @@ export const ThresholdsSchema = z
     status: StatusLimitsSchema.optional(),
     /** Limits against an earlier run. Evaluated only when the replay is given a baseline. */
     baseline: BaselineLimitsSchema.optional(),
+    /**
+     * A budget for rows that could not decide for lack of samples. When no row failed and at
+     * most `max_rows` rows are inconclusive, each for lack of samples, the run passes and the
+     * rows are listed as tolerated. Absent means no budget.
+     */
+    inconclusive: z
+      .object({ max_rows: z.number().int().min(0) })
+      .strict()
+      .optional(),
     pacing: z
       .object({
         /** The largest schedule slip the replay may show before the run is inconclusive. */

@@ -6,6 +6,7 @@ import {
   RUN_LEVEL_INCONCLUSIVE_KINDS,
   decideVerdict,
   exitCodeFor,
+  isTolerated,
 } from './verdict.js';
 
 function row(outcome: ThresholdResult['outcome']): ThresholdResult {
@@ -21,6 +22,46 @@ function row(outcome: ThresholdResult['outcome']): ThresholdResult {
 }
 
 describe('decideVerdict', () => {
+  it('passes when every inconclusive row is covered by a tolerated condition', () => {
+    const thin = row('inconclusive');
+    const tolerated = {
+      kind: 'insufficient_samples' as const,
+      detail: `${thin.id}: 3 successful samples, minimum 20`,
+      tolerated: true as const,
+    };
+    expect(
+      decideVerdict({ threshold_results: [row('pass'), thin], inconclusive: [tolerated] }),
+    ).toBe('pass');
+    // A row with no tolerated condition naming it still makes the run inconclusive.
+    const other = { ...thin, id: 'row.other' };
+    expect(decideVerdict({ threshold_results: [thin, other], inconclusive: [tolerated] })).toBe(
+      'inconclusive',
+    );
+    // An untolerated condition beside a tolerated one keeps the run inconclusive.
+    expect(
+      decideVerdict({
+        threshold_results: [thin],
+        inconclusive: [tolerated, { kind: 'insufficient_samples', detail: 'x: y' }],
+      }),
+    ).toBe('inconclusive');
+    // A failed row still fails.
+    expect(
+      decideVerdict({ threshold_results: [thin, row('fail')], inconclusive: [tolerated] }),
+    ).toBe('fail');
+  });
+
+  it('never tolerates a run level condition', () => {
+    for (const kind of RUN_LEVEL_INCONCLUSIVE_KINDS) {
+      const condition = { kind, detail: 'x', tolerated: true as const };
+      expect(isTolerated(condition)).toBe(false);
+      expect(decideVerdict({ threshold_results: [], inconclusive: [condition] })).toBe(
+        'inconclusive',
+      );
+    }
+    expect(isTolerated({ kind: 'insufficient_samples', detail: 'x', tolerated: true })).toBe(true);
+    expect(isTolerated({ kind: 'insufficient_samples', detail: 'x' })).toBe(false);
+  });
+
   it('passes when nothing failed and nothing is inconclusive', () => {
     expect(decideVerdict({ threshold_results: [row('pass')], inconclusive: [] })).toBe('pass');
     expect(decideVerdict({ threshold_results: [], inconclusive: [] })).toBe('pass');

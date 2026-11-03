@@ -710,7 +710,25 @@ export function evaluateThresholds(
       }
     }
   }
-  const inconclusive = conditionsFor(results);
+  const inconclusive = applyBudget(thresholds, results, conditionsFor(results));
   const verdict = decideVerdict({ threshold_results: results, inconclusive });
   return { verdict, results, inconclusive };
+}
+
+/**
+ * Marks the insufficient sample conditions as tolerated when the `inconclusive.max_rows`
+ * budget covers them: no row failed, every inconclusive row lacks samples, and there are at
+ * most `max_rows` of them. Otherwise the conditions are returned as they are.
+ */
+function applyBudget(
+  thresholds: Thresholds,
+  results: readonly ThresholdResult[],
+  conditions: InconclusiveCondition[],
+): InconclusiveCondition[] {
+  const budget = thresholds.inconclusive?.max_rows;
+  if (budget === undefined || conditions.length === 0) return conditions;
+  if (results.some((r) => r.outcome === 'fail')) return conditions;
+  if (conditions.some((c) => c.kind !== 'insufficient_samples')) return conditions;
+  if (conditions.length > budget) return conditions;
+  return conditions.map((c) => ({ ...c, tolerated: true as const }));
 }

@@ -156,6 +156,15 @@ describe('parseThresholds', () => {
     );
   });
 
+  it('parses the inconclusive budget', () => {
+    expect(parseThresholds('inconclusive: { max_rows: 2 }\n').inconclusive).toEqual({
+      max_rows: 2,
+    });
+    expect(parseThresholds('').inconclusive).toBeUndefined();
+    expect(() => parseThresholds('inconclusive: { max_rows: -1 }\n')).toThrow(/max_rows/);
+    expect(() => parseThresholds('inconclusive: { max_rows: 1.5 }\n')).toThrow(/max_rows/);
+  });
+
   it('loads from a file', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'rp-thr-'));
     const path = join(dir, 'thresholds.yaml');

@@ -32,6 +32,12 @@ export const InconclusiveConditionSchema = z
   .object({
     kind: InconclusiveKindSchema,
     detail: z.string().min(1),
+    /**
+     * True on an `insufficient_samples` row the `inconclusive.max_rows` budget absorbed. The
+     * condition is still listed so the report shows it, and it does not make the run
+     * inconclusive. Absent otherwise.
+     */
+    tolerated: z.literal(true).optional(),
   })
   .strict();
 
@@ -59,10 +65,16 @@ export interface VerdictInput {
   invariant_violations?: number | undefined;
 }
 
+/** Whether a condition was absorbed by the budget. A run level condition never is. */
+export function isTolerated(condition: InconclusiveCondition): boolean {
+  return condition.tolerated === true && !RUN_LEVEL_INCONCLUSIVE_KINDS.has(condition.kind);
+}
+
 /**
  * The precedence rule. A run level condition makes the run inconclusive.
  * Otherwise any failed threshold or invariant violation makes it fail.
- * Otherwise any insufficient sample row makes it inconclusive. Otherwise it passes.
+ * Otherwise any insufficient sample row makes it inconclusive, unless the
+ * inconclusive budget tolerated it. Otherwise it passes.
  */
 export function decideVerdict(input: VerdictInput): RunVerdict {
   if (input.inconclusive.some((c) => RUN_LEVEL_INCONCLUSIVE_KINDS.has(c.kind))) {
@@ -70,8 +82,13 @@ export function decideVerdict(input: VerdictInput): RunVerdict {
   }
   if (input.threshold_results.some((r) => r.outcome === 'fail')) return 'fail';
   if ((input.invariant_violations ?? 0) > 0) return 'fail';
-  if (input.inconclusive.length > 0) return 'inconclusive';
-  if (input.threshold_results.some((r) => r.outcome === 'inconclusive')) return 'inconclusive';
+  const tolerated = input.inconclusive.filter(isTolerated);
+  if (tolerated.length < input.inconclusive.length) return 'inconclusive';
+  // A tolerated condition names its row first, as `<row id>: <detail>`.
+  const covered = (id: string): boolean => tolerated.some((c) => c.detail.startsWith(`${id}: `));
+  if (input.threshold_results.some((r) => r.outcome === 'inconclusive' && !covered(r.id))) {
+    return 'inconclusive';
+  }
   return 'pass';
 }
 

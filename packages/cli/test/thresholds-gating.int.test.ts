@@ -157,6 +157,27 @@ describe('rp replay with the completed threshold matrix', () => {
   });
 });
 
+describe('rp replay with an inconclusive budget', () => {
+  // list-ledger has 16 exchanges, below a minimum of 20, so its row lacks samples.
+  const thin = 'latency:\n  min_samples: 20\n  by_tag:\n    list-ledger: { p99_ms: 100000 }\n';
+
+  it('passes and lists the tolerated row when the budget covers it', async () => {
+    const strict = await replayWith('budget-none', thin);
+    expect(strict.res.code).toBe(3);
+    const { res, run } = await replayWith('budget-one', `${thin}inconclusive: { max_rows: 1 }\n`);
+    expect(res.code, res.err).toBe(0);
+    expect(run.verdict).toBe('pass');
+    expect(run.threshold_results[0]?.outcome).toBe('inconclusive');
+    expect(run.inconclusive).toEqual([
+      {
+        kind: 'insufficient_samples',
+        detail: 'latency.by_tag.list-ledger.p99_ms: 16 successful samples, minimum 20',
+        tolerated: true,
+      },
+    ]);
+  });
+});
+
 describe('rp replay --baseline', () => {
   let basePath: string;
   let base: Run;
