@@ -74,7 +74,7 @@ export class FakeRedisServer {
       destroyed.catch((e: unknown) => {
         clearTimeout(timer);
         this.waiters.delete(done);
-        reject(e as Error);
+        reject(e instanceof Error ? e : new Error(String(e)));
       });
     });
   }

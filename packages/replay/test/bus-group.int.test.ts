@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, describe, expect, it } from 'vitest';
-import { RedisStreamsBus, type RedisStreamsClient } from '../src/index.js';
+import { RedisStreamsBus } from '../src/index.js';
 import { FakeRedisServer } from './fake-redis-streams.js';
 
 /**
@@ -76,7 +76,11 @@ async function redisHarness(url: string): Promise<Harness> {
   };
 }
 
-type Backend = { name: string; make: () => Promise<Harness>; skip: boolean };
+interface Backend {
+  name: string;
+  make: () => Promise<Harness>;
+  skip: boolean;
+}
 
 const backends: Backend[] = [
   { name: 'in memory streams', make: () => Promise.resolve(fakeHarness()), skip: false },
@@ -215,7 +219,7 @@ describe('consumer group details', () => {
   });
 
   it('refuses a consumer name without a group', () => {
-    const client = new FakeRedisServer().client() as RedisStreamsClient;
+    const client = new FakeRedisServer().client();
     expect(() => RedisStreamsBus.withClient(client, { consumer: 'c' })).toThrow(
       /consumer name needs a consumer group/,
     );
