@@ -326,7 +326,13 @@ export async function executeCase(
   }
   const refFinal = reference.responses[reference.responses.length - 1]!;
   const candFinal = candidate.responses[candidate.responses.length - 1]!;
-  const diff = differ.diff(refFinal, candFinal, equivalences(reference, candidate));
+  // Scoped rules apply by the case's tags and the method and path of its final step.
+  const finalStep = c.steps[c.steps.length - 1]!.request;
+  const diff = differ.diff(refFinal, candFinal, equivalences(reference, candidate), {
+    tags: c.tags,
+    method: finalStep.method,
+    path: finalStep.path,
+  });
   const latency: CaseLatency = {
     reference: exactSummary(reference.latencies),
     candidate: exactSummary(candidate.latencies),

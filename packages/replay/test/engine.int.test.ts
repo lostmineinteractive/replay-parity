@@ -1063,3 +1063,39 @@ describe('substitutions captured from a response header', () => {
     expect(run.stats.overall.mismatches).toBe(0);
   });
 });
+
+describe('scoped diff rules', () => {
+  it('applies a rule scoped to a tag only to exchanges carrying that tag', async () => {
+    // The candidate returns every list reversed. The keyed unordered rule is scoped to
+    // the inventory tag, so it tolerates the order there and not on the orders list.
+    const rows = [{ sku: 'A-100' }, { sku: 'B-200' }, { sku: 'C-300' }];
+    const adapter: Adapter = {
+      name: 'fake',
+      send: () => Promise.resolve(jsonResponse({ items: [...rows].reverse() }, 200, 1)),
+    };
+    const exchanges = [
+      { path: '/v1/inventory', tags: ['list-inventory'] },
+      { path: '/v1/orders', tags: ['list-orders'] },
+    ].map((x, i) =>
+      makeExchange({
+        index: i,
+        tags: x.tags,
+        request: makeRequest({ path: x.path }),
+        response: jsonResponse({ items: rows }, 200, 1),
+      }),
+    );
+    const rules = parseDiffRules(
+      "unordered:\n  - path: '$.items'\n    key: '$.sku'\n    when: { tags: [list-inventory] }\n",
+    );
+    const run = await replay({
+      recording: await writeRecording(exchanges),
+      target: 'fake://',
+      adapter,
+      pace: 'max',
+      rules,
+    });
+    const byTag: Record<string, string | undefined> = {};
+    for (const e of run.exchanges) byTag[e.tags[0] ?? ''] = e.diff?.verdict;
+    expect(byTag).toEqual({ 'list-inventory': 'match', 'list-orders': 'mismatch' });
+  });
+});

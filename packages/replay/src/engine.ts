@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
+  exchangeContext,
   ConfigError,
   DEFAULT_REDACTED_HEADERS,
   REDACTED,
@@ -414,10 +415,13 @@ export async function replayExchanges(
     const ackedAt = candidate === null ? null : rel();
     let diff: Diff | null = null;
     if (candidate !== null) {
-      table.capture(e.tags, e.response, candidate);
+      // Scoped rules apply by this exchange's tags, method, and recorded path, and a
+      // request side capture reads the recorded request and the request as sent.
+      const context = exchangeContext(e);
+      table.capture(e.tags, e.response, candidate, { recorded: e.request, sent: request });
       diff = control
-        ? differ.diffStatus(e.response, candidate)
-        : differ.diff(e.response, candidate, table.equivalences);
+        ? differ.diffStatus(e.response, candidate, context)
+        : differ.diff(e.response, candidate, table.equivalences, context);
     }
     if (control && (error !== null || diff?.verdict === 'mismatch')) {
       const reason =
