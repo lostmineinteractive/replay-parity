@@ -53,6 +53,11 @@ export {
   type RequestEnvelope,
 } from './bus/bus.js';
 export { InProcessBus } from './bus/in-process.js';
-export { RedisStreamsBus, type RedisStreamsBusOptions } from './bus/redis-streams.js';
+export {
+  DEFAULT_CLAIM_IDLE_MS,
+  RedisStreamsBus,
+  type RedisStreamsBusOptions,
+  type RedisStreamsClient,
+} from './bus/redis-streams.js';
 export { BusAdapter, type BusAdapterOptions } from './bus/adapter.js';
 export { serveBus, type BusResponder, type ResponderResponse } from './bus/responder.js';
