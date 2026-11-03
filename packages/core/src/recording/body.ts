@@ -8,10 +8,20 @@ import {
   inflateRawSync,
   inflateSync,
 } from 'node:zlib';
-import { sha256Hex, type JsonValue } from '../json.js';
+import {
+  containsLosslessNumber,
+  parseJsonLossless,
+  sha256Hex,
+  stringifyJsonLossless,
+  type JsonValue,
+} from '../json.js';
 
 /**
- * Body storage rules. JSON content types are stored parsed. Other content is
+ * Body storage rules. JSON content types are stored parsed, with a number
+ * whose text JavaScript would change, such as `1.10` or an integer beyond
+ * 2^53, stored as `{"$num": "<text>"}` and written back as that text. A JSON
+ * body that itself holds an object of that shape is stored as base64, so the
+ * shape always means a lossless number. Other content is
  * stored as base64 with `encoding: "base64"`. A body over the size cap is
  * stored as its SHA-256, its size, and `truncated: true`.
  *
@@ -170,8 +180,12 @@ function storeDecoded(bytes: Buffer, contentType: string | undefined): BodyField
   if (bytes.byteLength === 0) return {};
   if (isJsonContentType(contentType)) {
     try {
-      const parsed = JSON.parse(bytes.toString('utf8')) as JsonValue;
-      return { body: parsed };
+      const text = bytes.toString('utf8');
+      const parsed = parseJsonLossless(text);
+      // A body that spells the reserved `$num` shape itself is kept as bytes, so it is never misread.
+      if (!(text.includes('$num') && containsLosslessNumber(JSON.parse(text) as JsonValue))) {
+        return { body: parsed };
+      }
     } catch {
       // Fall through and store the raw bytes.
     }
@@ -243,7 +257,7 @@ export function decodeBody(fields: BodyFields): Buffer | null {
     case 'base64':
       return Buffer.from(fields.body as string, 'base64');
     case 'json':
-      return Buffer.from(JSON.stringify(fields.body), 'utf8');
+      return Buffer.from(stringifyJsonLossless(fields.body as JsonValue), 'utf8');
   }
 }
 

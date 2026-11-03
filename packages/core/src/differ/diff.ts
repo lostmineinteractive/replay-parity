@@ -1,4 +1,11 @@
-import { canonicalJson, isJsonObject, jsonType, stripUndefined, type JsonValue } from '../json.js';
+import {
+  canonicalJson,
+  isJsonObject,
+  isLosslessNumber,
+  jsonType,
+  stripUndefined,
+  type JsonValue,
+} from '../json.js';
 import {
   get,
   isPlainPath,
@@ -24,6 +31,12 @@ import {
 } from '../rules/schema.js';
 import { whenMatches, type DiffContext, type When } from '../rules/scope.js';
 import { parseTimestamp, type TimeFormat } from '../rules/time.js';
+import {
+  exactDecimalOf,
+  exactDecimalsEqual,
+  withinExactTolerance,
+  type ExactDecimal,
+} from './exact-number.js';
 import type { Diff, Finding, FindingKind, Verdict } from './schema.js';
 
 /**
@@ -353,6 +366,16 @@ function isField(path: readonly Segment[]): boolean {
   return path[path.length - 1]?.type === 'key';
 }
 
+/** The type of a value for comparison: a lossless number is a number. */
+function typeName(value: JsonValue): ReturnType<typeof jsonType> {
+  return isLosslessNumber(value) ? 'number' : jsonType(value);
+}
+
+/** The text of a number: a lossless number's source text, or the value itself. */
+function numberText(value: JsonValue): JsonValue {
+  return isLosslessNumber(value) ? value.$num : value;
+}
+
 /** Whether one value is a string that spells the other, a number. */
 function numericStringEqual(a: JsonValue, b: JsonValue): boolean {
   const [text, num] = typeof a === 'string' ? [a, b] : [b, a];
@@ -401,12 +424,22 @@ class BodyWalker {
       this.missing(ref, rendered);
       return;
     }
+    if (isLosslessNumber(ref) || isLosslessNumber(cand)) {
+      const a = exactDecimalOf(ref);
+      const b = exactDecimalOf(cand);
+      if (a !== undefined && b !== undefined) {
+        const texts = [numberText(ref), numberText(cand)] as const;
+        if (this.compareDecimal(ref, cand, path, rendered, texts)) return;
+        this.compareExact(ref, cand, a, b, path, rendered);
+        return;
+      }
+    }
     if (ref !== cand) {
       if (this.compareDecimal(ref, cand, path, rendered)) return;
       if (this.compareTime(ref, cand, path, rendered)) return;
     }
-    const tr = jsonType(ref);
-    const tc = jsonType(cand);
+    const tr = typeName(ref);
+    const tc = typeName(cand);
     if (tr === 'array' && tc === 'array') {
       const unordered = this.findRule(this.active.unordered, path);
       if (unordered) {
@@ -517,16 +550,20 @@ class BodyWalker {
     );
   }
 
-  /** Compares two decimals under a matching rule. False when no rule applies or a side is not a decimal. */
+  /**
+   * Compares two decimals under a matching rule. False when no rule applies or a side is not a
+   * decimal. `texts` stands in for the values when they are lossless numbers.
+   */
   private compareDecimal(
     ref: JsonValue,
     cand: JsonValue,
     path: Segment[],
     rendered: string,
+    texts: readonly [JsonValue, JsonValue] = [ref, cand],
   ): boolean {
     const rule = this.findRule(this.active.decimal, path);
     if (rule === undefined) return false;
-    const equal = decimalsEqual(ref, cand, rule.scale);
+    const equal = decimalsEqual(texts[0], texts[1], rule.scale);
     if (equal === undefined) return false;
     const places = `${rule.scale} place${rule.scale === 1 ? '' : 's'}`;
     this.out.push(
@@ -564,6 +601,43 @@ class BodyWalker {
       }),
     );
     return true;
+  }
+
+  /**
+   * Compares a lossless number with a lossless number or a plain number by
+   * exact decimal value, with the tolerance rules worked exactly as well.
+   */
+  private compareExact(
+    ref: JsonValue,
+    cand: JsonValue,
+    a: ExactDecimal,
+    b: ExactDecimal,
+    path: Segment[],
+    rendered: string,
+  ): void {
+    if (exactDecimalsEqual(a, b)) return;
+    const tol = this.findRule(this.active.tolerances, path);
+    if (tol && withinExactTolerance(a, b, tol.abs, tol.rel)) {
+      this.out.push(
+        finding(rendered, 'value', {
+          reference: ref,
+          candidate: cand,
+          tolerated: true,
+          rule: tol.name,
+          detail: `within ${describeTolerance(tol)}`,
+        }),
+      );
+      return;
+    }
+    this.out.push(
+      finding(rendered, 'value', {
+        reference: ref,
+        candidate: cand,
+        detail: tol
+          ? `outside ${describeTolerance(tol)} of ${tol.name}`
+          : 'no tolerance rule covers this path',
+      }),
+    );
   }
 
   private compareNumbers(ref: number, cand: number, path: Segment[]): void {
