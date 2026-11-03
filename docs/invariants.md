@@ -38,7 +38,7 @@ The terminal shows one line per rule and up to five evidence entries each. `--ou
 
 `sha256` is the hash of the module file or the rules file, so a report says exactly which rules it ran. It is `null` for the built in module, which the package version identifies. Reports written before modules existed have no `module` key and came from the order lifecycle rules.
 
-`rp replay --invariants` evaluates the built in module on both recordings. Replay does not take a module yet.
+`rp replay --invariants` evaluates the built in module on both recordings. `rp replay --invariants-module <path>` and `rp replay --invariants-rules <path>` evaluate another module or a declarative rules file instead, on both recordings, and imply `--invariants`. The two flags cannot be combined.
 
 ## The module contract
 

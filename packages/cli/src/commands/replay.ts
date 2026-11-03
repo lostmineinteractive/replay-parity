@@ -37,6 +37,7 @@ import {
   type ReplayProgress,
   type RetryKind,
 } from '@replay-parity/replay';
+import { loadDeclarativeRules, loadInvariantModule } from '@replay-parity/invariants';
 import { renderTerminal } from '@replay-parity/report';
 import { Command, InvalidArgumentError, Option } from 'commander';
 import { displayText, type CliContext } from '../config/index.js';
@@ -109,6 +110,10 @@ export interface ReplayCommandOptions extends UpstreamFlags, AdapterModuleFlags 
   resume?: boolean;
   candidateRecording?: string;
   invariants: boolean;
+  /** An invariant module to evaluate instead of the built in rules. Implies --invariants. */
+  invariantsModule?: string;
+  /** A declarative invariants.yaml to evaluate instead of the built in rules. Implies --invariants. */
+  invariantsRules?: string;
   timeoutMs: number;
   maxBodyBytes?: number;
   quiet: boolean;
@@ -226,6 +231,15 @@ export async function runReplay(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<number> {
   const traceId = options.trace === true || env.RP_TRACE === '1' ? generateTraceId() : undefined;
+  if (options.invariantsModule !== undefined && options.invariantsRules !== undefined) {
+    throw new ConfigError('--invariants-module and --invariants-rules cannot be used together');
+  }
+  const invariantsModule =
+    options.invariantsModule !== undefined
+      ? await loadInvariantModule(options.invariantsModule)
+      : options.invariantsRules !== undefined
+        ? await loadDeclarativeRules(options.invariantsRules)
+        : undefined;
   const log =
     traceId === undefined ? logger(streams) : logger(streams).child({ trace_id: traceId });
   const rules = options.rules === undefined ? emptyRules() : await loadDiffRules(options.rules);
@@ -388,7 +402,8 @@ export async function runReplay(
             ? 'always'
             : 'never',
       candidateRecording: options.candidateRecording ?? null,
-      invariants: options.invariants,
+      invariants: options.invariants || invariantsModule !== undefined,
+      invariantsModule,
       timeoutMs: options.timeoutMs,
       maxBodyBytes: options.maxBodyBytes,
       log,
@@ -607,6 +622,14 @@ export function replayCommand(
       'write the requests as sent and the candidate responses here',
     )
     .option('--invariants', 'evaluate the independent invariants on both recordings', false)
+    .option(
+      '--invariants-module <path>',
+      'evaluate this invariant module instead of the built in rules; implies --invariants',
+    )
+    .option(
+      '--invariants-rules <path>',
+      'evaluate this declarative invariants.yaml instead of the built in rules; implies --invariants',
+    )
     .addOption(
       new Option('--timeout-ms <n>', 'request timeout').default(30_000).argParser(positiveInt),
     )

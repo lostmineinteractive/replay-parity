@@ -83,6 +83,10 @@ replay:
   candidate-recording: out/candidate.jsonl
   # Evaluate the independent invariants on both recordings.
   invariants: true
+  # Evaluate this invariant module, or this declarative rules file, in place of the
+  # built in order lifecycle rules. Either one implies invariants; they cannot be combined.
+  # invariants-module: invariants/my-service.mjs
+  # invariants-rules: invariants.yaml
   # Request timeout in milliseconds.
   timeout-ms: 30000
   # Candidate bodies above this size are stored as a hash.
@@ -113,6 +117,9 @@ invariants:
   system: reference
   # Write the report as JSON here.
   out: out/invariants.json
+  # An invariant module, or a declarative rules file, in place of the built in rules.
+  # module: invariants/my-service.mjs
+  # rules: invariants.yaml
 
 shrink:
   # The failing run file and the recording it replayed.

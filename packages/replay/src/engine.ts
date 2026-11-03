@@ -37,7 +37,7 @@ import {
   type TagCounts,
   type Thresholds,
 } from '@replay-parity/core';
-import { evaluateInvariants } from '@replay-parity/invariants';
+import { evaluateInvariants, type LoadedInvariantModule } from '@replay-parity/invariants';
 import { toSendError, type Adapter, type ReplayContext } from './adapter.js';
 import { candidateExchanges, writeExchanges, type SentExchange } from './candidate-recording.js';
 import { HttpAdapter } from './http-adapter.js';
@@ -179,6 +179,8 @@ export interface ReplayOptions {
   redactHeaders?: readonly string[] | undefined;
   /** Evaluate the independent invariants on the reference and the candidate recordings. Default false. */
   invariants?: boolean | undefined;
+  /** The invariant module to evaluate. Default: the built in order lifecycle rules. */
+  invariantsModule?: LoadedInvariantModule | undefined;
   /** Timeout for the default HTTP adapter. Default 30000. */
   timeoutMs?: number | undefined;
   maxBodyBytes?: number | undefined;
@@ -1245,10 +1247,12 @@ async function runEngine(
     const reference = evaluateInvariants(selectedLog, {
       system: 'reference',
       recording: options.recording ?? '',
+      module: options.invariantsModule,
     });
     const candidate = evaluateInvariants(candidateLog, {
       system: 'candidate',
       recording: candidateRecording ?? '',
+      module: options.invariantsModule,
     });
     invariants = { reference, candidate };
     for (const report of [reference, candidate]) {
