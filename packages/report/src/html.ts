@@ -108,9 +108,24 @@ function thresholds(run: Run): string {
   return `<section id="thresholds"><h2>Thresholds</h2><table><thead><tr><th>Outcome</th><th>Row</th><th>Section</th><th>Scope</th><th>Metric</th><th class="num">Limit</th><th class="num">Measured</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table></section>`;
 }
 
+/** The fragment id of an exchange's drill down entry. */
+function exchangeAnchor(id: string): string {
+  return `exchange-${id}`;
+}
+
+/** An evidence entry's exchange, linked to its drill down entry when the report shows one. */
+function evidenceExchange(id: string, drilled: ReadonlySet<string>): string {
+  const label = `exchange ${esc(id)}`;
+  const target = drilled.has(id)
+    ? `<a href="#${esc(encodeURIComponent(exchangeAnchor(id)))}">${label}</a>`
+    : label;
+  return ` <span class="muted">(${target})</span>`;
+}
+
 function invariants(run: Run): string {
   const { reference, candidate } = run.invariants;
   if (reference === null && candidate === null) return '';
+  const drilled = new Set(planDrillDown(run).groups.flatMap((g) => g.shown.map((e) => e.id)));
   const blocks = [reference, candidate]
     .filter((r): r is NonNullable<typeof r> => r !== null)
     .map((report) => {
@@ -123,9 +138,7 @@ function invariants(run: Run): string {
                   .map(
                     (e) =>
                       `<li>${esc(e.subject)}: expected ${json(e.expected)}, observed ${json(e.observed)}. ${esc(e.detail)}${
-                        e.exchange_id === null
-                          ? ''
-                          : ` <span class="muted">(exchange ${esc(e.exchange_id)})</span>`
+                        e.exchange_id === null ? '' : evidenceExchange(e.exchange_id, drilled)
                       }</li>`,
                   )
                   .join('')}</ul>`;
@@ -178,7 +191,7 @@ function drillDown(e: ExchangeResult): string {
         `<tr class="${f.tolerated ? 'tolerated' : 'untolerated'}"><td><code>${esc(f.path)}</code></td><td>${esc(f.kind)}</td><td>${json(f.reference)}</td><td>${json(f.candidate)}</td><td>${f.tolerated ? `tolerated by <code>${esc(f.rule ?? '')}</code>` : esc(f.detail ?? '')}</td></tr>`,
     )
     .join('');
-  return `<details class="exchange" data-id="${esc(e.id)}"><summary>${esc(e.method)} ${esc(e.path)} <span class="muted">[${esc(e.tags.join(', '))}] ${esc(e.id)}</span> status ${e.reference.status} / ${e.candidate?.status ?? 'error'}, latency ${fmtMs(e.reference.latency_ms)} / ${fmtMs(e.candidate?.latency_ms)} ms</summary><table><thead><tr><th>Path</th><th>Kind</th><th>Reference</th><th>Candidate</th><th>Rule or detail</th></tr></thead><tbody>${findings}</tbody></table></details>`;
+  return `<details class="exchange" data-id="${esc(e.id)}"><summary id="${esc(exchangeAnchor(e.id))}">${esc(e.method)} ${esc(e.path)} <span class="muted">[${esc(e.tags.join(', '))}] ${esc(e.id)}</span> status ${e.reference.status} / ${e.candidate?.status ?? 'error'}, latency ${fmtMs(e.reference.latency_ms)} / ${fmtMs(e.candidate?.latency_ms)} ms</summary><table><thead><tr><th>Path</th><th>Kind</th><th>Reference</th><th>Candidate</th><th>Rule or detail</th></tr></thead><tbody>${findings}</tbody></table></details>`;
 }
 
 function correctness(run: Run): string {
