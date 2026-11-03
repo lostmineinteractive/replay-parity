@@ -17,6 +17,7 @@ import {
   shrink,
   verifyRecordingHash,
 } from '@replay-parity/shrink';
+import { HttpAdapter, upstreamFetch } from '@replay-parity/replay';
 import { Command, Option } from 'commander';
 import { displayText, type CliContext } from '../config/index.js';
 import { endProgress, logger, out, startProgress, type CliStreams } from '../io.js';
@@ -29,8 +30,14 @@ import {
   resolveQuery,
 } from '../options.js';
 import { formatCheck, hasError, preflight } from '../preflight.js';
+import {
+  addUpstreamOptions,
+  customUpstream,
+  resolveUpstream,
+  type UpstreamFlags,
+} from '../upstream.js';
 
-export interface ShrinkCommandOptions {
+export interface ShrinkCommandOptions extends UpstreamFlags {
   run: string;
   recording: string;
   target: string;
@@ -102,6 +109,7 @@ export async function runShrink(
       `${options.run} has no violated invariant and no mismatched exchange to reproduce`,
     );
   }
+  const upstream = await resolveUpstream(options);
   if (options.preflight !== false) {
     const probe = options.preflightProbe === true;
     const checks = await preflight({
@@ -110,9 +118,11 @@ export async function runShrink(
       rules,
       barrierTags: options.barrierTag,
       target: probe
-        ? { url: options.target, label: options.targetLabel ?? options.target }
+        ? { url: options.target, label: options.targetLabel ?? options.target, upstream }
         : undefined,
-      reset: probe ? { url: options.reset, label: options.resetLabel ?? options.reset } : undefined,
+      reset: probe
+        ? { url: options.reset, label: options.resetLabel ?? options.reset, upstream }
+        : undefined,
     });
     for (const check of checks) {
       if (check.level === 'warn') log.warn(`preflight: ${formatCheck(check)}`);
@@ -129,7 +139,9 @@ export async function runShrink(
   const queryOverrides = resolveQuery(options.query);
   const resetUrl = options.reset;
   const reset = async (): Promise<void> => {
-    const res = await fetch(resetUrl, { method: 'POST' });
+    const res = customUpstream(upstream)
+      ? await upstreamFetch(resetUrl, { method: 'POST' }, upstream)
+      : await fetch(resetUrl, { method: 'POST' });
     if (!res.ok) {
       throw new ConfigError(`reset ${options.resetLabel ?? resetUrl} answered ${res.status}`);
     }
@@ -149,7 +161,11 @@ export async function runShrink(
           }),
         })
       : undefined;
-  let result;
+  // One adapter serves every attempt, so the connection settings are applied once.
+  const adapter = customUpstream(upstream)
+    ? new HttpAdapter(options.target, { ...upstream, timeoutMs: options.timeoutMs, connections: 1 })
+    : undefined;
+  let result: Awaited<ReturnType<typeof shrink>>;
   try {
     result = await shrink({
       exchanges,
@@ -162,6 +178,7 @@ export async function runShrink(
         queryOverrides,
         barrierTags: options.barrierTag,
         timeoutMs: options.timeoutMs,
+        ...(adapter === undefined ? {} : { adapter }),
       },
       maxAttempts: options.maxAttempts,
       timeBudgetMs: options.timeBudgetMs,
@@ -181,6 +198,7 @@ export async function runShrink(
     });
   } finally {
     if (progress !== undefined) endProgress(streams, progress);
+    await adapter?.close();
   }
   const { reproduction, aborted } = result;
   await writeRun(options.run, { ...run, reproduction });
@@ -215,7 +233,7 @@ export function shrinkCommand(
   exit: (code: number) => void,
   context?: CliContext,
 ): Command {
-  return new Command('shrink')
+  const command = new Command('shrink')
     .description(
       'Reduce a failing run to a reduced reproduction by replaying subsets of the recording against a reset candidate. Updates the run file in place.',
     )
@@ -281,19 +299,20 @@ export function shrinkCommand(
       )
         .default(DEFAULT_HEARTBEAT_MS)
         .argParser(nonNegativeInt),
-    )
-    .action(async (opts: ShrinkCommandOptions, command: Command) => {
-      exit(
-        await runShrink(
-          {
-            ...opts,
-            targetLabel: displayText(command, 'target', opts.target),
-            resetLabel: displayText(command, 'reset', opts.reset),
-          },
-          streams,
-          signal,
-          context?.env,
-        ),
-      );
-    });
+    );
+  addUpstreamOptions(command);
+  return command.action(async (opts: ShrinkCommandOptions, command: Command) => {
+    exit(
+      await runShrink(
+        {
+          ...opts,
+          targetLabel: displayText(command, 'target', opts.target),
+          resetLabel: displayText(command, 'reset', opts.reset),
+        },
+        streams,
+        signal,
+        context?.env,
+      ),
+    );
+  });
 }

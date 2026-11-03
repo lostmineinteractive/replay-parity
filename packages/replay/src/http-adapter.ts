@@ -11,16 +11,103 @@ import {
   type RecordedRequest,
   type RecordedResponse,
 } from '@replay-parity/core';
-import { Pool } from 'undici';
+import { ProxyAgent, Pool, fetch as undiciFetch, type Dispatcher } from 'undici';
 import { toSendError, type Adapter, type ReplayContext } from './adapter.js';
 
+/** TLS settings for the connection to the target. Values are PEM text or buffers. */
+export interface UpstreamTls {
+  /** Certificate authorities that sign the target's certificate, in place of the default roots. */
+  ca?: string | Buffer | readonly (string | Buffer)[] | undefined;
+  /** Client certificate presented when the target asks for one. */
+  cert?: string | Buffer | undefined;
+  key?: string | Buffer | undefined;
+  passphrase?: string | undefined;
+  /** False accepts any certificate the target presents. Default true. */
+  rejectUnauthorized?: boolean | undefined;
+  /** The name sent in SNI and checked against the certificate. */
+  servername?: string | undefined;
+}
+
 export interface HttpAdapterOptions {
+  tls?: UpstreamTls | undefined;
+  /** HTTP proxy URL the connection goes through. */
+  proxy?: string | undefined;
   /** Headers and body timeout in milliseconds. Default 30000. */
   timeoutMs?: number | undefined;
   /** Connections kept to the target. Default 8. */
   connections?: number | undefined;
   /** Response bodies over this size are stored as a hash. Default 1 MiB. */
   maxBodyBytes?: number | undefined;
+}
+
+interface DispatcherOptions {
+  tls?: UpstreamTls | undefined;
+  proxy?: string | undefined;
+  connections?: number | undefined;
+  timeoutMs: number;
+}
+
+function connectOptions(tls: UpstreamTls | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (tls === undefined) return out;
+  for (const [key, value] of Object.entries(tls)) {
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * A dispatcher for the target. Without a proxy it is a pool on the origin with
+ * the given connection count. With a proxy it is a proxy agent, which tunnels
+ * https targets with CONNECT and applies the TLS settings to the target.
+ */
+export function createDispatcher(origin: string, options: DispatcherOptions): Dispatcher {
+  const timeouts = { headersTimeout: options.timeoutMs, bodyTimeout: options.timeoutMs };
+  const tls = connectOptions(options.tls);
+  if (options.proxy !== undefined) {
+    return new ProxyAgent({
+      uri: options.proxy,
+      requestTls: tls,
+      ...(options.connections === undefined ? {} : { connections: options.connections }),
+      ...timeouts,
+    });
+  }
+  return new Pool(origin, { connections: options.connections ?? 8, connect: tls, ...timeouts });
+}
+
+/** True when the options change how a connection is made. */
+export function hasUpstreamOptions(options: {
+  tls?: UpstreamTls | undefined;
+  proxy?: string | undefined;
+}): boolean {
+  return (
+    options.proxy !== undefined || Object.values(options.tls ?? {}).some((v) => v !== undefined)
+  );
+}
+
+/** One request with the TLS and proxy settings, for probes and resets. The dispatcher is closed afterwards. */
+export async function upstreamFetch(
+  url: string,
+  init: { method: string; signal?: AbortSignal | undefined },
+  options: { tls?: UpstreamTls | undefined; proxy?: string | undefined },
+): Promise<{ status: number; ok: boolean }> {
+  const dispatcher = createDispatcher(new URL(url).origin, {
+    ...options,
+    connections: 1,
+    timeoutMs: 30_000,
+  });
+  try {
+    const res = await undiciFetch(url, {
+      method: init.method,
+      redirect: 'manual',
+      dispatcher,
+      ...(init.signal === undefined ? {} : { signal: init.signal }),
+    });
+    await res.body?.cancel();
+    return { status: res.status, ok: res.ok };
+  } finally {
+    await dispatcher.close();
+  }
 }
 
 const HOP_BY_HOP = new Set([
@@ -75,20 +162,23 @@ function round3(value: number): number {
  */
 export class HttpAdapter implements Adapter {
   readonly name = 'http';
-  private readonly pool: Pool;
+  private readonly pool: Dispatcher;
   private readonly prefix: string;
+  private readonly origin: string;
   private readonly timeoutMs: number;
   private readonly maxBodyBytes: number;
 
   constructor(target: string, options: HttpAdapterOptions = {}) {
     const url = new URL(target);
+    this.origin = url.origin;
     this.prefix = url.pathname.replace(/\/+$/, '');
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
-    this.pool = new Pool(url.origin, {
+    this.pool = createDispatcher(url.origin, {
+      tls: options.tls,
+      proxy: options.proxy,
       connections: options.connections ?? 8,
-      headersTimeout: this.timeoutMs,
-      bodyTimeout: this.timeoutMs,
+      timeoutMs: this.timeoutMs,
     });
   }
 
@@ -97,6 +187,7 @@ export class HttpAdapter implements Adapter {
     const started = performance.now();
     try {
       const res = await this.pool.request({
+        origin: this.origin,
         method: req.method,
         path: this.prefix + pathWithQuery(req.path, req.query),
         // The trace header goes out over a recorded one, so the exchange maps to this run.

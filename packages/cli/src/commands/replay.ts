@@ -25,6 +25,7 @@ import {
   DEFAULT_BARRIER_TIMEOUT_MS,
   DEFAULT_CONCURRENCY,
   DEFAULT_MAX_GAP_MS,
+  HttpAdapter,
   RedisStreamsBus,
   replayExchanges,
   type Adapter,
@@ -46,8 +47,14 @@ import {
   resolveQuery,
 } from '../options.js';
 import { formatCheck, hasError, preflight } from '../preflight.js';
+import {
+  addUpstreamOptions,
+  customUpstream,
+  resolveUpstream,
+  type UpstreamFlags,
+} from '../upstream.js';
 
-export interface ReplayCommandOptions {
+export interface ReplayCommandOptions extends UpstreamFlags {
   recording: string;
   target: string;
   out: string;
@@ -186,6 +193,7 @@ export async function runReplay(
     options.thresholds === undefined ? emptyThresholds() : await loadThresholds(options.thresholds);
   const headers = await resolveHeaders(options.header, options.headersFile, env);
   const queryOverrides = resolveQuery(options.query);
+  const upstream = await resolveUpstream(options);
   // The file is read once for the preflight and the replay, and hashed in a second
   // streaming pass, so the run carries the recording hash the way replay() records it.
   const [exchanges, recordingHash] = await Promise.all([
@@ -201,7 +209,7 @@ export async function runReplay(
       barrierTags: options.barrierTag,
       target:
         options.preflightProbe === true && options.adapter === 'http'
-          ? { url: options.target, label: options.targetLabel ?? options.target }
+          ? { url: options.target, label: options.targetLabel ?? options.target, upstream }
           : undefined,
     });
     for (const check of checks) {
@@ -282,6 +290,13 @@ export async function runReplay(
     if (options.busUrl === undefined) throw new ConfigError('--adapter bus needs --bus-url');
     bus = await RedisStreamsBus.connect(options.busUrl);
     adapter = await BusAdapter.create(bus, { timeoutMs: options.timeoutMs });
+  } else if (customUpstream(upstream)) {
+    adapter = new HttpAdapter(options.target, {
+      ...upstream,
+      timeoutMs: options.timeoutMs,
+      connections: options.concurrency,
+      maxBodyBytes: options.maxBodyBytes,
+    });
   }
   try {
     const run = await replayExchanges(exchanges, {
@@ -352,7 +367,7 @@ export function replayCommand(
   exit: (code: number) => void,
   context?: CliContext,
 ): Command {
-  return new Command('replay')
+  const command = new Command('replay')
     .description(
       'Replay a recording against the candidate, diff every response, evaluate the thresholds, and write run.json. Exits 0 on pass, 2 on fail, 3 on inconclusive, 1 on a tool error.',
     )
@@ -480,17 +495,18 @@ export function replayCommand(
         '--metrics-port <n>',
         'serve Prometheus metrics at /metrics on this port until the run ends; 0 picks a free port',
       ).argParser(portNumber),
-    )
-    .action(async (opts: ReplayCommandOptions, command: Command) => {
-      exit(
-        await runReplay(
-          { ...opts, targetLabel: displayText(command, 'target', opts.target) },
-          streams,
-          signal,
-          context?.env,
-        ),
-      );
-    });
+    );
+  addUpstreamOptions(command);
+  return command.action(async (opts: ReplayCommandOptions, command: Command) => {
+    exit(
+      await runReplay(
+        { ...opts, targetLabel: displayText(command, 'target', opts.target) },
+        streams,
+        signal,
+        context?.env,
+      ),
+    );
+  });
 }
 
 export function validateHeaderOptions(values: readonly string[]): void {

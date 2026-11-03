@@ -8,6 +8,8 @@ import {
   type JsonValue,
   type Thresholds,
 } from '@replay-parity/core';
+import { hasUpstreamOptions, upstreamFetch } from '@replay-parity/replay';
+import type { Upstream } from './upstream.js';
 
 /**
  * The preflight: checks that run before anything is sent, shared by
@@ -28,6 +30,24 @@ export interface Check {
 export interface Probe {
   url: string;
   label: string;
+  /** TLS and proxy settings the probe connects with, the same ones the replay uses. */
+  upstream?: Upstream | undefined;
+}
+
+/** One request for a probe. Plain `fetch` unless TLS or proxy settings apply. */
+async function probeRequest(
+  probe: Probe,
+  url: string,
+  method: 'GET' | 'POST',
+  timeoutMs: number,
+): Promise<{ status: number; ok: boolean }> {
+  const signal = AbortSignal.timeout(timeoutMs);
+  if (probe.upstream !== undefined && hasUpstreamOptions(probe.upstream)) {
+    return upstreamFetch(url, { method, signal }, probe.upstream);
+  }
+  const res = await fetch(url, { method, signal, redirect: 'manual' });
+  await res.body?.cancel();
+  return { status: res.status, ok: res.ok };
 }
 
 export const PROBE_TIMEOUT_MS = 5000;
@@ -200,12 +220,7 @@ export async function probeHealth(
   const shown = url === probe.url ? probe.label : `${probe.label.replace(/\/$/, '')}/healthz`;
   const started = performance.now();
   try {
-    const res = await fetch(url, {
-      method: 'GET',
-      signal: AbortSignal.timeout(timeoutMs),
-      redirect: 'manual',
-    });
-    await res.body?.cancel();
+    const res = await probeRequest(probe, url, 'GET', timeoutMs);
     const ms = Math.round(performance.now() - started);
     return res.status < 500
       ? ok(name, `GET ${shown} answered ${res.status} in ${ms} ms`)
@@ -224,12 +239,7 @@ export async function probeReset(probe: Probe, timeoutMs = PROBE_TIMEOUT_MS): Pr
   }
   const started = performance.now();
   try {
-    const res = await fetch(probe.url, {
-      method: 'POST',
-      signal: AbortSignal.timeout(timeoutMs),
-      redirect: 'manual',
-    });
-    await res.body?.cancel();
+    const res = await probeRequest(probe, probe.url, 'POST', timeoutMs);
     const ms = Math.round(performance.now() - started);
     return res.ok
       ? ok('reset', `POST ${probe.label} answered ${res.status} in ${ms} ms`)

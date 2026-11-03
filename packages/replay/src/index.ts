@@ -8,9 +8,13 @@ export {
 } from './adapter.js';
 export {
   HttpAdapter,
+  createDispatcher,
+  hasUpstreamOptions,
   outgoingHeaders,
   pathWithQuery,
+  upstreamFetch,
   type HttpAdapterOptions,
+  type UpstreamTls,
 } from './http-adapter.js';
 export {
   buildSchedule,
