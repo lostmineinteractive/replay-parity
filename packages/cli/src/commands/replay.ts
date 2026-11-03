@@ -29,6 +29,7 @@ import {
   DEFAULT_WINDOW,
   HttpAdapter,
   RedisStreamsBus,
+  checkpointPathFor,
   parseRetryOn,
   replay,
   sidecarPathFor,
@@ -104,6 +105,8 @@ export interface ReplayCommandOptions extends UpstreamFlags, AdapterModuleFlags 
   window?: number;
   /** Stream results to the sidecar: true always, false never, absent above 50000 results. */
   exchangesSidecar?: boolean;
+  /** Continue the run from `<out>.checkpoint.json`. */
+  resume?: boolean;
   candidateRecording?: string;
   invariants: boolean;
   timeoutMs: number;
@@ -376,6 +379,8 @@ export async function runReplay(
       referenceTarget: options.referenceTarget ?? null,
       window: options.window ?? DEFAULT_WINDOW,
       exchangesPath,
+      checkpointPath: checkpointPathFor(options.out),
+      resume: options.resume ?? false,
       exchangesSidecar:
         options.exchangesSidecar === undefined
           ? 'auto'
@@ -419,7 +424,12 @@ export async function runReplay(
     }
     const aborted = run.inconclusive.find((c) => c.kind === 'aborted');
     if (aborted !== undefined) {
-      log.warn(`replay ${aborted.detail}, writing the partial run`, { aborted: true });
+      log.warn(
+        run.exchanges_path === null
+          ? `replay ${aborted.detail}, writing the partial run`
+          : `replay ${aborted.detail}, writing the partial run; --resume continues it from ${checkpointPathFor(options.out)}`,
+        { aborted: true },
+      );
     }
     if (!options.quiet) out(streams, renderTerminal(run));
     log.info(`wrote ${options.out}: ${run.verdict.toUpperCase()}`, {
@@ -586,6 +596,11 @@ export function replayCommand(
     .option(
       '--no-exchanges-sidecar',
       'keep every exchange result in the run file however many there are',
+    )
+    .option(
+      '--resume',
+      'continue a stopped run that used the exchanges sidecar from <out>.checkpoint.json, with the same recording and options',
+      false,
     )
     .option(
       '--candidate-recording <path>',

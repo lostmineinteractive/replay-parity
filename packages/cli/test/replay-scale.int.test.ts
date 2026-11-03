@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -31,10 +31,13 @@ class Sink extends Writable {
   }
 }
 
-async function rp(args: string[]): Promise<{ code: number; out: string; err: string }> {
+async function rp(
+  args: string[],
+  signal?: AbortSignal,
+): Promise<{ code: number; out: string; err: string }> {
   const stdout = new Sink();
   const stderr = new Sink();
-  const code = await runCli(args, { stdout, stderr });
+  const code = await runCli(args, { stdout, stderr, signal });
   return { code, out: stdout.text, err: stderr.text };
 }
 
@@ -231,5 +234,31 @@ describe('rp replay at scale', () => {
     const whole = await readRun(inline);
     expect(whole.exchanges_path).toBeNull();
     expect(whole.exchanges).toHaveLength(whole.stats.overall.count + 1);
+  });
+
+  it('writes a checkpoint when stopped and continues the run with --resume', async () => {
+    const resumable = join(dir, 'resumable');
+    await mkdir(resumable);
+    const out = join(resumable, 'run.json');
+    const target = await candidate('off');
+    const controller = new AbortController();
+    controller.abort();
+    const stopped = await rp(replayArgs(target, out, ['--exchanges-sidecar']), controller.signal);
+    expect(stopped.code).toBe(3);
+    expect(stopped.err).toContain('--resume continues it from');
+    await access(join(resumable, 'run.checkpoint.json'));
+    const resumed = await rp(replayArgs(target, out, ['--exchanges-sidecar', '--resume']));
+    expect(resumed.err).not.toMatch(/rp: /);
+    expect(resumed.code).toBe(0);
+    const run = await readRun(out);
+    expect(run.inconclusive).toEqual([]);
+    const lines = (await readFile(join(resumable, 'run.exchanges.jsonl'), 'utf8'))
+      .trim()
+      .split('\n');
+    expect(lines).toHaveLength(run.stats.overall.count + 1);
+    await expect(access(join(resumable, 'run.checkpoint.json'))).rejects.toThrow();
+    const again = await rp(replayArgs(target, out, ['--exchanges-sidecar', '--resume']));
+    expect(again.code).toBe(1);
+    expect(again.err).toContain('--resume: no checkpoint at');
   });
 });

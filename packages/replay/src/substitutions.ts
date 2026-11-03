@@ -172,6 +172,13 @@ export class DependencyIndex {
   }
 }
 
+/**
+ * The pairs of a table as a checkpoint stores them: per rule, the canonical
+ * reference value, the candidate value, and the position of the exchange
+ * that produced the pair, or null when the caller gave none.
+ */
+export type TableSnapshot = Record<string, [string, string | number, number | null][]>;
+
 /** The live table of reference to candidate value pairs. */
 export class SubstitutionTable {
   private readonly rules: CompiledRule[];
@@ -179,12 +186,50 @@ export class SubstitutionTable {
   private readonly values = new Map<string, Map<string, string | number>>();
   /** rule name -> canonical reference value -> canonical candidate value */
   private readonly canonical = new Map<string, Map<string, string>>();
+  /** rule name -> canonical reference value -> position of the producing exchange */
+  private readonly producers = new Map<string, Map<string, number | null>>();
 
   constructor(rules: readonly SubstitutionRule[]) {
     this.rules = compileRules(rules);
     for (const rule of this.rules) {
       this.values.set(rule.name, new Map());
       this.canonical.set(rule.name, new Map());
+      this.producers.set(rule.name, new Map());
+    }
+  }
+
+  /**
+   * The pairs produced by exchanges before position `before`, for a checkpoint.
+   * A pair recorded without a position is always included.
+   */
+  snapshot(before = Number.POSITIVE_INFINITY): TableSnapshot {
+    const out: TableSnapshot = {};
+    for (const rule of this.rules) {
+      const values = this.values.get(rule.name) as Map<string, string | number>;
+      const producers = this.producers.get(rule.name) as Map<string, number | null>;
+      out[rule.name] = [...values.entries()]
+        .map(([key, value]): [string, string | number, number | null] => [
+          key,
+          value,
+          producers.get(key) ?? null,
+        ])
+        .filter(([, , at]) => at === null || at < before);
+    }
+    return out;
+  }
+
+  /** Adds the pairs of a snapshot. Pairs of a rule this table does not have are ignored. */
+  restore(snapshot: TableSnapshot): void {
+    for (const rule of this.rules) {
+      const values = this.values.get(rule.name) as Map<string, string | number>;
+      const canonical = this.canonical.get(rule.name) as Map<string, string>;
+      const producers = this.producers.get(rule.name) as Map<string, number | null>;
+      for (const [key, value, at] of snapshot[rule.name] ?? []) {
+        if (values.has(key)) continue;
+        values.set(key, value);
+        canonical.set(key, canonicalJson(value));
+        producers.set(key, at);
+      }
     }
   }
 
@@ -211,6 +256,8 @@ export class SubstitutionTable {
     reference: RecordedResponse,
     candidate: RecordedResponse,
     request?: RecordedRequest | CaptureRequests,
+    /** The position of the producing exchange, which a checkpoint uses. */
+    position?: number,
   ): void {
     const [recorded, sent] = requestPair(request);
     for (const rule of this.rules) {
@@ -223,6 +270,7 @@ export class SubstitutionTable {
       if (values.has(key)) continue;
       values.set(key, candValue);
       (this.canonical.get(rule.name) as Map<string, string>).set(key, canonicalJson(candValue));
+      (this.producers.get(rule.name) as Map<string, number | null>).set(key, position ?? null);
     }
   }
 

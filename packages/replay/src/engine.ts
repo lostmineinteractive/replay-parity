@@ -5,6 +5,7 @@ import {
   ConfigError,
   DEFAULT_REDACTED_HEADERS,
   RUN_SCHEMA_VERSION,
+  canonicalJson,
   REDACTED,
   StatsCollector,
   createDiffer,
@@ -25,6 +26,7 @@ import {
   type ExchangeResult,
   type HeaderMap,
   type InconclusiveCondition,
+  type JsonValue,
   type Logger,
   type PacingMode,
   type Query,
@@ -40,6 +42,15 @@ import { toSendError, type Adapter, type ReplayContext } from './adapter.js';
 import { candidateExchanges, writeExchanges, type SentExchange } from './candidate-recording.js';
 import { HttpAdapter } from './http-adapter.js';
 import { ScheduleBuilder, round3, summarizeSlip } from './pacing.js';
+import {
+  CHECKPOINT_EVERY,
+  fingerprintDifference,
+  readCheckpoint,
+  readSidecarPrefix,
+  removeCheckpoint,
+  writeCheckpoint,
+  type Checkpoint,
+} from './checkpoint.js';
 import { NO_NOISE, markNoise, noisePaths } from './noise.js';
 import { parseSessionKey, sessionOf } from './sessions.js';
 import {
@@ -84,7 +95,9 @@ import { DependencyIndex, SubstitutionTable } from './substitutions.js';
  *   every rule above holds for the reference too.
  * - When `signal` aborts, no further exchange is sent, the sends in flight are
  *   aborted, and the run is finished with the results so far plus an
- *   `aborted` condition. Exchanges that were never sent are left out.
+ *   `aborted` condition. Exchanges that were never sent are left out. With
+ *   the sidecar and a checkpoint path, the checkpoint then names the prefix
+ *   acknowledged before the stop, and `resume` sends only what follows it.
  */
 export interface ReplayOptions {
   /** Path of the recording. */
@@ -196,6 +209,19 @@ export interface ReplayOptions {
    * generalized path in `exchanges` and names the sidecar in `exchanges_path`.
    */
   exchangesSidecar?: 'always' | 'auto' | 'never' | undefined;
+  /**
+   * Where the run writes its checkpoint while it uses the sidecar: every `checkpointEvery`
+   * acknowledgements and when it stops. Removed when the run finishes.
+   */
+  checkpointPath?: string | null | undefined;
+  /** Acknowledgements between checkpoints. Default 1000. */
+  checkpointEvery?: number | undefined;
+  /**
+   * Continue the run the checkpoint at `checkpointPath` describes: keep the sidecar's
+   * acknowledged prefix and send the exchanges after it. The recording and the options that
+   * shape the results must be the ones the checkpoint was written with.
+   */
+  resume?: boolean | undefined;
 }
 
 /**
@@ -311,6 +337,22 @@ function validate(options: ReplayExchangesOptions): void {
   if (options.sessionKey !== undefined && options.sessionKey !== null) {
     parseSessionKey(options.sessionKey);
   }
+  const every = options.checkpointEvery ?? CHECKPOINT_EVERY;
+  if (!Number.isInteger(every) || every < 1) {
+    throw new ConfigError(`checkpoint interval must be a positive integer, got ${every}`);
+  }
+  if (options.resume === true) {
+    if ((options.checkpointPath ?? null) === null || (options.exchangesPath ?? null) === null) {
+      throw new ConfigError('--resume needs the checkpoint and the exchanges sidecar of the run');
+    }
+    if (options.exchangesSidecar === 'never') {
+      throw new ConfigError('--resume continues a run that used the exchanges sidecar');
+    }
+    // The skipped prefix was never sent by this process, so these logs would miss it.
+    if ((options.candidateRecording ?? null) !== null || options.invariants === true) {
+      throw new ConfigError('--resume cannot write a candidate recording or judge the invariants');
+    }
+  }
 }
 
 function selectionOf(options: ReplayExchangesOptions): SelectionOptions {
@@ -361,7 +403,7 @@ export async function replay(options: ReplayOptions): Promise<Run> {
     fileSource(options.recording, selectionOf(options)),
     hashRecordingFile(options.recording),
   ]);
-  const run = await runEngine(source, options);
+  const run = await runEngine(source, options, hash.sha256);
   return { ...run, recording: { ...run.recording, recording_sha256: hash.sha256 } };
 }
 
@@ -425,6 +467,8 @@ interface Slot {
   done: Deferred;
   result: ExchangeResult | null;
   sent: SentExchange | null;
+  /** True when the stop cut the send short, so a resumed run sends it again. */
+  cut: boolean;
 }
 
 /** What the candidate returned for one exchange, after every retry. */
@@ -448,11 +492,15 @@ export async function replayExchanges(
   options: ReplayExchangesOptions,
 ): Promise<Run> {
   validate(options);
-  return runEngine(memorySource(all, selectionOf(options)), options);
+  return runEngine(memorySource(all, selectionOf(options)), options, null);
 }
 
 /** The engine over any source of selected exchanges. */
-async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions): Promise<Run> {
+async function runEngine(
+  source: ExchangeSource,
+  options: ReplayExchangesOptions,
+  recordingSha256: string | null,
+): Promise<Run> {
   const pace = options.pace ?? 'as-recorded';
   const rps = pace === 'fixed-rate' ? (options.rps as number) : null;
   const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
@@ -491,9 +539,48 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
   const total = n * loop;
   const exchangesPath = options.exchangesPath ?? null;
   const sidecarMode = options.exchangesSidecar ?? 'auto';
+  const checkpointPath = options.checkpointPath ?? null;
+  const checkpointEvery = options.checkpointEvery ?? CHECKPOINT_EVERY;
+  const resumeFrom =
+    options.resume === true ? await readCheckpoint(checkpointPath as string) : null;
   const useSidecar =
     exchangesPath !== null &&
-    (sidecarMode === 'always' || (sidecarMode === 'auto' && total > SIDECAR_THRESHOLD));
+    (resumeFrom !== null ||
+      sidecarMode === 'always' ||
+      (sidecarMode === 'auto' && total > SIDECAR_THRESHOLD));
+  const referenceTarget = options.referenceTarget ?? null;
+  // Everything that shapes which exchanges are sent and how they are judged. A resumed run
+  // must match the run that wrote the checkpoint on every field.
+  const fingerprint: Record<string, JsonValue> = {
+    recording: options.recording ?? '',
+    recording_sha256: recordingSha256,
+    target: options.target,
+    reference_target: referenceTarget,
+    selected: n,
+    loop,
+    filter_tag: filterTag,
+    limit,
+    include_dependencies: includeDependencies,
+    warmup,
+    pace,
+    rps,
+    speed,
+    max_gap_ms: maxGapMs,
+    session_key: sessionKey?.spec ?? null,
+    barrier_tags: [...barrierTags].sort(),
+    rules: rules as unknown as JsonValue,
+  };
+  if (resumeFrom !== null) {
+    const differs = fingerprintDifference(resumeFrom.fingerprint, fingerprint);
+    if (differs !== null) {
+      throw new ConfigError(
+        `--resume: the checkpoint was written for another run, ${differs} differs`,
+      );
+    }
+  }
+  /** Positions below this were acknowledged before the checkpoint and are not sent again. */
+  const skipBelow = resumeFrom?.next_index ?? 0;
+  const runId = options.runId ?? resumeFrom?.run_id ?? ulid();
   const candidateRecording = options.candidateRecording ?? null;
   // The candidate's log and the reference log are held only when something reads them.
   const keepSent = candidateRecording !== null || options.invariants === true;
@@ -511,7 +598,6 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
   let refTable = new SubstitutionTable(rules.substitutions);
   const differ = createDiffer(rules);
 
-  const referenceTarget = options.referenceTarget ?? null;
   const ownReference = options.referenceAdapter === undefined && referenceTarget !== null;
   const reference: Adapter | null =
     options.referenceAdapter ??
@@ -543,7 +629,21 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
   const retried = new TagCounter();
   const noiseFindings = new TagCounter();
   const slips: number[] = [];
-  const conditions: InconclusiveCondition[] = [];
+  const counts: Checkpoint['stats'] = {
+    results: 0,
+    counted: 0,
+    errors: 0,
+    matches: 0,
+    tolerated: 0,
+    mismatches: 0,
+  };
+  const conditions: InconclusiveCondition[] = [...(resumeFrom?.conditions ?? [])];
+  /** The position each condition came from, so a checkpoint keeps those of its prefix. */
+  const conditionAt: number[] = conditions.map(() => -1);
+  const addCondition = (condition: InconclusiveCondition, at: number): void => {
+    conditions.push(condition);
+    conditionAt.push(at);
+  };
   /** The exchanges read and not yet part of the acknowledged prefix, by index. */
   const window = new Map<number, Slot>();
   const sessions = new Map<string, Session>();
@@ -551,17 +651,19 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
   /** Barriers read and not yet acknowledged, in recording order. */
   const openBarriers: Slot[] = [];
   /** Every exchange below this index was acknowledged or failed. */
-  let ackFront = 0;
+  let ackFront = skipBelow;
   /** Every exchange below this index was sent. */
-  let sendFront = 0;
+  let sendFront = skipBelow;
   const pending = new Set<Slot>();
   const slotWaiters: (() => void)[] = [];
   const workers = new Set<Promise<void>>();
   const tasks = new Set<Promise<void>>();
   let inflight = 0;
-  let completed = 0;
-  let dispatched = 0;
-  let barrierWaits = 0;
+  let completed = skipBelow;
+  let dispatched = skipBelow;
+  let barrierWaits = resumeFrom?.barrier_waits ?? 0;
+  /** The positions of the barriers that waited in this process. */
+  const barrierWaitAt: number[] = [];
   /** Set once every pass was read and every send settled, so the sidecar stays open for the tail. */
   let finishedReading = false;
   let changed = deferred();
@@ -592,7 +694,8 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
   const settled = (slots: readonly Slot[]): Promise<unknown> =>
     Promise.all(slots.map((k) => k.done.promise));
 
-  const started = performance.now();
+  // A resumed run continues the clock of the run it resumes, so times keep increasing.
+  const started = performance.now() - (resumeFrom?.elapsed_ms ?? 0);
   const rel = (): number => performance.now() - started;
   const scheduleEnd = (): number => (pace === 'max' ? 0 : base + schedule.end);
   const heartbeatMs = options.heartbeatMs ?? 0;
@@ -692,17 +795,20 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
     let noise: ReadonlySet<string> = NO_NOISE;
     const refResponse = refNow?.response ?? null;
     if (refNow !== null && refResponse !== null) {
-      refTable.capture(e.tags, e.response, refResponse, {
-        recorded: e.request,
-        sent: refNow.request,
-      });
+      refTable.capture(
+        e.tags,
+        e.response,
+        refResponse,
+        { recorded: e.request, sent: refNow.request },
+        i,
+      );
       if (!control) {
         noise = noisePaths(differ.diff(e.response, refResponse, refTable.equivalences, scope));
       }
     }
     let diff: ExchangeResult['diff'] = null;
     if (candidate !== null) {
-      table.capture(e.tags, e.response, candidate, { recorded: e.request, sent: request });
+      table.capture(e.tags, e.response, candidate, { recorded: e.request, sent: request }, i);
       diff = control
         ? differ.diffStatus(e.response, candidate, scope)
         : differ.diff(e.response, candidate, table.equivalences, scope);
@@ -712,10 +818,13 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
       const reason =
         error ??
         `candidate answered ${candidate?.status ?? 'nothing'}, reference answered ${e.response.status}`;
-      conditions.push({
-        kind: 'control_failed',
-        detail: `${e.request.method} ${e.request.path} (${e.id}): ${reason}`,
-      });
+      addCondition(
+        {
+          kind: 'control_failed',
+          detail: `${e.request.method} ${e.request.path} (${e.id}): ${reason}`,
+        },
+        i,
+      );
     }
     const result: ExchangeResult = {
       id: e.id,
@@ -744,6 +853,8 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
           ? null
           : { status: refResponse.status, latency_ms: refResponse.latency_ms };
     }
+    // A send the stop cut short is not part of the prefix a checkpoint keeps.
+    slot.cut = stopped() && (candidate === null || (reference !== null && refResponse === null));
     slot.result = result;
     slot.sent = {
       exchange: e,
@@ -763,32 +874,81 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
     });
   };
 
+  /** Counts one result into the statistics, in recording order. */
+  const account = (r: ExchangeResult): void => {
+    results += 1;
+    counts.results += 1;
+    if (r.control) return;
+    slips.push(r.sent_at_ms - r.scheduled_at_ms);
+    if (r.warmup || r.dependency) return;
+    if (r.attempts !== undefined) retried.add(r.tags);
+    if (r.diff !== null) {
+      const marked = r.diff.findings.filter((f) => f.noise === true).length;
+      if (marked > 0) noiseFindings.add(r.tags, marked);
+    }
+    counts.counted += 1;
+    const verdict = r.diff?.verdict ?? null;
+    if (r.candidate === null || verdict === null) counts.errors += 1;
+    else if (verdict === 'match') counts.matches += 1;
+    else if (verdict === 'tolerated') counts.tolerated += 1;
+    else counts.mismatches += 1;
+    collector.record({
+      tags: r.tags,
+      verdict,
+      candidateLatencyMs: r.candidate?.latency_ms ?? null,
+      referenceLatencyMs: r.reference.latency_ms,
+    });
+  };
+
+  /** The prefix of positions below `next`, as a checkpoint records it. */
+  const snapshot = (next: number, writer: SidecarWriter): Checkpoint => ({
+    checkpoint_version: 1,
+    run_id: runId,
+    fingerprint,
+    next_index: next,
+    last_index: next - 1,
+    sidecar: { path: writer.path, bytes: writer.bytes, lines: writer.lines },
+    elapsed_ms: round3(rel()),
+    table_iteration: next === 0 || n === 0 ? null : Math.floor((next - 1) / n) + 1,
+    substitutions: table.snapshot(next),
+    reference_substitutions: reference === null ? null : refTable.snapshot(next),
+    conditions: conditions.filter((_, k) => (conditionAt[k] as number) < next),
+    barrier_waits:
+      (resumeFrom?.barrier_waits ?? 0) + barrierWaitAt.filter((at) => at < next).length,
+    stats: { ...counts },
+  });
+  let checkpointQueue: Promise<void> = Promise.resolve();
+  const saveCheckpoint = (checkpoint: Checkpoint, writer: SidecarWriter): void => {
+    const path = checkpointPath as string;
+    // The checkpoint is written after the sidecar holds every result it counts.
+    checkpointQueue = checkpointQueue
+      .then(async () => {
+        await writer.flush();
+        await writeCheckpoint(path, checkpoint);
+      })
+      .catch((err: unknown) => {
+        log.warn(`could not write the checkpoint ${path}: ${(err as Error).message}`);
+      });
+  };
+  /** The prefix a stopped run leaves to resume from, taken at its first cut or gap. */
+  let cleanPrefix: Checkpoint | null = null;
+
   /** Counts a finished result and moves it out of the window, in recording order. */
   const finalize = (slot: Slot): void => {
     const r = slot.result;
+    if (sidecar !== null && checkpointPath !== null && slot.cut && cleanPrefix === null) {
+      cleanPrefix = snapshot(slot.index, sidecar);
+    }
     if (r !== null) {
-      results += 1;
-      if (!r.control) {
-        slips.push(r.sent_at_ms - r.scheduled_at_ms);
-        if (!r.warmup && !r.dependency) {
-          if (r.attempts !== undefined) retried.add(r.tags);
-          if (r.diff !== null) {
-            const marked = r.diff.findings.filter((f) => f.noise === true).length;
-            if (marked > 0) noiseFindings.add(r.tags, marked);
-          }
-          collector.record({
-            tags: r.tags,
-            verdict: r.diff?.verdict ?? null,
-            candidateLatencyMs: r.candidate?.latency_ms ?? null,
-            referenceLatencyMs: r.reference.latency_ms,
-          });
-        }
-      }
+      account(r);
       if (sidecar === null) {
         replayed.push(r);
       } else {
         sidecar.write(r);
         sample.add(r);
+        if (checkpointPath !== null && !stopped() && results % checkpointEvery === 0) {
+          saveCheckpoint(snapshot(slot.index + 1, sidecar), sidecar);
+        }
       }
     }
     if (keepSent && slot.sent !== null) sent.push(slot.sent);
@@ -849,6 +1009,7 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
       holding = true;
       if (ackFront < slot.index && !stopped()) {
         barrierWaits += 1;
+        barrierWaitAt.push(slot.index);
         const timedOut = await waitUntil(
           until,
           () => ackFront >= slot.index || stopped(),
@@ -858,12 +1019,15 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
           const still = [...window.values()]
             .filter((k) => k.index < slot.index && !k.completed)
             .sort((a, b) => a.index - b.index);
-          conditions.push({
-            kind: 'barrier_timeout',
-            detail: `${e.request.method} ${e.request.path} (${e.id}) waited ${barrierTimeoutMs} ms for ${still.length} earlier exchange${still.length === 1 ? '' : 's'}: ${still
-              .map((k) => k.exchange.id)
-              .join(', ')}`,
-          });
+          addCondition(
+            {
+              kind: 'barrier_timeout',
+              detail: `${e.request.method} ${e.request.path} (${e.id}) waited ${barrierTimeoutMs} ms for ${still.length} earlier exchange${still.length === 1 ? '' : 's'}: ${still
+                .map((k) => k.exchange.id)
+                .join(', ')}`,
+            },
+            slot.index,
+          );
         }
       }
     }
@@ -941,6 +1105,15 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
       const e = loop === 1 ? recorded : { ...recorded, id: `${recorded.id}#${k}` };
       const key = sessionKey === null ? '' : sessionOf(sessionKey, e.request);
       sessionKeys.add(key);
+      const time = schedule.next(e.offset_ms);
+      if (i < skipBelow) {
+        // Acknowledged before the checkpoint: the schedule and the dependency index see it,
+        // and nothing is sent.
+        if (!dependencies.empty) dependencies.add(e, local);
+        continue;
+      }
+      // The first exchange after the checkpoint is scheduled now, and the rest keep their gaps.
+      if (i === skipBelow && skipBelow > 0) base = rel() - time;
       let session = sessions.get(key);
       if (session === undefined) {
         session = { key, queue: [], pending: new Set(), active: false };
@@ -954,7 +1127,7 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
         session,
         control,
         barrier: control || isBarrier(e),
-        time: base + schedule.next(e.offset_ms),
+        time: base + time,
         deps: dependencies.empty
           ? []
           : dependencies.dependenciesOf(local, e.request).map((d) => first + d),
@@ -963,6 +1136,7 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
         done: deferred(),
         result: null,
         sent: null,
+        cut: false,
       };
       if (!dependencies.empty) dependencies.add(e, local);
       window.set(i, slot);
@@ -973,7 +1147,26 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
   };
 
   try {
-    if (useSidecar) sidecar = await SidecarWriter.open(exchangesPath);
+    if (useSidecar) {
+      const path = exchangesPath;
+      if (resumeFrom !== null) {
+        // The statistics of the prefix are rebuilt from the sidecar itself, and checked
+        // against the counts the checkpoint recorded.
+        const { bytes, lines } = resumeFrom.sidecar;
+        for (const r of await readSidecarPrefix(path, bytes, lines)) {
+          account(r);
+          sample.add(r);
+        }
+        if (canonicalJson(counts) !== canonicalJson(resumeFrom.stats)) {
+          throw new ConfigError(
+            `--resume: the results in ${path} do not add up to the checkpoint's statistics`,
+          );
+        }
+        sidecar = await SidecarWriter.open(path, { bytes, lines });
+      } else {
+        sidecar = await SidecarWriter.open(path);
+      }
+    }
     // Iterations run back to back: the next one starts once every exchange of the previous
     // one was acknowledged, with an empty substitution table and its schedule from that moment.
     for (let k = 1; k <= loop && !stopped(); k += 1) {
@@ -984,6 +1177,12 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
         table = new SubstitutionTable(rules.substitutions);
         refTable = new SubstitutionTable(rules.substitutions);
         base = rel();
+      }
+      if (resumeFrom !== null && resumeFrom.table_iteration === k) {
+        table.restore(resumeFrom.substitutions);
+        if (resumeFrom.reference_substitutions !== null) {
+          refTable.restore(resumeFrom.reference_substitutions);
+        }
       }
       await readAll(k);
       while (workers.size > 0) await Promise.all([...workers]);
@@ -1002,18 +1201,30 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
     if (sidecar !== null && !finishedReading) await sidecar.close();
   }
   const durationMs = rel();
+  if (sidecar !== null && checkpointPath !== null && stopped() && cleanPrefix === null) {
+    cleanPrefix = snapshot(ackFront, sidecar);
+  }
   // After a stop the acknowledged prefix ends at the first exchange that was never sent.
   // The exchanges sent after it are kept, in recording order.
   for (const slot of [...window.values()].sort((a, b) => a.index - b.index)) {
     if (slot.completed) finalize(slot);
   }
   window.clear();
-  if (sidecar !== null) await sidecar.close();
+  if (sidecar !== null) {
+    if (cleanPrefix !== null) saveCheckpoint(cleanPrefix, sidecar);
+    await checkpointQueue;
+    await sidecar.close();
+    // A finished run leaves nothing to resume.
+    if (checkpointPath !== null && !stopped()) await removeCheckpoint(checkpointPath);
+  }
   if (stopped()) {
-    conditions.push({
-      kind: 'aborted',
-      detail: `stopped by signal after ${dispatched} of ${total} exchanges`,
-    });
+    addCondition(
+      {
+        kind: 'aborted',
+        detail: `stopped by signal after ${dispatched} of ${total} exchanges`,
+      },
+      Number.POSITIVE_INFINITY,
+    );
   }
 
   const stats: RunFileStats = collector.finish();
@@ -1056,7 +1267,7 @@ async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions
 
   const run: Run = {
     schema_version: RUN_SCHEMA_VERSION,
-    run_id: options.runId ?? ulid(),
+    run_id: runId,
     created_at: now().toISOString(),
     verdict,
     inconclusive,

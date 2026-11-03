@@ -248,3 +248,38 @@ describe('header and request captures', () => {
     expect(index.dependenciesOf(2, exchanges[2]!.request)).toEqual([0]);
   });
 });
+
+describe('SubstitutionTable snapshots', () => {
+  it('keeps the pairs produced before a position and restores them into a new table', () => {
+    const table = new SubstitutionTable(rules);
+    table.capture(
+      ['create-order'],
+      jsonResponse({ order_id: 'o-1' }),
+      jsonResponse({ order_id: 'c-1' }),
+      undefined,
+      0,
+    );
+    table.capture(
+      ['create-order'],
+      jsonResponse({ order_id: 'o-2' }),
+      jsonResponse({ order_id: 'c-2' }),
+      undefined,
+      5,
+    );
+    table.capture(
+      ['create-order'],
+      jsonResponse({ order_id: 'o-3' }),
+      jsonResponse({ order_id: 'c-3' }),
+    );
+    const snapshot = table.snapshot(3);
+    expect(snapshot.order_id?.map(([, value]) => value)).toEqual(['c-1', 'c-3']);
+    expect(table.snapshot().order_id).toHaveLength(3);
+    const restored = new SubstitutionTable(rules);
+    restored.restore(JSON.parse(JSON.stringify(snapshot)) as typeof snapshot);
+    restored.restore({ unknown: [['"x"', 'y', 1]] });
+    expect(restored.size).toBe(2);
+    expect(restored.apply(makeRequest({ path: '/v1/orders/o-1' })).path).toBe('/v1/orders/c-1');
+    expect(restored.apply(makeRequest({ path: '/v1/orders/o-2' })).path).toBe('/v1/orders/o-2');
+    expect(restored.snapshot()).toEqual(snapshot);
+  });
+});

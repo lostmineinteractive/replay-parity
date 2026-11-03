@@ -25,8 +25,25 @@ export {
   type Schedule,
   type SlipSummary,
 } from './pacing.js';
-export { DependencyIndex, SubstitutionTable, type CaptureRequests } from './substitutions.js';
+export {
+  DependencyIndex,
+  SubstitutionTable,
+  type CaptureRequests,
+  type TableSnapshot,
+} from './substitutions.js';
 export { NOISE_RULE, NO_NOISE, markNoise, noisePaths } from './noise.js';
+export {
+  CHECKPOINT_EVERY,
+  CHECKPOINT_VERSION,
+  CheckpointSchema,
+  checkpointPathFor,
+  fingerprintDifference,
+  readCheckpoint,
+  readSidecarPrefix,
+  removeCheckpoint,
+  writeCheckpoint,
+  type Checkpoint,
+} from './checkpoint.js';
 export {
   KEEP_PER_PATH,
   MismatchSample,
