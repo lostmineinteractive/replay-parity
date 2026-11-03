@@ -17,7 +17,7 @@ import {
   shrink,
   verifyRecordingHash,
 } from '@replay-parity/shrink';
-import { HttpAdapter, upstreamFetch } from '@replay-parity/replay';
+import { HttpAdapter, upstreamFetch, type Adapter } from '@replay-parity/replay';
 import { Command, Option } from 'commander';
 import { displayText, type CliContext } from '../config/index.js';
 import { endProgress, logger, out, startProgress, type CliStreams } from '../io.js';
@@ -29,6 +29,11 @@ import {
   resolveHeaders,
   resolveQuery,
 } from '../options.js';
+import {
+  addAdapterModuleOptions,
+  loadAdapterFromFlags,
+  type AdapterModuleFlags,
+} from '../adapter-module.js';
 import { formatCheck, hasError, preflight } from '../preflight.js';
 import {
   addUpstreamOptions,
@@ -37,7 +42,7 @@ import {
   type UpstreamFlags,
 } from '../upstream.js';
 
-export interface ShrinkCommandOptions extends UpstreamFlags {
+export interface ShrinkCommandOptions extends UpstreamFlags, AdapterModuleFlags {
   run: string;
   recording: string;
   target: string;
@@ -117,9 +122,10 @@ export async function runShrink(
       exchanges,
       rules,
       barrierTags: options.barrierTag,
-      target: probe
-        ? { url: options.target, label: options.targetLabel ?? options.target, upstream }
-        : undefined,
+      target:
+        probe && options.adapterModule === undefined
+          ? { url: options.target, label: options.targetLabel ?? options.target, upstream }
+          : undefined,
       reset: probe
         ? { url: options.reset, label: options.resetLabel ?? options.reset, upstream }
         : undefined,
@@ -162,9 +168,19 @@ export async function runShrink(
         })
       : undefined;
   // One adapter serves every attempt, so the connection settings are applied once.
-  const adapter = customUpstream(upstream)
-    ? new HttpAdapter(options.target, { ...upstream, timeoutMs: options.timeoutMs, connections: 1 })
-    : undefined;
+  const adapter: Adapter | undefined =
+    (await loadAdapterFromFlags(options, {
+      target: options.target,
+      timeoutMs: options.timeoutMs,
+      connections: 1,
+    })) ??
+    (customUpstream(upstream)
+      ? new HttpAdapter(options.target, {
+          ...upstream,
+          timeoutMs: options.timeoutMs,
+          connections: 1,
+        })
+      : undefined);
   let result: Awaited<ReturnType<typeof shrink>>;
   try {
     result = await shrink({
@@ -198,7 +214,7 @@ export async function runShrink(
     });
   } finally {
     if (progress !== undefined) endProgress(streams, progress);
-    await adapter?.close();
+    await adapter?.close?.();
   }
   const { reproduction, aborted } = result;
   await writeRun(options.run, { ...run, reproduction });
@@ -301,6 +317,7 @@ export function shrinkCommand(
         .argParser(nonNegativeInt),
     );
   addUpstreamOptions(command);
+  addAdapterModuleOptions(command);
   return command.action(async (opts: ShrinkCommandOptions, command: Command) => {
     exit(
       await runShrink(

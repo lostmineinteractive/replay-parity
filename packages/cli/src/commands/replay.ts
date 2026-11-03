@@ -46,6 +46,11 @@ import {
   resolveHeaders,
   resolveQuery,
 } from '../options.js';
+import {
+  addAdapterModuleOptions,
+  loadAdapterFromFlags,
+  type AdapterModuleFlags,
+} from '../adapter-module.js';
 import { formatCheck, hasError, preflight } from '../preflight.js';
 import {
   addUpstreamOptions,
@@ -54,7 +59,7 @@ import {
   type UpstreamFlags,
 } from '../upstream.js';
 
-export interface ReplayCommandOptions extends UpstreamFlags {
+export interface ReplayCommandOptions extends UpstreamFlags, AdapterModuleFlags {
   recording: string;
   target: string;
   out: string;
@@ -208,7 +213,9 @@ export async function runReplay(
       thresholds,
       barrierTags: options.barrierTag,
       target:
-        options.preflightProbe === true && options.adapter === 'http'
+        options.preflightProbe === true &&
+        options.adapter === 'http' &&
+        options.adapterModule === undefined
           ? { url: options.target, label: options.targetLabel ?? options.target, upstream }
           : undefined,
     });
@@ -286,7 +293,16 @@ export async function runReplay(
         };
   let adapter: Adapter | undefined;
   let bus: RedisStreamsBus | undefined;
-  if (options.adapter === 'bus') {
+  if (options.adapterModule !== undefined && options.adapter === 'bus') {
+    throw new ConfigError('--adapter-module and --adapter bus are separate transports, use one');
+  }
+  if (options.adapterModule !== undefined || Object.keys(options.adapterSetting ?? []).length > 0) {
+    adapter = await loadAdapterFromFlags(options, {
+      target: options.target,
+      timeoutMs: options.timeoutMs,
+      connections: options.concurrency,
+    });
+  } else if (options.adapter === 'bus') {
     if (options.busUrl === undefined) throw new ConfigError('--adapter bus needs --bus-url');
     bus = await RedisStreamsBus.connect(options.busUrl);
     adapter = await BusAdapter.create(bus, { timeoutMs: options.timeoutMs });
@@ -497,6 +513,7 @@ export function replayCommand(
       ).argParser(portNumber),
     );
   addUpstreamOptions(command);
+  addAdapterModuleOptions(command);
   return command.action(async (opts: ReplayCommandOptions, command: Command) => {
     exit(
       await runReplay(
