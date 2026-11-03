@@ -39,7 +39,8 @@ import { evaluateInvariants } from '@replay-parity/invariants';
 import { describeSendError, type Adapter } from './adapter.js';
 import { candidateExchanges, writeExchanges, type SentExchange } from './candidate-recording.js';
 import { HttpAdapter } from './http-adapter.js';
-import { buildSchedule, requestedRps, round3, summarizeSlip } from './pacing.js';
+import { ScheduleBuilder, round3, summarizeSlip } from './pacing.js';
+import { parseSessionKey, sessionOf } from './sessions.js';
 import { DependencyIndex, SubstitutionTable } from './substitutions.js';
 
 /**
@@ -48,16 +49,21 @@ import { DependencyIndex, SubstitutionTable } from './substitutions.js';
  * one, aggregates statistics, evaluates the thresholds, and returns the run.
  *
  * Ordering rules:
- * - Sends start in recording order. A bounded pool limits how many are in flight.
- * - The recorded happens-before order is kept: an exchange that began after an
- *   earlier exchange's response in the recording waits for that exchange to be
- *   acknowledged. Exchanges that overlapped in the recording may overlap again.
+ * - Sends start in recording order within a session. Without a session key the
+ *   whole recording is one session, so every send starts in recording order. A
+ *   bounded pool limits how many are in flight across every session.
+ * - The recorded happens-before order is kept within a session: an exchange
+ *   that began after an earlier exchange's response in the recording waits for
+ *   that exchange to be acknowledged when both belong to the same session.
+ *   Exchanges that overlapped in the recording may overlap again, and
+ *   exchanges of different sessions may overlap.
  * - A request that needs a value captured from an earlier exchange waits for
- *   that exchange to complete, under every pacing mode.
- * - An exchange with a barrier tag waits until every earlier exchange has a
- *   response or an error, is sent alone, and is acknowledged before anything
- *   later is sent. A wait longer than the barrier timeout is recorded as
- *   `barrier_timeout` and the run is inconclusive.
+ *   that exchange to complete, under every pacing mode and across sessions.
+ * - An exchange with a barrier tag waits until every earlier exchange of every
+ *   session has a response or an error, is sent alone, and is acknowledged
+ *   before anything later in any session is sent. A wait longer than the
+ *   barrier timeout is recorded as `barrier_timeout` and the run is
+ *   inconclusive.
  * - An exchange with a control tag is a barrier too. It is diffed on status
  *   only, excluded from statistics and thresholds, and marked `control: true`.
  *   A control that fails or returns a different status makes the run
@@ -102,6 +108,13 @@ export interface ReplayOptions {
    */
   queryOverrides?: Query | undefined;
   barrierTags?: readonly string[] | undefined;
+  /**
+   * Where a recorded request names its session: `header:<name>`, `cookie:<name>`, or a
+   * JSONPath into the request body. The recorded happens-before order is then kept within
+   * a session only, and exchanges of different sessions may overlap up to `concurrency`.
+   * Default: one session for the whole recording.
+   */
+  sessionKey?: string | null | undefined;
   /** Default 10000. */
   barrierTimeoutMs?: number | undefined;
   /** Write the requests as sent and the candidate responses here, in recording format. */
@@ -156,6 +169,8 @@ export interface ReplayProgress {
 export const DEFAULT_BARRIER_TIMEOUT_MS = 10_000;
 export const DEFAULT_CONCURRENCY = 8;
 export const DEFAULT_MAX_GAP_MS = 30_000;
+/** Most exchanges read ahead of the oldest one not yet acknowledged. */
+export const DEFAULT_WINDOW = 10_000;
 
 interface Selection {
   selected: Exchange[];
@@ -240,12 +255,21 @@ function validate(options: ReplayExchangesOptions): void {
   }
 }
 
-/** Waits for every promise or for the timeout, whichever comes first. Returns true on timeout. */
-async function waitWithTimeout(promises: Promise<void>[], timeoutMs: number): Promise<boolean> {
+/**
+ * Waits until `ready` holds or the timeout passes, whichever comes first.
+ * Returns true on timeout. `until` is the scheduler's wait on its own state.
+ */
+async function waitUntil(
+  until: (ready: () => boolean) => Promise<void>,
+  ready: () => boolean,
+  timeoutMs: number,
+): Promise<boolean> {
+  let expired = false;
   const controller = new AbortController();
   const timer = sleep(timeoutMs, true, { signal: controller.signal }).catch(() => false);
-  const done = Promise.all(promises).then(() => false);
+  const done = until(() => expired || ready()).then(() => false);
   const timedOut = await Promise.race([done, timer]);
+  expired = true;
   controller.abort();
   return timedOut;
 }
@@ -271,6 +295,50 @@ export async function replay(options: ReplayOptions): Promise<Run> {
   return { ...run, recording: { ...run.recording, recording_sha256: hash.sha256 } };
 }
 
+/** A promise with its resolver. */
+interface Deferred {
+  promise: Promise<void>;
+  resolve: () => void;
+}
+
+function deferred(): Deferred {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+/** The exchanges of one session that the scheduler has read and not yet sent or acknowledged. */
+interface Session {
+  key: string;
+  /** Read and not yet sent, in recording order. */
+  queue: Slot[];
+  /** Sent and not yet acknowledged. */
+  pending: Set<Slot>;
+  /** True while a worker sends this session's queue. */
+  active: boolean;
+}
+
+/** One selected exchange inside the window. */
+interface Slot {
+  index: number;
+  exchange: Exchange;
+  dependency: boolean;
+  session: Session;
+  control: boolean;
+  barrier: boolean;
+  /** Scheduled send time under `as-recorded` and `fixed-rate`. */
+  time: number;
+  /** Indices of the earlier exchanges that produce a value this request uses. */
+  deps: number[];
+  dispatched: boolean;
+  completed: boolean;
+  done: Deferred;
+  result: ExchangeResult | null;
+  sent: SentExchange | null;
+}
+
 /** Replays exchanges held in memory. Used by `replay` and by shrinking, which replays per attempt. */
 export async function replayExchanges(
   all: readonly Exchange[],
@@ -294,6 +362,11 @@ export async function replayExchanges(
   const maxGapOption = options.maxGapMs ?? DEFAULT_MAX_GAP_MS;
   // The cap applies to recorded gaps only, so it is in effect under as-recorded alone.
   const maxGapMs = pace === 'as-recorded' && maxGapOption > 0 ? maxGapOption : null;
+  const sessionKey =
+    options.sessionKey === undefined || options.sessionKey === null
+      ? null
+      : parseSessionKey(options.sessionKey);
+  const windowSize = DEFAULT_WINDOW;
   const now = options.now ?? (() => new Date());
   const signal = options.signal;
   const log = options.log ?? noopLogger;
@@ -307,13 +380,8 @@ export async function replayExchanges(
     rules.substitutions,
   );
   const n = selected.length;
-  const schedule = buildSchedule(
-    selected.map((e) => e.offset_ms),
-    pace,
-    rps,
-    maxGapMs,
-  );
-  const dependencies = new DependencyIndex(selected, rules.substitutions);
+  const schedule = new ScheduleBuilder(pace, rps, maxGapMs);
+  const dependencies = new DependencyIndex([], rules.substitutions);
   const table = new SubstitutionTable(rules.substitutions);
   const differ = createDiffer(rules);
 
@@ -326,33 +394,60 @@ export async function replayExchanges(
       maxBodyBytes: options.maxBodyBytes,
     });
 
-  const results: ExchangeResult[] = new Array<ExchangeResult>(n);
-  const sent: (SentExchange | null)[] = new Array<SentExchange | null>(n).fill(null);
+  // Results in recording order, appended as the acknowledged prefix grows.
+  const replayed: ExchangeResult[] = [];
+  const sent: SentExchange[] = [];
   const conditions: InconclusiveCondition[] = [];
-  const resolvers: (() => void)[] = [];
-  const completion: Promise<void>[] = selected.map(
-    (_, i) =>
-      new Promise<void>((resolve) => {
-        resolvers[i] = resolve;
-      }),
-  );
-  const pending = new Set<number>();
+  /** The exchanges read and not yet part of the acknowledged prefix, by index. */
+  const window = new Map<number, Slot>();
+  const sessions = new Map<string, Session>();
+  const sessionKeys = new Set<string>();
+  /** Barriers read and not yet acknowledged, in recording order. */
+  const openBarriers: Slot[] = [];
+  /** Every exchange below this index was acknowledged or failed. */
+  let ackFront = 0;
+  /** Every exchange below this index was sent. */
+  let sendFront = 0;
+  const pending = new Set<Slot>();
   const slotWaiters: (() => void)[] = [];
+  const workers = new Set<Promise<void>>();
+  const tasks = new Set<Promise<void>>();
   let inflight = 0;
   let completed = 0;
   let dispatched = 0;
   let barrierWaits = 0;
+  let changed = deferred();
+  /** Wakes every wait on the scheduler's state. */
+  const notify = (): void => {
+    const current = changed;
+    changed = deferred();
+    current.resolve();
+  };
+  const until = async (ready: () => boolean): Promise<void> => {
+    while (!ready()) await changed.promise;
+  };
+
   const shutdown = new AbortController();
-  // A stop request aborts the sends in flight at once. The scheduler loop sees it at its
-  // next step and sends nothing more.
-  const onAbort = (): void => shutdown.abort();
-  if (signal?.aborted) shutdown.abort();
-  else signal?.addEventListener('abort', onAbort, { once: true });
+  // A stop request aborts the sends in flight at once. The workers see it at their next
+  // step and send nothing more.
+  const stop = deferred();
+  const onAbort = (): void => {
+    shutdown.abort();
+    stop.resolve();
+    notify();
+  };
+  if (signal?.aborted) {
+    shutdown.abort();
+    stop.resolve();
+  } else signal?.addEventListener('abort', onAbort, { once: true });
   const stopped = (): boolean => signal?.aborted === true;
+  /** Waits for an earlier exchange, or for a stop request that means it may never be sent. */
+  const settled = (slots: readonly Slot[]): Promise<unknown> =>
+    Promise.race([Promise.all(slots.map((k) => k.done.promise)), stop.promise]);
 
   const started = performance.now();
   const rel = (): number => performance.now() - started;
-  const scheduleEnd = schedule.times[n - 1] ?? 0;
+  const scheduleEnd = (): number => (pace === 'max' ? 0 : schedule.end);
   const heartbeatMs = options.heartbeatMs ?? 0;
   const heartbeat =
     heartbeatMs > 0 && options.onProgress !== undefined
@@ -363,7 +458,7 @@ export async function replayExchanges(
             last: null,
             inflight: pending.size,
             heartbeat: true,
-            schedule_end_ms: scheduleEnd,
+            schedule_end_ms: scheduleEnd(),
           });
         }, heartbeatMs)
       : null;
@@ -393,8 +488,10 @@ export async function replayExchanges(
     };
   };
 
-  const dispatch = async (i: number, e: Exchange, scheduledAt: number): Promise<void> => {
-    const control = isControl(e);
+  const dispatch = async (slot: Slot, scheduledAt: number): Promise<void> => {
+    const i = slot.index;
+    const e = slot.exchange;
+    const control = slot.control;
     const request = prepare(e.request);
     const sentAt = rel();
     const sentWall = Date.now();
@@ -439,7 +536,7 @@ export async function replayExchanges(
       path: e.request.path,
       warmup: i < warmup,
       control,
-      dependency: dependency[i] === true,
+      dependency: slot.dependency,
       scheduled_at_ms: round3(scheduledAt),
       sent_at_ms: round3(sentAt),
       acked_at_ms: ackedAt === null ? null : round3(ackedAt),
@@ -449,8 +546,14 @@ export async function replayExchanges(
       error,
       diff,
     };
-    results[i] = result;
-    sent[i] = { exchange: e, request, response: candidate, sentAtMs: sentAt, sentWallMs: sentWall };
+    slot.result = result;
+    slot.sent = {
+      exchange: e,
+      request,
+      response: candidate,
+      sentAtMs: sentAt,
+      sentWallMs: sentWall,
+    };
     completed += 1;
     options.onProgress?.({
       completed,
@@ -458,65 +561,187 @@ export async function replayExchanges(
       last: result,
       inflight: pending.size - 1,
       heartbeat: false,
-      schedule_end_ms: scheduleEnd,
+      schedule_end_ms: scheduleEnd(),
     });
   };
 
-  const tasks: Promise<void>[] = [];
-  try {
-    for (let i = 0; i < n; i += 1) {
-      if (stopped()) break;
-      const e = selected[i] as Exchange;
-      const barrier = isBarrier(e);
+  /** Moves a finished result out of the window, in recording order. */
+  const finalize = (slot: Slot): void => {
+    if (slot.result !== null) replayed.push(slot.result);
+    if (slot.sent !== null) sent.push(slot.sent);
+  };
+
+  const complete = (slot: Slot): void => {
+    slot.completed = true;
+    pending.delete(slot);
+    const session = slot.session;
+    session.pending.delete(slot);
+    if (!session.active && session.queue.length === 0 && session.pending.size === 0) {
+      if (sessions.get(session.key) === session) sessions.delete(session.key);
+    }
+    release();
+    slot.done.resolve();
+    while (openBarriers[0]?.completed === true) openBarriers.shift();
+    for (;;) {
+      const head = window.get(ackFront);
+      if (head?.completed !== true) break;
+      finalize(head);
+      window.delete(ackFront);
+      ackFront += 1;
+    }
+    if (sendFront < ackFront) sendFront = ackFront;
+    notify();
+  };
+
+  const markSent = (slot: Slot): void => {
+    slot.dispatched = true;
+    for (;;) {
+      const next = window.get(sendFront);
+      if (next?.dispatched !== true) break;
+      sendFront += 1;
+    }
+  };
+
+  /**
+   * Waits until one exchange may be sent and sends it. Returns false when the run
+   * stopped first. The order of the waits is the order of the rules in the
+   * engine's documentation, and every wait is on an earlier exchange, so the
+   * oldest exchange that was not acknowledged can always make progress.
+   */
+  const advance = async (slot: Slot): Promise<boolean> => {
+    const e = slot.exchange;
+    // A barrier that was read before this exchange is acknowledged before it is sent.
+    for (;;) {
+      const gate = openBarriers.find((b) => !b.completed && b.index < slot.index);
+      if (gate === undefined || stopped()) break;
+      await settled([gate]);
+    }
+    // A barrier holds its slot while it waits, as it always did, but only once every earlier
+    // exchange of every session was sent, so the slot it holds is never one they need.
+    let holding = false;
+    if (slot.barrier) {
+      await until(() => sendFront >= slot.index || stopped());
+      if (stopped()) return false;
       await acquire();
-      if (barrier && pending.size > 0) {
+      holding = true;
+      if (ackFront < slot.index && !stopped()) {
         barrierWaits += 1;
-        const earlier = [...pending];
-        const timedOut = await waitWithTimeout(
-          earlier.map((k) => completion[k] as Promise<void>),
+        const timedOut = await waitUntil(
+          until,
+          () => ackFront >= slot.index || stopped(),
           barrierTimeoutMs,
         );
         if (timedOut) {
-          const still = earlier.filter((k) => pending.has(k));
+          const still = [...window.values()]
+            .filter((k) => k.index < slot.index && !k.completed)
+            .sort((a, b) => a.index - b.index);
           conditions.push({
             kind: 'barrier_timeout',
             detail: `${e.request.method} ${e.request.path} (${e.id}) waited ${barrierTimeoutMs} ms for ${still.length} earlier exchange${still.length === 1 ? '' : 's'}: ${still
-              .map((k) => (selected[k] as Exchange).id)
+              .map((k) => k.exchange.id)
               .join(', ')}`,
           });
         }
       }
-      const deps = dependencies.dependenciesOf(i, e.request);
-      if (deps.length > 0) await Promise.all(deps.map((k) => completion[k] as Promise<void>));
-      // Recorded happens-before. An exchange whose recorded request began after an earlier
-      // exchange's recorded response is never sent before that exchange is acknowledged, so
-      // the replay never introduces an ordering the recording did not have.
-      const precursors = [...pending].filter((k) => {
-        const earlier = selected[k] as Exchange;
-        return earlier.offset_ms + earlier.response.latency_ms <= e.offset_ms;
-      });
-      if (precursors.length > 0) {
-        await Promise.all(precursors.map((k) => completion[k] as Promise<void>));
-      }
-      const scheduledAt = pace === 'max' ? rel() : (schedule.times[i] as number);
-      const wait = scheduledAt - rel();
+    }
+    const producers = slot.deps
+      .map((k) => window.get(k))
+      .filter((k): k is Slot => k !== undefined && !k.completed);
+    if (producers.length > 0) await settled(producers);
+    // Recorded happens-before, within the session. An exchange whose recorded request began
+    // after an earlier exchange's recorded response is never sent before that exchange is
+    // acknowledged, so the replay never introduces an ordering the recording did not have.
+    const precursors = [...slot.session.pending].filter(
+      (k) => k.exchange.offset_ms + k.exchange.response.latency_ms <= e.offset_ms,
+    );
+    if (precursors.length > 0) await settled(precursors);
+    if (pace !== 'max') {
+      const wait = slot.time - rel();
       // The wait ends early on a stop request, so a long capped gap does not delay the stop.
       if (wait > 0) await sleep(wait, undefined, { signal }).catch(() => undefined);
-      if (stopped()) {
-        release();
-        break;
-      }
-      dispatched += 1;
-      pending.add(i);
-      const task = dispatch(i, e, scheduledAt).finally(() => {
-        pending.delete(i);
-        release();
-        (resolvers[i] as () => void)();
-      });
-      tasks.push(task);
-      if (barrier) await completion[i];
     }
-    await Promise.all(tasks);
+    if (stopped()) {
+      if (holding) release();
+      return false;
+    }
+    if (!holding) await acquire();
+    if (stopped()) {
+      release();
+      return false;
+    }
+    const scheduledAt = pace === 'max' ? rel() : slot.time;
+    dispatched += 1;
+    pending.add(slot);
+    slot.session.pending.add(slot);
+    markSent(slot);
+    notify();
+    const task: Promise<void> = dispatch(slot, scheduledAt).finally(() => {
+      tasks.delete(task);
+      complete(slot);
+    });
+    tasks.add(task);
+    return true;
+  };
+
+  /** Sends one session's exchanges in recording order until its queue is empty. */
+  const work = async (session: Session): Promise<void> => {
+    while (session.queue.length > 0 && !stopped()) {
+      const slot = session.queue.shift() as Slot;
+      if (!(await advance(slot))) break;
+    }
+    session.active = false;
+    if (session.queue.length === 0 && session.pending.size === 0) {
+      if (sessions.get(session.key) === session) sessions.delete(session.key);
+    }
+  };
+
+  const startWorker = (session: Session): void => {
+    session.active = true;
+    const worker: Promise<void> = work(session).finally(() => workers.delete(worker));
+    workers.add(worker);
+  };
+
+  /** Reads the selection into the window, at most `windowSize` past the acknowledged prefix. */
+  const readAll = async (): Promise<void> => {
+    for (let i = 0; i < n; i += 1) {
+      if (i - ackFront >= windowSize) await until(() => i - ackFront < windowSize || stopped());
+      if (stopped()) return;
+      const e = selected[i] as Exchange;
+      const key = sessionKey === null ? '' : sessionOf(sessionKey, e.request);
+      sessionKeys.add(key);
+      let session = sessions.get(key);
+      if (session === undefined) {
+        session = { key, queue: [], pending: new Set(), active: false };
+        sessions.set(key, session);
+      }
+      const control = isControl(e);
+      const slot: Slot = {
+        index: i,
+        exchange: e,
+        dependency: dependency[i] === true,
+        session,
+        control,
+        barrier: control || isBarrier(e),
+        time: schedule.next(e.offset_ms),
+        deps: dependencies.empty ? [] : dependencies.dependenciesOf(i, e.request),
+        dispatched: false,
+        completed: false,
+        done: deferred(),
+        result: null,
+        sent: null,
+      };
+      if (!dependencies.empty) dependencies.add(e, i);
+      window.set(i, slot);
+      if (slot.barrier) openBarriers.push(slot);
+      session.queue.push(slot);
+      if (!session.active) startWorker(session);
+    }
+  };
+
+  try {
+    await readAll();
+    while (workers.size > 0) await Promise.all([...workers]);
+    while (tasks.size > 0) await Promise.all([...tasks]);
   } finally {
     if (heartbeat !== null) clearInterval(heartbeat);
     signal?.removeEventListener('abort', onAbort);
@@ -524,14 +749,18 @@ export async function replayExchanges(
     if (ownAdapter && adapter.close) await adapter.close();
   }
   const durationMs = rel();
+  // After a stop the acknowledged prefix ends at the first exchange that was never sent.
+  // The exchanges sent after it are kept, in recording order.
+  for (const slot of [...window.values()].sort((a, b) => a.index - b.index)) {
+    if (slot.completed) finalize(slot);
+  }
+  window.clear();
   if (stopped()) {
     conditions.push({
       kind: 'aborted',
       detail: `stopped by signal after ${dispatched} of ${n} exchanges`,
     });
   }
-  // The exchanges that were sent, in recording order. After a stop the rest are left out.
-  const replayed = results.filter((r): r is ExchangeResult => r !== undefined);
 
   const collector = new StatsCollector();
   const slips: number[] = [];
@@ -550,7 +779,7 @@ export async function replayExchanges(
   const slip = summarizeSlip(slips);
 
   const candidateLog = candidateExchanges({
-    sent: sent.filter((s): s is SentExchange => s !== null),
+    sent,
     adapter: adapter.name,
     redactHeaders: options.redactHeaders ?? DEFAULT_REDACTED_HEADERS,
   });
@@ -602,7 +831,7 @@ export async function replayExchanges(
       mode: pace,
       rps,
       concurrency,
-      requested_rps: requestedRps(schedule.times, pace, rps),
+      requested_rps: schedule.requestedRps(),
       achieved_rps: durationMs > 0 ? round3((replayed.length * 1000) / durationMs) : 0,
       slip_p50_ms: slip.p50_ms,
       slip_max_ms: slip.max_ms,
@@ -611,6 +840,8 @@ export async function replayExchanges(
       barrier_waits: barrierWaits,
       max_gap_ms: maxGapMs,
       gaps_capped: schedule.gapsCapped,
+      session_key: sessionKey?.spec ?? null,
+      sessions: sessionKeys.size,
     },
     warmup,
     filter: {

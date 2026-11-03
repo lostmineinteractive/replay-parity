@@ -64,6 +64,18 @@ describe('DependencyIndex', () => {
     expect(index.dependenciesOf(5, makeRequest({ path: '/v1/orders/o-12' }))).toEqual([]);
   });
 
+  it('answers the same when built one exchange at a time in recording order', () => {
+    const streamed = new DependencyIndex([], rules);
+    expect(streamed.empty).toBe(false);
+    selected.forEach((exchange, i) => {
+      expect(streamed.dependenciesOf(i, exchange.request)).toEqual(
+        index.dependenciesOf(i, exchange.request),
+      );
+      streamed.add(exchange, i);
+    });
+    expect(new DependencyIndex(selected, []).empty).toBe(true);
+  });
+
   it('respects the apply list', () => {
     // The shipment rule applies to bodies only, so a path segment equal to s-1 is no dependency.
     expect(index.dependenciesOf(4, makeRequest({ path: '/v1/shipments/s-1' }))).toEqual([]);

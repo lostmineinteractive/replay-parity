@@ -117,16 +117,30 @@ export class DependencyIndex {
 
   constructor(selected: readonly Exchange[], rules: readonly SubstitutionRule[]) {
     this.rules = compileRules(rules);
+    for (const rule of this.rules) this.producers.set(rule.name, new Map());
+    selected.forEach((exchange, index) => this.add(exchange, index));
+  }
+
+  /** True when no rule can capture anything, so no exchange depends on another. */
+  get empty(): boolean {
+    return this.rules.length === 0;
+  }
+
+  /**
+   * Notes the values one more exchange produces. Exchanges are added in
+   * recording order, which is how a streamed recording builds the index: a
+   * producer always precedes the requests that use its value, so the index
+   * answers `dependenciesOf` for an exchange as soon as every earlier one was
+   * added, exactly as it does when it is built over the whole selection.
+   */
+  add(exchange: Exchange, index: number): void {
     for (const rule of this.rules) {
-      const map = new Map<string, number>();
-      selected.forEach((exchange, index) => {
-        if (!exchange.tags.includes(rule.tag)) return;
-        const value = captureValue(rule.capture, exchange.response, exchange.request);
-        if (value === undefined) return;
-        const key = canonicalJson(value);
-        if (!map.has(key)) map.set(key, index);
-      });
-      this.producers.set(rule.name, map);
+      if (!exchange.tags.includes(rule.tag)) continue;
+      const value = captureValue(rule.capture, exchange.response, exchange.request);
+      if (value === undefined) continue;
+      const key = canonicalJson(value);
+      const map = this.producers.get(rule.name) as Map<string, number>;
+      if (!map.has(key)) map.set(key, index);
     }
   }
 

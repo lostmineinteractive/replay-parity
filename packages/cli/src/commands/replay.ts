@@ -82,6 +82,8 @@ export interface ReplayCommandOptions extends UpstreamFlags, AdapterModuleFlags 
   query: string[];
   barrierTag: string[];
   barrierTimeoutMs: number;
+  /** `header:<name>`, `cookie:<name>`, or a JSONPath into the request body. */
+  sessionKey?: string;
   candidateRecording?: string;
   invariants: boolean;
   timeoutMs: number;
@@ -338,6 +340,7 @@ export async function runReplay(
       queryOverrides,
       barrierTags: options.barrierTag,
       barrierTimeoutMs: options.barrierTimeoutMs,
+      sessionKey: options.sessionKey ?? null,
       candidateRecording: options.candidateRecording ?? null,
       invariants: options.invariants,
       timeoutMs: options.timeoutMs,
@@ -469,6 +472,10 @@ export function replayCommand(
       )
         .default(DEFAULT_BARRIER_TIMEOUT_MS)
         .argParser(positiveInt),
+    )
+    .option(
+      '--session-key <key>',
+      'header:<name>, cookie:<name>, or a JSONPath into the request body naming the session of each recorded request; order is then kept within a session, and sessions overlap up to --concurrency',
     )
     .option(
       '--candidate-recording <path>',

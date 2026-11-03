@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildSchedule, requestedRps, summarizeSlip } from './pacing.js';
+import { ScheduleBuilder, buildSchedule, requestedRps, summarizeSlip } from './pacing.js';
 
 describe('buildSchedule', () => {
   const offsets = [120, 150, 400, 400, 1000];
@@ -71,5 +71,35 @@ describe('summarizeSlip', () => {
     expect(summarizeSlip([])).toEqual({ p50_ms: 0, max_ms: 0 });
     expect(summarizeSlip([5, -1, 3, 40])).toEqual({ p50_ms: 3, max_ms: 40 });
     expect(summarizeSlip([1.23456])).toEqual({ p50_ms: 1.235, max_ms: 1.235 });
+  });
+});
+
+describe('ScheduleBuilder', () => {
+  it('gives one exchange at a time the times buildSchedule gives the whole list', () => {
+    const offsets = [120, 150, 400, 400, 1000];
+    for (const [mode, rps, cap] of [
+      ['as-recorded', null, null],
+      ['as-recorded', null, 100],
+      ['fixed-rate', 50, null],
+      ['max', null, null],
+    ] as const) {
+      const builder = new ScheduleBuilder(mode, rps, cap);
+      const times = offsets.map((o) => builder.next(o));
+      const whole = buildSchedule(offsets, mode, rps, cap);
+      expect(times).toEqual(whole.times);
+      expect(builder.gapsCapped).toBe(whole.gapsCapped);
+      expect(builder.end).toBe(whole.times[whole.times.length - 1]);
+      expect(builder.requestedRps()).toBe(requestedRps(whole.times, mode, rps));
+    }
+  });
+
+  it('starts empty and rejects a bad cap or rate', () => {
+    const builder = new ScheduleBuilder('as-recorded', null);
+    expect(builder.end).toBe(0);
+    expect(builder.requestedRps()).toBeNull();
+    builder.next(5);
+    expect(builder.requestedRps()).toBeNull();
+    expect(() => new ScheduleBuilder('as-recorded', null, 0)).toThrow(RangeError);
+    expect(() => new ScheduleBuilder('fixed-rate', null)).toThrow(RangeError);
   });
 });

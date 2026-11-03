@@ -18,6 +18,7 @@ export {
 } from './http-adapter.js';
 export { loadAdapterModule, pluginAdapterName, type AdapterModuleOptions } from './plugin.js';
 export {
+  ScheduleBuilder,
   buildSchedule,
   requestedRps,
   summarizeSlip,
@@ -26,9 +27,17 @@ export {
 } from './pacing.js';
 export { DependencyIndex, SubstitutionTable, type CaptureRequests } from './substitutions.js';
 export {
+  NO_SESSION,
+  cookieValue,
+  parseSessionKey,
+  sessionOf,
+  type SessionKey,
+} from './sessions.js';
+export {
   DEFAULT_BARRIER_TIMEOUT_MS,
   DEFAULT_CONCURRENCY,
   DEFAULT_MAX_GAP_MS,
+  DEFAULT_WINDOW,
   dropRedactedQuery,
   replay,
   replayExchanges,

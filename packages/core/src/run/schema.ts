@@ -38,6 +38,13 @@ export const PacingSchema = z
     max_gap_ms: z.number().positive().nullable(),
     /** How many recorded gaps were reduced to the cap. */
     gaps_capped: count,
+    /**
+     * Where a recorded request names its session, from `--session-key`, or null when the
+     * whole recording is one session. Absent in a run written before the field existed.
+     */
+    session_key: z.string().min(1).nullable().optional(),
+    /** How many sessions the selected exchanges formed. Absent in an older run. */
+    sessions: count.optional(),
   })
   .strict();
 
