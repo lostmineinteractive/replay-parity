@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import { createServer, type Server } from 'node:https';
-import type { AddressInfo } from 'node:net';
+import { createServer, get as httpsGet, type Server } from 'node:https';
+import { createServer as createNetServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Writable } from 'node:stream';
 import type { TLSSocket } from 'node:tls';
 import { jsonResponse, makeExchange, makeRequest, parseRun } from '@replay-parity/core';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { runCli } from '../src/index.js';
 
@@ -177,5 +178,82 @@ describe('rp replay over TLS', () => {
     );
     expect(missing.code).toBe(1);
     expect(missing.err).toContain('--upstream-ca');
+  });
+});
+
+describe('rp capture over TLS', () => {
+  async function freePort(): Promise<number> {
+    const server = createNetServer();
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const port = (server.address() as AddressInfo).port;
+    await new Promise<void>((r) => server.close(() => r()));
+    return port;
+  }
+
+  function fetchOnce(url: string): Promise<number> {
+    return new Promise((resolve, reject) => {
+      httpsGet(url, { ca: readFileSync(CERT, 'utf8'), agent: false }, (res) => {
+        res.resume();
+        res.on('end', () => resolve(res.statusCode ?? 0));
+      }).on('error', reject);
+    });
+  }
+
+  async function fetchWhenUp(url: string): Promise<number> {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        return await fetchOnce(url);
+      } catch {
+        await sleep(20);
+      }
+    }
+    throw new Error(`${url} never came up`);
+  }
+
+  it('listens over https with --tls-cert and --tls-key and reaches an https reference with --upstream-ca', async () => {
+    const { url, seen } = await tlsServer();
+    const port = await freePort();
+    const out = join(dir, 'captured.jsonl');
+    const controller = new AbortController();
+    const stderr = new Sink();
+    const running = runCli(
+      [
+        'capture',
+        '--listen',
+        `127.0.0.1:${port}`,
+        '--target',
+        url,
+        '--out',
+        out,
+        '--no-append',
+        '--tls-cert',
+        CERT,
+        '--tls-key',
+        KEY,
+        '--upstream-ca',
+        CERT,
+      ],
+      { stdout: new Sink(), stderr, signal: controller.signal },
+    );
+    expect(await fetchWhenUp(`https://127.0.0.1:${port}/v1/items`)).toBe(200);
+    controller.abort();
+    expect(await running).toBe(0);
+    expect(seen.paths).toContain('/v1/items');
+    expect(stderr.text).toContain('1 recorded');
+    expect((await readFile(out, 'utf8')).trim().split('\n')).toHaveLength(1);
+  });
+
+  it('needs the certificate and the key together', async () => {
+    const result = await rp([
+      'capture',
+      '--target',
+      'http://127.0.0.1:1',
+      '--out',
+      join(dir, 'x.jsonl'),
+      '--tls-cert',
+      CERT,
+    ]);
+    expect(result.code).toBe(1);
+    expect(result.err).toContain('--tls-cert and --tls-key are used together');
   });
 });

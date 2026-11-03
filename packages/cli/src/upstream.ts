@@ -25,8 +25,8 @@ export interface Upstream {
 }
 
 /** Registers the upstream flags on a command. */
-export function addUpstreamOptions(command: Command): Command {
-  return command
+export function addUpstreamOptions(command: Command, withProxy = true): Command {
+  command
     .option('--upstream-ca <path>', 'PEM file of the authorities that sign the target certificate')
     .option('--upstream-cert <path>', 'PEM client certificate to present to the target')
     .option('--upstream-key <path>', 'PEM private key for --upstream-cert')
@@ -34,11 +34,12 @@ export function addUpstreamOptions(command: Command): Command {
     .option(
       '--upstream-servername <name>',
       'server name sent in SNI and checked against the certificate',
-    )
-    .option('--http-proxy <url>', 'HTTP proxy to reach the target through');
+    );
+  if (withProxy) command.option('--http-proxy <url>', 'HTTP proxy to reach the target through');
+  return command;
 }
 
-async function readPem(flag: string, path: string): Promise<string> {
+export async function readPem(flag: string, path: string): Promise<string> {
   try {
     return await readFile(path, 'utf8');
   } catch (e) {

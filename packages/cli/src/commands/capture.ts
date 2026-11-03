@@ -2,6 +2,7 @@ import { once } from 'node:events';
 import { CaptureServer, parseTagRule, type CaptureStats } from '@replay-parity/capture';
 import {
   DEFAULT_HEARTBEAT_MS,
+  ConfigError,
   DEFAULT_MAX_BODY_BYTES,
   DEFAULT_PROGRESS_EVERY,
   DEFAULT_REDACTED_HEADERS,
@@ -10,6 +11,7 @@ import {
 } from '@replay-parity/core';
 import { Command, Option } from 'commander';
 import { endProgress, logger, startProgress, type CliStreams } from '../io.js';
+import { addUpstreamOptions, readPem, resolveUpstream, type UpstreamFlags } from '../upstream.js';
 import {
   collect,
   fraction,
@@ -19,7 +21,9 @@ import {
   type Listen,
 } from '../options.js';
 
-export interface CaptureCommandOptions {
+export interface CaptureCommandOptions extends UpstreamFlags {
+  tlsCert?: string;
+  tlsKey?: string;
   listen: Listen;
   target: string;
   out: string;
@@ -52,7 +56,20 @@ export async function runCapture(
   signal: AbortSignal,
 ): Promise<number> {
   const log = logger(streams);
+  if ((options.tlsCert === undefined) !== (options.tlsKey === undefined)) {
+    throw new ConfigError('--tls-cert and --tls-key are used together');
+  }
+  const { tls: upstream } = await resolveUpstream(options);
+  const listenTls =
+    options.tlsCert === undefined || options.tlsKey === undefined
+      ? undefined
+      : {
+          cert: await readPem('--tls-cert', options.tlsCert),
+          key: await readPem('--tls-key', options.tlsKey),
+        };
   const capture = await CaptureServer.create({
+    tls: listenTls,
+    upstream,
     target: options.target,
     out: options.out,
     append: options.append,
@@ -112,7 +129,7 @@ export function captureCommand(
   signal: AbortSignal,
   exit: (code: number) => void,
 ): Command {
-  return new Command('capture')
+  const command = new Command('capture')
     .description(
       'Run the recording reverse proxy in front of the reference system until SIGINT or SIGTERM.',
     )
@@ -175,7 +192,10 @@ export function captureCommand(
         .default(DEFAULT_HEARTBEAT_MS)
         .argParser(nonNegativeInt),
     )
-    .action(async (opts: CaptureCommandOptions) => {
-      exit(await runCapture(opts, streams, signal));
-    });
+    .option('--tls-cert <path>', 'PEM certificate to listen over HTTPS with')
+    .option('--tls-key <path>', 'PEM private key for --tls-cert');
+  addUpstreamOptions(command, false);
+  return command.action(async (opts: CaptureCommandOptions) => {
+    exit(await runCapture(opts, streams, signal));
+  });
 }
