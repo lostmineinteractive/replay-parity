@@ -429,10 +429,12 @@ describe('selection, warmup, and pacing', () => {
     expect(run.pacing.requested_rps).toBeCloseTo((24 * 1000) / span, 1);
     // The schedule is read from the run's own fields. Sends keep the recording order, never run
     // ahead of their scheduled time beyond timer granularity, and span at least the schedule. A
-    // stall on the machine delays every send alike and leaves these true.
+    // stall on the machine delays every send alike and leaves these true. Node's timers run on
+    // the event loop's clock, which can trail performance.now(), so a timer may fire up to a
+    // couple of milliseconds early by the run's clock: CI saw sends 1.5 ms ahead of schedule.
     const sent = run.exchanges.map((e) => e.sent_at_ms);
     for (let i = 0; i < sent.length; i += 1) {
-      expect(sent[i]!).toBeGreaterThanOrEqual(run.exchanges[i]!.scheduled_at_ms - 1);
+      expect(sent[i]!).toBeGreaterThanOrEqual(run.exchanges[i]!.scheduled_at_ms - 5);
       if (i > 0) expect(sent[i]!).toBeGreaterThanOrEqual(sent[i - 1]!);
     }
     expect(sent[24]! - sent[0]!).toBeGreaterThanOrEqual(span - 1);

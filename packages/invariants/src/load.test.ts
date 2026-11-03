@@ -50,7 +50,7 @@ describe('loadInvariantModule', () => {
   it('names a module that fails to import', async () => {
     const path = await write('syntax.mjs', 'export const = ;\n');
     await expect(loadInvariantModule(path)).rejects.toThrow(
-      new RegExp(`invariant module ${path} failed to load`),
+      `invariant module ${path} failed to load`,
     );
   });
 
