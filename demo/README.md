@@ -57,7 +57,7 @@ The third replay targets a candidate with one of the four seeded defects enabled
 
 ![Invariants section with three violated rules and their evidence](../docs/images/report-defect-invariants.png)
 
-`rp shrink` then replays subsets of the recording against the reset candidate, judged by invariant 1, and writes the reduced reproduction. The recorded 284 steps come down to four in thirteen attempts: create an order, deliver a shipment, deliver the same shipment id again, read the order.
+`rp shrink` then replays subsets of the recording against the reset candidate, judged by invariant 1, and writes the reduced reproduction. The recorded 284 steps come down to four in eleven attempts, with two more subsets answered from the attempt cache: create an order, deliver a shipment, deliver the same shipment id again, read the order.
 
 ![Reproduction section with the four steps](../docs/images/report-defect-reproduction.png)
 
