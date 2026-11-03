@@ -103,3 +103,28 @@ describe('ScheduleBuilder', () => {
     expect(() => new ScheduleBuilder('fixed-rate', null)).toThrow(RangeError);
   });
 });
+
+describe('the speed factor', () => {
+  it('divides the recorded gaps after the cap under as-recorded', () => {
+    const offsets = [120, 150, 400, 400, 1000];
+    expect(buildSchedule(offsets, 'as-recorded', null, null, 2).times).toEqual([
+      0, 15, 140, 140, 440,
+    ]);
+    expect(buildSchedule(offsets, 'as-recorded', null, 100, 2)).toEqual({
+      times: [0, 15, 65, 65, 115],
+      gapsCapped: 2,
+    });
+    expect(buildSchedule(offsets, 'as-recorded', null, null, 0.5).times).toEqual([
+      0, 60, 560, 560, 1760,
+    ]);
+    const builder = new ScheduleBuilder('as-recorded', null, null, 4);
+    for (const o of offsets) builder.next(o);
+    // The requested rate scales with the speed: four gaps over 880 / 4 = 220 ms.
+    expect(builder.requestedRps()).toBe(18.182);
+  });
+
+  it('rejects a factor that is not a positive number', () => {
+    expect(() => new ScheduleBuilder('as-recorded', null, null, 0)).toThrow(RangeError);
+    expect(() => new ScheduleBuilder('max', null, null, Number.NaN)).toThrow(RangeError);
+  });
+});

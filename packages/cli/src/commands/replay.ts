@@ -71,6 +71,10 @@ export interface ReplayCommandOptions extends UpstreamFlags, AdapterModuleFlags 
   limit?: number;
   includeDependencies: boolean;
   maxGapMs: number;
+  /** Divides every recorded gap under as-recorded pacing. */
+  speed?: number;
+  /** Replays the selection this many times. Default 1. */
+  loop?: number;
   rules?: string;
   thresholds?: string;
   adapter: 'http' | 'bus';
@@ -334,6 +338,8 @@ export async function runReplay(
       limit: options.limit ?? null,
       includeDependencies: options.includeDependencies,
       maxGapMs: options.maxGapMs,
+      speed: options.speed ?? null,
+      loop: options.loop ?? 1,
       rules,
       thresholds,
       headers,
@@ -439,6 +445,18 @@ export function replayCommand(
       )
         .default(DEFAULT_MAX_GAP_MS)
         .argParser(nonNegativeInt),
+    )
+    .addOption(
+      new Option(
+        '--speed <factor>',
+        'divide every recorded gap by this factor under as-recorded pacing, 2 replays twice as fast',
+      ).argParser(positiveNumber),
+    )
+    .addOption(
+      new Option(
+        '--loop <n>',
+        'replay the selected exchanges n times, each iteration with ids suffixed #k and its own substitutions',
+      ).argParser(positiveInt),
     )
     .option('--rules <path>', 'diff rules file (diff-rules.yaml)')
     .option('--thresholds <path>', 'thresholds file (thresholds.yaml)')

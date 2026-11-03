@@ -45,6 +45,13 @@ export const PacingSchema = z
     session_key: z.string().min(1).nullable().optional(),
     /** How many sessions the selected exchanges formed. Absent in an older run. */
     sessions: count.optional(),
+    /**
+     * The factor every recorded gap was divided by under `as-recorded`, from `--speed`.
+     * Null under the other modes. Absent in an older run.
+     */
+    speed: z.number().positive().nullable().optional(),
+    /** How many times the selection was replayed, from `--loop`. Absent in an older run. */
+    loop: z.number().int().positive().optional(),
   })
   .strict();
 

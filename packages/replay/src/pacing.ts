@@ -32,13 +32,21 @@ export class ScheduleBuilder {
   /** How many recorded gaps were reduced to the cap. */
   gapsCapped = 0;
 
+  /**
+   * `speed` divides every recorded gap under `as-recorded` after the cap is applied, so 2
+   * replays twice as fast and 0.5 at half speed. The other modes have no recorded gaps.
+   */
   constructor(
     private readonly mode: PacingMode,
     private readonly rps: number | null,
     private readonly maxGapMs: number | null = null,
+    private readonly speed = 1,
   ) {
     if (mode === 'as-recorded' && maxGapMs !== null && !(maxGapMs > 0)) {
       throw new RangeError('the gap cap must be positive or null');
+    }
+    if (!(Number.isFinite(speed) && speed > 0)) {
+      throw new RangeError('the speed factor must be a positive number');
     }
     if (mode === 'fixed-rate' && (rps === null || !(rps > 0))) {
       throw new RangeError('fixed-rate pacing needs a positive rps');
@@ -61,8 +69,12 @@ export class ScheduleBuilder {
           }
         }
         this.previous = offset;
-        // Without a cap every time is the recorded offset relative to the first exchange.
-        time = offset - this.first - this.removed;
+        // Without a cap and at speed 1 every time is the recorded offset relative to the first
+        // exchange.
+        time =
+          this.speed === 1
+            ? offset - this.first - this.removed
+            : (offset - this.first - this.removed) / this.speed;
         break;
       }
       case 'fixed-rate':
@@ -100,9 +112,10 @@ export function buildSchedule(
   mode: PacingMode,
   rps: number | null,
   maxGapMs: number | null = null,
+  speed = 1,
 ): Schedule {
   if (offsets.length === 0) return { times: [], gapsCapped: 0 };
-  const builder = new ScheduleBuilder(mode, rps, maxGapMs);
+  const builder = new ScheduleBuilder(mode, rps, maxGapMs, speed);
   const times = offsets.map((o) => builder.next(o));
   return { times, gapsCapped: builder.gapsCapped };
 }

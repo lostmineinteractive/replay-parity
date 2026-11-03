@@ -94,4 +94,37 @@ describe('rp replay at scale', () => {
     expect(bad.code).toBe(1);
     expect(bad.err).toContain('--session-key nope');
   });
+
+  it('passes --speed and --loop to the engine and records them', async () => {
+    const out = join(dir, 'loop.json');
+    const target = await candidate('off');
+    const result = await rp([
+      'replay',
+      '--recording',
+      RECORDING,
+      '--target',
+      target,
+      '--out',
+      out,
+      '--limit',
+      '3',
+      '--speed',
+      '50',
+      '--loop',
+      '2',
+      '--rules',
+      join(dir, 'rules.yaml'),
+      '--quiet',
+    ]);
+    expect(result.err).not.toMatch(/rp: /);
+    expect(result.code).toBe(0);
+    const run = await readRun(out);
+    expect(run.pacing).toMatchObject({ mode: 'as-recorded', speed: 50, loop: 2 });
+    expect(run.exchanges).toHaveLength(6);
+    expect(run.exchanges[3]?.id).toMatch(/#2$/);
+    expect(validate(run), validate.errors ?? '').toBe(true);
+    const wrong = await rp(replayArgs(target, out, ['--speed', '2']));
+    expect(wrong.code).toBe(1);
+    expect(wrong.err).toContain('as-recorded pacing only');
+  });
 });

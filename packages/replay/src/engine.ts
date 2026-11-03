@@ -98,6 +98,17 @@ export interface ReplayOptions {
   includeDependencies?: boolean | undefined;
   /** Longest recorded gap kept under `as-recorded`, in milliseconds. 0 disables. Default 30000. */
   maxGapMs?: number | undefined;
+  /**
+   * Divides every recorded gap under `as-recorded`, after the cap: 2 replays twice as fast.
+   * Default 1. Other modes have no recorded gaps and reject it.
+   */
+  speed?: number | null | undefined;
+  /**
+   * Replays the selected exchanges this many times, one iteration after another. Each
+   * iteration's exchange ids carry `#k`, k from 1, and its substitutions start empty.
+   * Default 1, which leaves the ids as recorded.
+   */
+  loop?: number | undefined;
   rules?: DiffRules | undefined;
   thresholds?: Thresholds | undefined;
   /** Caller supplied headers. Applied to every request over recorded values. */
@@ -249,6 +260,26 @@ function validate(options: ReplayExchangesOptions): void {
   if (!(barrierTimeout > 0)) {
     throw new ConfigError(`barrier timeout must be positive, got ${barrierTimeout}`);
   }
+  if (options.speed !== undefined && options.speed !== null) {
+    if (!(Number.isFinite(options.speed) && options.speed > 0)) {
+      throw new ConfigError(`--speed must be a positive number, got ${options.speed}`);
+    }
+    if (pace !== 'as-recorded') {
+      throw new ConfigError(
+        `--speed scales recorded gaps under as-recorded pacing only, not ${pace}`,
+      );
+    }
+  }
+  const loop = options.loop ?? 1;
+  if (!Number.isInteger(loop) || loop < 1) {
+    throw new ConfigError(`--loop must be a positive integer, got ${loop}`);
+  }
+  if (loop > 1 && options.invariants === true) {
+    // The invariants rebuild one system's state from one pass over the recording.
+    throw new ConfigError(
+      '--invariants judges one pass over the recording and cannot be combined with --loop',
+    );
+  }
   const maxGap = options.maxGapMs ?? DEFAULT_MAX_GAP_MS;
   if (!(Number.isFinite(maxGap) && maxGap >= 0)) {
     throw new ConfigError(`max gap must be a non negative number of milliseconds, got ${maxGap}`);
@@ -367,6 +398,8 @@ export async function replayExchanges(
       ? null
       : parseSessionKey(options.sessionKey);
   const windowSize = DEFAULT_WINDOW;
+  const speed = pace === 'as-recorded' ? (options.speed ?? 1) : null;
+  const loop = options.loop ?? 1;
   const now = options.now ?? (() => new Date());
   const signal = options.signal;
   const log = options.log ?? noopLogger;
@@ -380,9 +413,16 @@ export async function replayExchanges(
     rules.substitutions,
   );
   const n = selected.length;
-  const schedule = new ScheduleBuilder(pace, rps, maxGapMs);
-  const dependencies = new DependencyIndex([], rules.substitutions);
-  const table = new SubstitutionTable(rules.substitutions);
+  const total = n * loop;
+  // Each iteration has its own schedule, dependency index, and substitution table. The first
+  // iteration's schedule gives the requested rate, which every iteration repeats.
+  const firstSchedule = new ScheduleBuilder(pace, rps, maxGapMs, speed ?? 1);
+  let schedule = firstSchedule;
+  let gapsCapped = 0;
+  /** When the current iteration's schedule starts, in milliseconds since the run started. */
+  let base = 0;
+  let dependencies = new DependencyIndex([], rules.substitutions);
+  let table = new SubstitutionTable(rules.substitutions);
   const differ = createDiffer(rules);
 
   const ownAdapter = options.adapter === undefined;
@@ -447,14 +487,14 @@ export async function replayExchanges(
 
   const started = performance.now();
   const rel = (): number => performance.now() - started;
-  const scheduleEnd = (): number => (pace === 'max' ? 0 : schedule.end);
+  const scheduleEnd = (): number => (pace === 'max' ? 0 : base + schedule.end);
   const heartbeatMs = options.heartbeatMs ?? 0;
   const heartbeat =
     heartbeatMs > 0 && options.onProgress !== undefined
       ? setInterval(() => {
           options.onProgress?.({
             completed,
-            total: n,
+            total,
             last: null,
             inflight: pending.size,
             heartbeat: true,
@@ -557,7 +597,7 @@ export async function replayExchanges(
     completed += 1;
     options.onProgress?.({
       completed,
-      total: n,
+      total,
       last: result,
       inflight: pending.size - 1,
       heartbeat: false,
@@ -701,12 +741,18 @@ export async function replayExchanges(
     workers.add(worker);
   };
 
-  /** Reads the selection into the window, at most `windowSize` past the acknowledged prefix. */
-  const readAll = async (): Promise<void> => {
-    for (let i = 0; i < n; i += 1) {
+  /**
+   * Reads one iteration of the selection into the window, at most `windowSize` past the
+   * acknowledged prefix. `k` counts iterations from 1.
+   */
+  const readAll = async (k: number): Promise<void> => {
+    const first = (k - 1) * n;
+    for (let local = 0; local < n; local += 1) {
+      const i = first + local;
       if (i - ackFront >= windowSize) await until(() => i - ackFront < windowSize || stopped());
       if (stopped()) return;
-      const e = selected[i] as Exchange;
+      const recorded = selected[local] as Exchange;
+      const e = loop === 1 ? recorded : { ...recorded, id: `${recorded.id}#${k}` };
       const key = sessionKey === null ? '' : sessionOf(sessionKey, e.request);
       sessionKeys.add(key);
       let session = sessions.get(key);
@@ -718,19 +764,21 @@ export async function replayExchanges(
       const slot: Slot = {
         index: i,
         exchange: e,
-        dependency: dependency[i] === true,
+        dependency: dependency[local] === true,
         session,
         control,
         barrier: control || isBarrier(e),
-        time: schedule.next(e.offset_ms),
-        deps: dependencies.empty ? [] : dependencies.dependenciesOf(i, e.request),
+        time: base + schedule.next(e.offset_ms),
+        deps: dependencies.empty
+          ? []
+          : dependencies.dependenciesOf(local, e.request).map((d) => first + d),
         dispatched: false,
         completed: false,
         done: deferred(),
         result: null,
         sent: null,
       };
-      if (!dependencies.empty) dependencies.add(e, i);
+      if (!dependencies.empty) dependencies.add(e, local);
       window.set(i, slot);
       if (slot.barrier) openBarriers.push(slot);
       session.queue.push(slot);
@@ -739,9 +787,21 @@ export async function replayExchanges(
   };
 
   try {
-    await readAll();
-    while (workers.size > 0) await Promise.all([...workers]);
-    while (tasks.size > 0) await Promise.all([...tasks]);
+    // Iterations run back to back: the next one starts once every exchange of the previous
+    // one was acknowledged, with an empty substitution table and its schedule from that moment.
+    for (let k = 1; k <= loop && !stopped(); k += 1) {
+      if (k > 1) {
+        gapsCapped += schedule.gapsCapped;
+        schedule = new ScheduleBuilder(pace, rps, maxGapMs, speed ?? 1);
+        dependencies = new DependencyIndex([], rules.substitutions);
+        table = new SubstitutionTable(rules.substitutions);
+        base = rel();
+      }
+      await readAll(k);
+      while (workers.size > 0) await Promise.all([...workers]);
+      while (tasks.size > 0) await Promise.all([...tasks]);
+    }
+    gapsCapped += schedule.gapsCapped;
   } finally {
     if (heartbeat !== null) clearInterval(heartbeat);
     signal?.removeEventListener('abort', onAbort);
@@ -758,7 +818,7 @@ export async function replayExchanges(
   if (stopped()) {
     conditions.push({
       kind: 'aborted',
-      detail: `stopped by signal after ${dispatched} of ${n} exchanges`,
+      detail: `stopped by signal after ${dispatched} of ${total} exchanges`,
     });
   }
 
@@ -831,7 +891,7 @@ export async function replayExchanges(
       mode: pace,
       rps,
       concurrency,
-      requested_rps: schedule.requestedRps(),
+      requested_rps: firstSchedule.requestedRps(),
       achieved_rps: durationMs > 0 ? round3((replayed.length * 1000) / durationMs) : 0,
       slip_p50_ms: slip.p50_ms,
       slip_max_ms: slip.max_ms,
@@ -839,9 +899,11 @@ export async function replayExchanges(
       barrier_timeout_ms: barrierTimeoutMs,
       barrier_waits: barrierWaits,
       max_gap_ms: maxGapMs,
-      gaps_capped: schedule.gapsCapped,
+      gaps_capped: gapsCapped,
       session_key: sessionKey?.spec ?? null,
       sessions: sessionKeys.size,
+      speed,
+      loop,
     },
     warmup,
     filter: {
