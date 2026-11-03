@@ -55,20 +55,26 @@ export function parseRecordingText(text: string): Exchange[] {
   return out;
 }
 
-/** Streams a recording file one exchange at a time. */
+/**
+ * Streams a recording file one exchange at a time. A consumer that stops
+ * early closes the file: the stream is destroyed when the generator returns.
+ */
 export async function* iterateRecording(path: string): AsyncGenerator<Exchange, void, undefined> {
   const guard = new OffsetGuard();
-  const rl = createInterface({
-    input: createReadStream(path, { encoding: 'utf8' }),
-    crlfDelay: Infinity,
-  });
+  const input = createReadStream(path, { encoding: 'utf8' });
+  const rl = createInterface({ input, crlfDelay: Infinity });
   let lineNumber = 0;
-  for await (const line of rl) {
-    lineNumber += 1;
-    if (line.trim().length === 0) continue;
-    const exchange = parseExchangeLine(line, lineNumber);
-    guard.check(exchange, lineNumber);
-    yield exchange;
+  try {
+    for await (const line of rl) {
+      lineNumber += 1;
+      if (line.trim().length === 0) continue;
+      const exchange = parseExchangeLine(line, lineNumber);
+      guard.check(exchange, lineNumber);
+      yield exchange;
+    }
+  } finally {
+    rl.close();
+    input.destroy();
   }
 }
 

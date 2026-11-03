@@ -6,6 +6,7 @@ import {
   renderJunit,
   renderMarkdown,
   renderTerminal,
+  withSidecarExchanges,
 } from '@replay-parity/report';
 import { Command, Option } from 'commander';
 import { out, err, type CliStreams } from '../io.js';
@@ -52,8 +53,22 @@ export async function runReport(
   options: ReportCommandOptions,
   streams: CliStreams,
 ): Promise<number> {
-  const run = await readRun(options.run);
-  const code = options.failOnVerdict === true ? exitCodeFor(run.verdict) : 0;
+  const file = await readRun(options.run);
+  const code = options.failOnVerdict === true ? exitCodeFor(file.verdict) : 0;
+  const format = options.format ?? (options.out === undefined ? 'terminal' : 'html');
+  // A run that streamed its exchanges to a sidecar is rendered with all of them. The JSON
+  // format prints the run file itself, so it leaves the sidecar where it is.
+  let run = file;
+  if (format !== 'json' || options.explain !== undefined) {
+    const loaded = await withSidecarExchanges(file, options.run);
+    run = loaded.run;
+    if (loaded.sidecar === 'missing') {
+      err(
+        streams,
+        `exchanges sidecar ${loaded.path} not found, rendering the ${file.exchanges.length} mismatched exchanges the run kept`,
+      );
+    }
+  }
   if (options.explain !== undefined) {
     out(
       streams,
@@ -61,7 +76,6 @@ export async function runReport(
     );
     return code;
   }
-  const format = options.format ?? (options.out === undefined ? 'terminal' : 'html');
   const text = RENDERERS[format](run);
   if (options.out === undefined) {
     streams.stdout.write(text);

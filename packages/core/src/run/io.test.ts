@@ -329,6 +329,17 @@ describe('run model', () => {
     expect(() => parseRun('[]', 'r.json')).toThrow(/^r\.json: .*expected object/);
   });
 
+  it('reads a version 1 run written before the sidecar and the scale fields existed', () => {
+    const { exchanges_path: _p, ...v2 } = makeRun();
+    const v1 = { ...v2, schema_version: 1 };
+    const read = parseRun(JSON.stringify(v1), 'v1.json');
+    expect(read.schema_version).toBe(2);
+    expect(read.exchanges_path).toBeNull();
+    expect(read.pacing.session_key).toBeUndefined();
+    expect(read.stats.retried).toBeUndefined();
+    expect(read.exchanges).toEqual(v1.exchanges);
+  });
+
   it('writes and reads a file', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'rp-run-'));
     const path = join(dir, 'run.json');

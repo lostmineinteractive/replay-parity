@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { dirname, isAbsolute, relative } from 'node:path';
 import {
   ConfigError,
   DEFAULT_HEARTBEAT_MS,
@@ -13,7 +14,6 @@ import {
   generateTraceId,
   loadDiffRules,
   loadThresholds,
-  hashRecordingFile,
   readRecording,
   replayMetrics,
   writeRun,
@@ -26,10 +26,12 @@ import {
   DEFAULT_CONCURRENCY,
   DEFAULT_MAX_GAP_MS,
   DEFAULT_RETRY_BASE_MS,
+  DEFAULT_WINDOW,
   HttpAdapter,
   RedisStreamsBus,
   parseRetryOn,
-  replayExchanges,
+  replay,
+  sidecarPathFor,
   type Adapter,
   type ReplayProgress,
   type RetryKind,
@@ -98,6 +100,10 @@ export interface ReplayCommandOptions extends UpstreamFlags, AdapterModuleFlags 
   retryUnsafe?: boolean;
   /** Base URL of the reference for the re-replay that tells noise apart. */
   referenceTarget?: string;
+  /** Most exchanges read ahead of the oldest one not yet acknowledged. */
+  window?: number;
+  /** Stream results to the sidecar: true always, false never, absent above 50000 results. */
+  exchangesSidecar?: boolean;
   candidateRecording?: string;
   invariants: boolean;
   timeoutMs: number;
@@ -225,13 +231,10 @@ export async function runReplay(
   const headers = await resolveHeaders(options.header, options.headersFile, env);
   const queryOverrides = resolveQuery(options.query);
   const upstream = await resolveUpstream(options);
-  // The file is read once for the preflight and the replay, and hashed in a second
-  // streaming pass, so the run carries the recording hash the way replay() records it.
-  const [exchanges, recordingHash] = await Promise.all([
-    readRecording(options.recording),
-    hashRecordingFile(options.recording),
-  ]);
   if (options.preflight !== false) {
+    // The preflight reads the whole recording. The replay itself streams it, so with
+    // --no-preflight the memory a run takes is bounded by the window, not by the file.
+    const exchanges = await readRecording(options.recording);
     const checks = await preflight({
       recording: options.recording,
       exchanges,
@@ -344,7 +347,8 @@ export async function runReplay(
     });
   }
   try {
-    const run = await replayExchanges(exchanges, {
+    const exchangesPath = sidecarPathFor(options.out);
+    const run = await replay({
       recording: options.recording,
       target: options.target,
       adapter,
@@ -370,6 +374,14 @@ export async function runReplay(
       retryBaseMs: options.retryBaseMs ?? DEFAULT_RETRY_BASE_MS,
       retryUnsafe: options.retryUnsafe ?? false,
       referenceTarget: options.referenceTarget ?? null,
+      window: options.window ?? DEFAULT_WINDOW,
+      exchangesPath,
+      exchangesSidecar:
+        options.exchangesSidecar === undefined
+          ? 'auto'
+          : options.exchangesSidecar
+            ? 'always'
+            : 'never',
       candidateRecording: options.candidateRecording ?? null,
       invariants: options.invariants,
       timeoutMs: options.timeoutMs,
@@ -381,8 +393,18 @@ export async function runReplay(
       signal,
     });
     if (progress !== undefined) endProgress(streams, progress);
-    run.recording.recording_sha256 = recordingHash.sha256;
+    if (run.exchanges_path !== null) {
+      // The run names its sidecar relative to itself, so the two can move together.
+      const rel = relative(dirname(options.out), run.exchanges_path);
+      run.exchanges_path = isAbsolute(rel) || rel === '' ? run.exchanges_path : rel;
+    }
     await writeRun(options.out, run);
+    if (run.exchanges_path !== null) {
+      log.info(
+        `wrote every exchange result to ${exchangesPath}, the run keeps ${run.exchanges.length} mismatched exchanges`,
+        { exchanges_path: exchangesPath },
+      );
+    }
     if (run.filter.dependencies > 0) {
       log.info(
         `selected ${run.filter.dependencies} dependency exchange${run.filter.dependencies === 1 ? '' : 's'} that produce values the filtered exchanges use`,
@@ -548,6 +570,22 @@ export function replayCommand(
     .option(
       '--reference-target <url>',
       'also send every exchange to the reference; a path where the reference differs from its own recording is noise and cannot fail the candidate',
+    )
+    .addOption(
+      new Option(
+        '--window <n>',
+        'most exchanges read ahead of the oldest one not yet acknowledged; a smaller window holds less in memory and overlaps less',
+      )
+        .default(DEFAULT_WINDOW)
+        .argParser(positiveInt),
+    )
+    .option(
+      '--exchanges-sidecar',
+      'stream every exchange result to <out>.exchanges.jsonl and keep a sample of the mismatches in the run; on by default above 50000 results',
+    )
+    .option(
+      '--no-exchanges-sidecar',
+      'keep every exchange result in the run file however many there are',
     )
     .option(
       '--candidate-recording <path>',

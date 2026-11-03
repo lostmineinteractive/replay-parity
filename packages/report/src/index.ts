@@ -27,3 +27,9 @@ export {
   type DrillDownGroup,
   type DrillDownPlan,
 } from './format.js';
+export {
+  readExchangesSidecar,
+  sidecarLocation,
+  withSidecarExchanges,
+  type LoadedExchanges,
+} from './sidecar.js';

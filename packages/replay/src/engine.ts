@@ -4,6 +4,7 @@ import {
   exchangeContext,
   ConfigError,
   DEFAULT_REDACTED_HEADERS,
+  RUN_SCHEMA_VERSION,
   REDACTED,
   StatsCollector,
   createDiffer,
@@ -15,7 +16,6 @@ import {
   hashRecordingFile,
   mergeHeaders,
   noopLogger,
-  readRecording,
   spanIdFor,
   traceparent,
   ulid,
@@ -33,7 +33,6 @@ import {
   type Run,
   type RunFileStats,
   type TagCounts,
-  type SubstitutionRule,
   type Thresholds,
 } from '@replay-parity/core';
 import { evaluateInvariants } from '@replay-parity/invariants';
@@ -50,6 +49,8 @@ import {
   isIdempotent,
   type RetryKind,
 } from './retry.js';
+import { MismatchSample, SIDECAR_THRESHOLD, SidecarWriter } from './sidecar.js';
+import { fileSource, memorySource, type ExchangeSource, type SelectionOptions } from './source.js';
 import { DependencyIndex, SubstitutionTable } from './substitutions.js';
 
 /**
@@ -179,6 +180,22 @@ export interface ReplayOptions {
   heartbeatMs?: number | undefined;
   /** Aborting stops the run early. See the ordering rules above. */
   signal?: AbortSignal | undefined;
+  /**
+   * Most exchanges read ahead of the oldest one not yet acknowledged. Default 10000. The
+   * window bounds what the engine holds in memory. Too small a window costs concurrency:
+   * when the oldest exchange is slow, the engine reads nothing past the window, so the
+   * sessions and the overlapping exchanges beyond it wait even with free slots.
+   */
+  window?: number | undefined;
+  /** Where exchange results stream as JSON Lines when the sidecar is used. */
+  exchangesPath?: string | null | undefined;
+  /**
+   * When results go to `exchangesPath` instead of the run: `always`, `never`, or `auto`, which
+   * uses the sidecar when the run has more than `SIDECAR_THRESHOLD` results. Default `auto`.
+   * With the sidecar the run keeps the first `KEEP_PER_PATH` mismatched exchanges per
+   * generalized path in `exchanges` and names the sidecar in `exchanges_path`.
+   */
+  exchangesSidecar?: 'always' | 'auto' | 'never' | undefined;
 }
 
 /**
@@ -213,55 +230,6 @@ export const DEFAULT_CONCURRENCY = 8;
 export const DEFAULT_MAX_GAP_MS = 30_000;
 /** Most exchanges read ahead of the oldest one not yet acknowledged. */
 export const DEFAULT_WINDOW = 10_000;
-
-interface Selection {
-  selected: Exchange[];
-  /** True at the positions of the exchanges pulled in as dependencies. */
-  dependency: boolean[];
-}
-
-/**
- * Applies the filter and the limit. With a filter, substitution rules, and
- * `includeDependencies`, the producers of every captured value the filtered
- * exchanges use are selected too, transitively, in recording order.
- */
-function selectExchanges(
-  all: readonly Exchange[],
-  filterTag: string | null,
-  limit: number | null,
-  includeDependencies: boolean,
-  rules: readonly SubstitutionRule[],
-): Selection {
-  if (filterTag === null) {
-    const selected = limit === null ? [...all] : all.slice(0, limit);
-    return { selected, dependency: selected.map(() => false) };
-  }
-  let chosen: number[] = [];
-  all.forEach((e, i) => {
-    if (e.tags.includes(filterTag)) chosen.push(i);
-  });
-  if (limit !== null) chosen = chosen.slice(0, limit);
-  const pulled = new Set<number>();
-  if (includeDependencies && rules.length > 0) {
-    const index = new DependencyIndex(all, rules);
-    const seen = new Set(chosen);
-    const queue = [...chosen];
-    while (queue.length > 0) {
-      const i = queue.pop() as number;
-      for (const producer of index.dependenciesOf(i, (all[i] as Exchange).request)) {
-        if (seen.has(producer)) continue;
-        seen.add(producer);
-        pulled.add(producer);
-        queue.push(producer);
-      }
-    }
-  }
-  const order = [...chosen, ...pulled].sort((a, b) => a - b);
-  return {
-    selected: order.map((i) => all[i] as Exchange),
-    dependency: order.map((i) => pulled.has(i)),
-  };
-}
 
 function validate(options: ReplayExchangesOptions): void {
   const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
@@ -333,6 +301,25 @@ function validate(options: ReplayExchangesOptions): void {
   if (!(Number.isFinite(maxGap) && maxGap >= 0)) {
     throw new ConfigError(`max gap must be a non negative number of milliseconds, got ${maxGap}`);
   }
+  const window = options.window ?? DEFAULT_WINDOW;
+  if (!Number.isInteger(window) || window < 1) {
+    throw new ConfigError(`--window must be a positive integer, got ${window}`);
+  }
+  if (options.exchangesSidecar === 'always' && (options.exchangesPath ?? null) === null) {
+    throw new ConfigError('the exchanges sidecar needs a path');
+  }
+  if (options.sessionKey !== undefined && options.sessionKey !== null) {
+    parseSessionKey(options.sessionKey);
+  }
+}
+
+function selectionOf(options: ReplayExchangesOptions): SelectionOptions {
+  return {
+    filterTag: options.filterTag ?? null,
+    limit: options.limit ?? null,
+    includeDependencies: options.includeDependencies ?? true,
+    rules: (options.rules ?? emptyRules()).substitutions,
+  };
 }
 
 /**
@@ -361,17 +348,20 @@ export type ReplayExchangesOptions = Omit<ReplayOptions, 'recording'> & {
 };
 
 /**
- * Reads the recording and replays it. The file is hashed in a second
- * streaming pass alongside the read, and the hash is recorded in the run as
- * `recording.recording_sha256` so `rp shrink` can tell the file apart from
- * another one.
+ * Replays a recording file. The file is streamed: a first pass validates every
+ * line and chooses the selection, and each replay pass reads it again through
+ * the window, so the engine never holds the whole recording. The file is
+ * hashed in another streaming pass alongside the first, and the hash is
+ * recorded in the run as `recording.recording_sha256` so `rp shrink` can tell
+ * the file apart from another one.
  */
 export async function replay(options: ReplayOptions): Promise<Run> {
-  const [all, hash] = await Promise.all([
-    readRecording(options.recording),
+  validate(options);
+  const [source, hash] = await Promise.all([
+    fileSource(options.recording, selectionOf(options)),
     hashRecordingFile(options.recording),
   ]);
-  const run = await replayExchanges(all, options);
+  const run = await runEngine(source, options);
   return { ...run, recording: { ...run.recording, recording_sha256: hash.sha256 } };
 }
 
@@ -431,6 +421,7 @@ interface Slot {
   deps: number[];
   dispatched: boolean;
   completed: boolean;
+  /** Resolved when the exchange is acknowledged or failed, or when the run stops. */
   done: Deferred;
   result: ExchangeResult | null;
   sent: SentExchange | null;
@@ -451,12 +442,17 @@ interface ReferenceOutcome {
   response: RecordedResponse | null;
 }
 
-/** Replays exchanges held in memory. Used by `replay` and by shrinking, which replays per attempt. */
+/** Replays exchanges held in memory. Used by shrinking, which replays per attempt. */
 export async function replayExchanges(
   all: readonly Exchange[],
   options: ReplayExchangesOptions,
 ): Promise<Run> {
   validate(options);
+  return runEngine(memorySource(all, selectionOf(options)), options);
+}
+
+/** The engine over any source of selected exchanges. */
+async function runEngine(source: ExchangeSource, options: ReplayExchangesOptions): Promise<Run> {
   const pace = options.pace ?? 'as-recorded';
   const rps = pace === 'fixed-rate' ? (options.rps as number) : null;
   const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
@@ -478,7 +474,7 @@ export async function replayExchanges(
     options.sessionKey === undefined || options.sessionKey === null
       ? null
       : parseSessionKey(options.sessionKey);
-  const windowSize = DEFAULT_WINDOW;
+  const windowSize = options.window ?? DEFAULT_WINDOW;
   const speed = pace === 'as-recorded' ? (options.speed ?? 1) : null;
   const retry = options.retry ?? 0;
   const retryOn = new Set<string>(options.retryOn ?? RETRY_KINDS);
@@ -491,15 +487,17 @@ export async function replayExchanges(
   const log = options.log ?? noopLogger;
   const traceId = options.traceId;
 
-  const { selected, dependency } = selectExchanges(
-    all,
-    filterTag,
-    limit,
-    includeDependencies,
-    rules.substitutions,
-  );
-  const n = selected.length;
+  const n = source.selected;
   const total = n * loop;
+  const exchangesPath = options.exchangesPath ?? null;
+  const sidecarMode = options.exchangesSidecar ?? 'auto';
+  const useSidecar =
+    exchangesPath !== null &&
+    (sidecarMode === 'always' || (sidecarMode === 'auto' && total > SIDECAR_THRESHOLD));
+  const candidateRecording = options.candidateRecording ?? null;
+  // The candidate's log and the reference log are held only when something reads them.
+  const keepSent = candidateRecording !== null || options.invariants === true;
+  const keepSelected = options.invariants === true;
   // Each iteration has its own schedule, dependency index, and substitution table. The first
   // iteration's schedule gives the requested rate, which every iteration repeats.
   const firstSchedule = new ScheduleBuilder(pace, rps, maxGapMs, speed ?? 1);
@@ -533,9 +531,18 @@ export async function replayExchanges(
       maxBodyBytes: options.maxBodyBytes,
     });
 
-  // Results in recording order, appended as the acknowledged prefix grows.
+  // Results in recording order, appended as the acknowledged prefix grows. With the sidecar
+  // they stream to the file and only a sample of the mismatches is held.
   const replayed: ExchangeResult[] = [];
+  const sample = new MismatchSample();
+  let sidecar: SidecarWriter | null = null;
+  let results = 0;
   const sent: SentExchange[] = [];
+  const selectedLog: Exchange[] = [];
+  const collector = new StatsCollector();
+  const retried = new TagCounter();
+  const noiseFindings = new TagCounter();
+  const slips: number[] = [];
   const conditions: InconclusiveCondition[] = [];
   /** The exchanges read and not yet part of the acknowledged prefix, by index. */
   const window = new Map<number, Slot>();
@@ -555,6 +562,8 @@ export async function replayExchanges(
   let completed = 0;
   let dispatched = 0;
   let barrierWaits = 0;
+  /** Set once every pass was read and every send settled, so the sidecar stays open for the tail. */
+  let finishedReading = false;
   let changed = deferred();
   /** Wakes every wait on the scheduler's state. */
   const notify = (): void => {
@@ -567,22 +576,21 @@ export async function replayExchanges(
   };
 
   const shutdown = new AbortController();
-  // A stop request aborts the sends in flight at once. The workers see it at their next
-  // step and send nothing more.
-  const stop = deferred();
+  // A stop request aborts the sends in flight at once and releases every wait on an earlier
+  // exchange, which may now never be sent. The workers see the stop at their next step and
+  // send nothing more. A wait never races a promise that lives as long as the run: each race
+  // would leave a reaction on it until the run ends, which grows with the recording.
   const onAbort = (): void => {
     shutdown.abort();
-    stop.resolve();
+    for (const slot of window.values()) slot.done.resolve();
     notify();
   };
-  if (signal?.aborted) {
-    shutdown.abort();
-    stop.resolve();
-  } else signal?.addEventListener('abort', onAbort, { once: true });
+  if (signal?.aborted) shutdown.abort();
+  else signal?.addEventListener('abort', onAbort, { once: true });
   const stopped = (): boolean => signal?.aborted === true;
-  /** Waits for an earlier exchange, or for a stop request that means it may never be sent. */
+  /** Waits for earlier exchanges to be acknowledged, or for a stop request. */
   const settled = (slots: readonly Slot[]): Promise<unknown> =>
-    Promise.race([Promise.all(slots.map((k) => k.done.promise)), stop.promise]);
+    Promise.all(slots.map((k) => k.done.promise));
 
   const started = performance.now();
   const rel = (): number => performance.now() - started;
@@ -755,10 +763,35 @@ export async function replayExchanges(
     });
   };
 
-  /** Moves a finished result out of the window, in recording order. */
+  /** Counts a finished result and moves it out of the window, in recording order. */
   const finalize = (slot: Slot): void => {
-    if (slot.result !== null) replayed.push(slot.result);
-    if (slot.sent !== null) sent.push(slot.sent);
+    const r = slot.result;
+    if (r !== null) {
+      results += 1;
+      if (!r.control) {
+        slips.push(r.sent_at_ms - r.scheduled_at_ms);
+        if (!r.warmup && !r.dependency) {
+          if (r.attempts !== undefined) retried.add(r.tags);
+          if (r.diff !== null) {
+            const marked = r.diff.findings.filter((f) => f.noise === true).length;
+            if (marked > 0) noiseFindings.add(r.tags, marked);
+          }
+          collector.record({
+            tags: r.tags,
+            verdict: r.diff?.verdict ?? null,
+            candidateLatencyMs: r.candidate?.latency_ms ?? null,
+            referenceLatencyMs: r.reference.latency_ms,
+          });
+        }
+      }
+      if (sidecar === null) {
+        replayed.push(r);
+      } else {
+        sidecar.write(r);
+        sample.add(r);
+      }
+    }
+    if (keepSent && slot.sent !== null) sent.push(slot.sent);
   };
 
   const complete = (slot: Slot): void => {
@@ -897,11 +930,14 @@ export async function replayExchanges(
    */
   const readAll = async (k: number): Promise<void> => {
     const first = (k - 1) * n;
-    for (let local = 0; local < n; local += 1) {
+    let local = -1;
+    for await (const item of source.pass()) {
+      local += 1;
       const i = first + local;
       if (i - ackFront >= windowSize) await until(() => i - ackFront < windowSize || stopped());
       if (stopped()) return;
-      const recorded = selected[local] as Exchange;
+      const recorded = item.exchange;
+      if (keepSelected && k === 1) selectedLog.push(recorded);
       const e = loop === 1 ? recorded : { ...recorded, id: `${recorded.id}#${k}` };
       const key = sessionKey === null ? '' : sessionOf(sessionKey, e.request);
       sessionKeys.add(key);
@@ -914,7 +950,7 @@ export async function replayExchanges(
       const slot: Slot = {
         index: i,
         exchange: e,
-        dependency: dependency[local] === true,
+        dependency: item.dependency,
         session,
         control,
         barrier: control || isBarrier(e),
@@ -937,6 +973,7 @@ export async function replayExchanges(
   };
 
   try {
+    if (useSidecar) sidecar = await SidecarWriter.open(exchangesPath);
     // Iterations run back to back: the next one starts once every exchange of the previous
     // one was acknowledged, with an empty substitution table and its schedule from that moment.
     for (let k = 1; k <= loop && !stopped(); k += 1) {
@@ -953,12 +990,16 @@ export async function replayExchanges(
       while (tasks.size > 0) await Promise.all([...tasks]);
     }
     gapsCapped += schedule.gapsCapped;
+    finishedReading = true;
   } finally {
     if (heartbeat !== null) clearInterval(heartbeat);
     signal?.removeEventListener('abort', onAbort);
     shutdown.abort();
     if (ownAdapter && adapter.close) await adapter.close();
     if (ownReference && reference?.close) await reference.close();
+    // Finished results that were not yet moved out of the window are flushed below, before the
+    // sidecar is closed, so a failure here only closes it.
+    if (sidecar !== null && !finishedReading) await sidecar.close();
   }
   const durationMs = rel();
   // After a stop the acknowledged prefix ends at the first exchange that was never sent.
@@ -967,6 +1008,7 @@ export async function replayExchanges(
     if (slot.completed) finalize(slot);
   }
   window.clear();
+  if (sidecar !== null) await sidecar.close();
   if (stopped()) {
     conditions.push({
       kind: 'aborted',
@@ -974,26 +1016,6 @@ export async function replayExchanges(
     });
   }
 
-  const collector = new StatsCollector();
-  const retried = new TagCounter();
-  const noiseFindings = new TagCounter();
-  const slips: number[] = [];
-  for (const r of replayed) {
-    if (r.control) continue;
-    slips.push(r.sent_at_ms - r.scheduled_at_ms);
-    if (r.warmup || r.dependency) continue;
-    if (r.attempts !== undefined) retried.add(r.tags);
-    if (r.diff !== null) {
-      const marked = r.diff.findings.filter((f) => f.noise === true).length;
-      if (marked > 0) noiseFindings.add(r.tags, marked);
-    }
-    collector.record({
-      tags: r.tags,
-      verdict: r.diff?.verdict ?? null,
-      candidateLatencyMs: r.candidate?.latency_ms ?? null,
-      referenceLatencyMs: r.reference.latency_ms,
-    });
-  }
   const stats: RunFileStats = collector.finish();
   if (retry > 0) stats.retried = retried.finish();
   if (reference !== null) stats.noise_findings = noiseFindings.finish();
@@ -1004,13 +1026,12 @@ export async function replayExchanges(
     adapter: adapter.name,
     redactHeaders: options.redactHeaders ?? DEFAULT_REDACTED_HEADERS,
   });
-  const candidateRecording = options.candidateRecording ?? null;
   if (candidateRecording !== null) await writeExchanges(candidateRecording, candidateLog);
 
   const measurements: ThresholdMeasurements = { slip_max_ms: slip.max_ms };
   let invariants: Run['invariants'] = { reference: null, candidate: null };
   if (options.invariants) {
-    const reference = evaluateInvariants(selected, {
+    const reference = evaluateInvariants(selectedLog, {
       system: 'reference',
       recording: options.recording ?? '',
     });
@@ -1034,17 +1055,17 @@ export async function replayExchanges(
   const verdict = decideVerdict({ threshold_results: evaluation.results, inconclusive });
 
   const run: Run = {
-    schema_version: 1,
+    schema_version: RUN_SCHEMA_VERSION,
     run_id: options.runId ?? ulid(),
     created_at: now().toISOString(),
     verdict,
     inconclusive,
     recording: {
       path: options.recording ?? '',
-      exchanges: all.length,
+      exchanges: source.exchanges,
       selected: n,
-      first_ts: all[0]?.ts ?? null,
-      last_ts: all[all.length - 1]?.ts ?? null,
+      first_ts: source.first_ts,
+      last_ts: source.last_ts,
     },
     target: options.target,
     reference_target: reference === null ? null : (referenceTarget ?? reference.name),
@@ -1054,7 +1075,7 @@ export async function replayExchanges(
       rps,
       concurrency,
       requested_rps: firstSchedule.requestedRps(),
-      achieved_rps: durationMs > 0 ? round3((replayed.length * 1000) / durationMs) : 0,
+      achieved_rps: durationMs > 0 ? round3((results * 1000) / durationMs) : 0,
       slip_p50_ms: slip.p50_ms,
       slip_max_ms: slip.max_ms,
       barrier_tags: [...barrierTags].sort(),
@@ -1080,7 +1101,7 @@ export async function replayExchanges(
     filter: {
       tag: filterTag,
       include_dependencies: includeDependencies,
-      dependencies: dependency.filter((d) => d).length,
+      dependencies: source.dependencies,
     },
     limit,
     duration_ms: round3(durationMs),
@@ -1088,7 +1109,8 @@ export async function replayExchanges(
     thresholds,
     threshold_results: evaluation.results,
     stats,
-    exchanges: replayed,
+    exchanges: sidecar === null ? replayed : sample.list(),
+    exchanges_path: sidecar === null ? null : sidecar.path,
     candidate_recording: candidateRecording,
     invariants,
     reproduction: null,

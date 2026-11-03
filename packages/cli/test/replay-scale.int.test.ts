@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -193,5 +193,43 @@ describe('rp replay at scale', () => {
     expect(new Set(noise.map((f) => f.path))).toEqual(new Set(['$.created_at']));
     expect(run.stats.noise_findings?.overall).toBe(noise.length);
     expect(validate(run), validate.errors ?? '').toBe(true);
+  });
+
+  it('streams results to the sidecar next to the run and rp report reads it back', async () => {
+    const side = join(dir, 'side');
+    await mkdir(side);
+    const out = join(side, 'run.json');
+    const result = await rp(
+      replayArgs(await candidate('on'), out, ['--exchanges-sidecar', '--window', '50']),
+    );
+    expect(result.err).not.toMatch(/rp: /);
+    expect(result.code).toBe(0);
+    expect(result.err).toContain('wrote every exchange result to');
+    const run = await readRun(out);
+    expect(run.exchanges_path).toBe('run.exchanges.jsonl');
+    const lines = (await readFile(join(side, 'run.exchanges.jsonl'), 'utf8')).trim().split('\n');
+    expect(lines).toHaveLength(run.stats.overall.count + 1);
+    const mismatches = run.stats.overall.mismatches;
+    expect(mismatches).toBeGreaterThan(run.exchanges.length);
+    expect(validate(run), validate.errors ?? '').toBe(true);
+
+    const html = await rp(['report', '--run', out, '--format', 'html']);
+    expect(html.code).toBe(0);
+    expect(html.out).toContain(`<h3>Mismatched exchanges (${mismatches})</h3>`);
+    const json = await rp(['report', '--run', out, '--format', 'json']);
+    expect(JSON.parse(json.out)).toMatchObject({ exchanges_path: 'run.exchanges.jsonl' });
+
+    await rename(join(side, 'run.exchanges.jsonl'), join(side, 'moved.jsonl'));
+    const missing = await rp(['report', '--run', out, '--format', 'html']);
+    expect(missing.code).toBe(0);
+    expect(missing.err).toContain('run.exchanges.jsonl not found');
+    expect(missing.out).toContain(`<h3>Mismatched exchanges (${run.exchanges.length})</h3>`);
+
+    const inline = join(side, 'inline.json');
+    const kept = await rp(replayArgs(await candidate('on'), inline, ['--no-exchanges-sidecar']));
+    expect(kept.code).toBe(0);
+    const whole = await readRun(inline);
+    expect(whole.exchanges_path).toBeNull();
+    expect(whole.exchanges).toHaveLength(whole.stats.overall.count + 1);
   });
 });

@@ -13,7 +13,7 @@ import { InconclusiveConditionSchema, RunVerdictSchema } from './verdict.js';
  * terminal reports are rendered from it.
  */
 
-export const RUN_SCHEMA_VERSION = 1;
+export const RUN_SCHEMA_VERSION = 2;
 
 const nonneg = z.number().nonnegative();
 const count = z.number().int().nonnegative();
@@ -335,7 +335,16 @@ export const RunSchema = z
     thresholds: ThresholdsSchema,
     threshold_results: z.array(ThresholdResultSchema),
     stats: RunFileStatsSchema,
+    /**
+     * Every exchange result, or with the sidecar the first mismatched exchanges of each
+     * generalized path. See `exchanges_path`.
+     */
     exchanges: z.array(ExchangeResultSchema),
+    /**
+     * The JSON Lines file holding every exchange result when the run used the sidecar, or
+     * null when `exchanges` holds them all. A relative path is relative to the run file.
+     */
+    exchanges_path: z.string().min(1).nullable(),
     /** Path of the candidate's observed log written by `--candidate-recording`, or null. */
     candidate_recording: z.string().nullable(),
     /** Independent invariant results per system. Null when `--invariants` was not given. */

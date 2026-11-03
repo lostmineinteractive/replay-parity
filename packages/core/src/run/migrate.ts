@@ -5,12 +5,16 @@ import { RUN_SCHEMA_VERSION } from './schema.js';
  * Run file migrations. `RunSchema` accepts only the current `schema_version`,
  * so a file written by an earlier rp is brought up to date here before it is
  * validated. A migration takes the raw file at version k and returns it at
- * version k + 1. The table has one entry per source version and is empty
- * while version 1 is current.
+ * version k + 1. The table has one entry per source version.
  */
 export type RunMigration = (raw: Record<string, unknown>) => Record<string, unknown>;
 
-export const RUN_MIGRATIONS: Readonly<Record<number, RunMigration>> = {};
+export const RUN_MIGRATIONS: Readonly<Record<number, RunMigration>> = {
+  // Version 2 added the exchanges sidecar. A version 1 run holds every exchange in the file.
+  // Its other additions, the session, speed, loop, retry, and re-replay fields, are optional
+  // and stay absent.
+  1: (raw) => ({ ...raw, exchanges_path: null }),
+};
 
 export interface MigrateRunOptions {
   /** The table to apply. Defaults to `RUN_MIGRATIONS`. */

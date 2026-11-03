@@ -76,3 +76,17 @@ describe('file readers', () => {
     await expect(readRecording(path)).rejects.toThrow(/line 2/);
   });
 });
+
+describe('iterateRecording when the consumer stops early', () => {
+  it('closes the file and reads it again from the start next time', async () => {
+    const path = join(await mkdtemp(join(tmpdir(), 'rp-reader-')), 'r.jsonl');
+    await writeFile(path, `${line(0)}\n${line(1)}\n${line(2)}\n`);
+    for await (const e of iterateRecording(path)) {
+      expect(e.offset_ms).toBe(0);
+      break;
+    }
+    const all: number[] = [];
+    for await (const e of iterateRecording(path)) all.push(e.offset_ms);
+    expect(all).toEqual([0, 100, 200]);
+  });
+});

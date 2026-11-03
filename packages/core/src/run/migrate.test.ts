@@ -10,13 +10,24 @@ const migrations: Readonly<Record<number, RunMigration>> = {
 };
 
 describe('migrateRun', () => {
-  it('ships an empty table while version 1 is current', () => {
-    expect(RUN_SCHEMA_VERSION).toBe(1);
-    expect(RUN_MIGRATIONS).toEqual({});
+  it('ships one migration per earlier version', () => {
+    expect(RUN_SCHEMA_VERSION).toBe(2);
+    expect(Object.keys(RUN_MIGRATIONS)).toEqual(['1']);
+  });
+
+  it('brings a version 1 run to version 2 with no sidecar and the new fields absent', () => {
+    const v1 = { schema_version: 1, run_id: 'r', exchanges: [], pacing: { mode: 'max' } };
+    expect(migrateRun(v1)).toEqual({
+      schema_version: 2,
+      run_id: 'r',
+      exchanges: [],
+      pacing: { mode: 'max' },
+      exchanges_path: null,
+    });
   });
 
   it('returns a file at the target version unchanged', () => {
-    const run = { schema_version: 1, run_id: 'r' };
+    const run = { schema_version: RUN_SCHEMA_VERSION, run_id: 'r' };
     expect(migrateRun(run)).toBe(run);
     const later = { schema_version: 2, run_id: 'r' };
     expect(migrateRun(later, { migrations, target: 2 })).toBe(later);

@@ -6,7 +6,7 @@ import { emptyRules } from './rules/schema.js';
 import { StatsCollector } from './stats/collector.js';
 import { evaluateThresholds } from './thresholds/evaluate.js';
 import { emptyThresholds } from './thresholds/schema.js';
-import type { ExchangeResult, Run } from './run/schema.js';
+import { RUN_SCHEMA_VERSION, type ExchangeResult, type Run } from './run/schema.js';
 import { decideVerdict } from './run/verdict.js';
 import { encodeTime } from './ulid.js';
 
@@ -146,7 +146,7 @@ export function makeRun(over: Partial<Run> = {}): Run {
   const inconclusive = over.inconclusive ?? evaluation.inconclusive;
   const verdict = decideVerdict({ threshold_results: evaluation.results, inconclusive });
   return {
-    schema_version: 1,
+    schema_version: RUN_SCHEMA_VERSION,
     run_id: fixedUlid(99),
     created_at: new Date(BASE_TS).toISOString(),
     verdict,
@@ -171,6 +171,7 @@ export function makeRun(over: Partial<Run> = {}): Run {
     threshold_results: evaluation.results,
     stats,
     exchanges,
+    exchanges_path: null,
     candidate_recording: null,
     invariants: { reference: null, candidate: null },
     reproduction: null,

@@ -28,6 +28,22 @@ export {
 export { DependencyIndex, SubstitutionTable, type CaptureRequests } from './substitutions.js';
 export { NOISE_RULE, NO_NOISE, markNoise, noisePaths } from './noise.js';
 export {
+  KEEP_PER_PATH,
+  MismatchSample,
+  NO_PATH,
+  SIDECAR_THRESHOLD,
+  SidecarWriter,
+  generalizePath,
+  sidecarPathFor,
+} from './sidecar.js';
+export {
+  fileSource,
+  memorySource,
+  type ExchangeSource,
+  type SelectedExchange,
+  type SelectionOptions,
+} from './source.js';
+export {
   DEFAULT_RETRY_BASE_MS,
   RETRY_KINDS,
   backoffMs,
