@@ -135,68 +135,78 @@ class Shim implements Adapter {
 }
 
 describe('replay against the candidate with divergences off', () => {
-  it('passes with zero mismatches, flags the control, and writes a valid run and candidate recording', async () => {
-    const { url } = await startCandidate('off');
-    const dir = await tempDir();
-    const candidateRecording = join(dir, 'candidate.jsonl');
-    const run = await demoRun(url, {
-      candidateRecording,
-      headers: { authorization: 'Bearer replay-token' },
-      thresholds: parseThresholds(
-        'correctness:\n  mismatch_rate_max: 0\nerrors:\n  rate_max: 0\nlatency:\n  min_samples: 20\n  overall: { p99_ms: 500 }\npacing:\n  slip_max_ms: 250\n',
-      ),
-    });
+  // Retried because the latency row below is judged on a candidate that runs in this process,
+  // where stalls of 7 to 10 s were observed when other suites ran at the same time on a shared
+  // machine, and a stall is measured as candidate latency.
+  it(
+    'passes with zero mismatches, flags the control, and writes a valid run and candidate recording',
+    { retry: 2 },
+    async () => {
+      const { url } = await startCandidate('off');
+      const dir = await tempDir();
+      const candidateRecording = join(dir, 'candidate.jsonl');
+      // The latency limit is generous: a quiet machine measures a candidate p99 under 1 ms. The row
+      // is here to prove that the latency section is evaluated and reported in order.
+      const run = await demoRun(url, {
+        candidateRecording,
+        headers: { authorization: 'Bearer replay-token' },
+        thresholds: parseThresholds(
+          'correctness:\n  mismatch_rate_max: 0\nerrors:\n  rate_max: 0\nlatency:\n  min_samples: 20\n  overall: { p99_ms: 2000 }\npacing:\n  slip_max_ms: 250\n',
+        ),
+      });
+      logFailedAttempt(run);
 
-    expect(run.verdict).toBe('pass');
-    expect(run.inconclusive).toEqual([]);
-    expect(run.recording).toMatchObject({ exchanges: 283, selected: 283 });
-    expect(run.stats.overall.mismatches).toBe(0);
-    expect(run.stats.overall.errors).toBe(0);
-    expect(run.stats.overall.count).toBe(282);
-    expect(run.exchanges).toHaveLength(283);
-    expect(validate(run), validate.errors ?? '').toBe(true);
+      expect(run.verdict).toBe('pass');
+      expect(run.inconclusive).toEqual([]);
+      expect(run.recording).toMatchObject({ exchanges: 283, selected: 283 });
+      expect(run.stats.overall.mismatches).toBe(0);
+      expect(run.stats.overall.errors).toBe(0);
+      expect(run.stats.overall.count).toBe(282);
+      expect(run.exchanges).toHaveLength(283);
+      expect(validate(run), validate.errors ?? '').toBe(true);
 
-    const restart = byTag(run, 'admin-restart');
-    expect(restart).toHaveLength(1);
-    expect(restart[0]).toMatchObject({
-      control: true,
-      diff: { verdict: 'match', findings: [] },
-    });
-    expect(run.stats.by_tag['admin-restart']).toBeUndefined();
-    expect(run.exchanges.filter((e) => e.control)).toHaveLength(1);
-    for (const e of run.exchanges) {
-      expect(e.acked_at_ms).not.toBeNull();
-      expect(e.acked_at_ms as number).toBeGreaterThanOrEqual(e.sent_at_ms);
-      expect(e.sent_at_ms).toBeGreaterThanOrEqual(e.scheduled_at_ms);
-    }
-    expect(run.pacing).toMatchObject({
-      mode: 'max',
-      rps: null,
-      requested_rps: null,
-      barrier_tags: [],
-      barrier_timeout_ms: 10_000,
-      barrier_waits: 0,
-    });
-    expect(run.pacing.achieved_rps).toBeGreaterThan(0);
-    expect(run.threshold_results.map((r) => [r.id, r.outcome])).toEqual([
-      ['latency.overall.p99_ms', 'pass'],
-      ['correctness.mismatch_rate_max', 'pass'],
-      ['errors.rate_max', 'pass'],
-      ['pacing.slip_max_ms', 'pass'],
-    ]);
+      const restart = byTag(run, 'admin-restart');
+      expect(restart).toHaveLength(1);
+      expect(restart[0]).toMatchObject({
+        control: true,
+        diff: { verdict: 'match', findings: [] },
+      });
+      expect(run.stats.by_tag['admin-restart']).toBeUndefined();
+      expect(run.exchanges.filter((e) => e.control)).toHaveLength(1);
+      for (const e of run.exchanges) {
+        expect(e.acked_at_ms).not.toBeNull();
+        expect(e.acked_at_ms as number).toBeGreaterThanOrEqual(e.sent_at_ms);
+        expect(e.sent_at_ms).toBeGreaterThanOrEqual(e.scheduled_at_ms);
+      }
+      expect(run.pacing).toMatchObject({
+        mode: 'max',
+        rps: null,
+        requested_rps: null,
+        barrier_tags: [],
+        barrier_timeout_ms: 10_000,
+        barrier_waits: 0,
+      });
+      expect(run.pacing.achieved_rps).toBeGreaterThan(0);
+      expect(run.threshold_results.map((r) => [r.id, r.outcome])).toEqual([
+        ['latency.overall.p99_ms', 'pass'],
+        ['correctness.mismatch_rate_max', 'pass'],
+        ['errors.rate_max', 'pass'],
+        ['pacing.slip_max_ms', 'pass'],
+      ]);
 
-    const written = parseRecordingText(await readFile(candidateRecording, 'utf8'));
-    expect(written).toHaveLength(283);
-    expect(written.map((e) => e.id)).toEqual(run.exchanges.map((e) => e.id));
-    expect(written[0]?.offset_ms).toBe(0);
-    expect(written.every((e) => e.adapter === 'http')).toBe(true);
-    expect(written.every((e) => e.request.headers.authorization === REDACTED)).toBe(true);
-    expect(written.find((e) => e.tags.includes('admin-restart'))?.response.body).toEqual({
-      restarted: true,
-    });
-    const idempotent = written.filter((e) => e.request.headers['idempotency-key'] !== undefined);
-    expect(idempotent.length).toBeGreaterThan(0);
-  });
+      const written = parseRecordingText(await readFile(candidateRecording, 'utf8'));
+      expect(written).toHaveLength(283);
+      expect(written.map((e) => e.id)).toEqual(run.exchanges.map((e) => e.id));
+      expect(written[0]?.offset_ms).toBe(0);
+      expect(written.every((e) => e.adapter === 'http')).toBe(true);
+      expect(written.every((e) => e.request.headers.authorization === REDACTED)).toBe(true);
+      expect(written.find((e) => e.tags.includes('admin-restart'))?.response.body).toEqual({
+        restarted: true,
+      });
+      const idempotent = written.filter((e) => e.request.headers['idempotency-key'] !== undefined);
+      expect(idempotent.length).toBeGreaterThan(0);
+    },
+  );
 
   it('tolerates shifted ids through substitutions and reports them as tolerated', async () => {
     const { url } = await startCandidate('off');
@@ -444,65 +454,74 @@ describe('selection, warmup, and pacing', () => {
     expect(run.pacing).toMatchObject({ max_gap_ms: 30_000, gaps_capped: 0 });
   });
 
-  it('caps recorded gaps above --max-gap-ms under as-recorded pacing and records the cap', async () => {
-    const adapter: Adapter = {
-      name: 'fake',
-      send: (req) => Promise.resolve(jsonResponse({ echo: req.path }, 200, 1)),
-    };
-    const exchanges = [0, 100, 50_100, 50_200].map((offset, i) =>
-      makeExchange({
-        index: i,
-        offset_ms: offset,
-        request: makeRequest({ path: `/c/${i}` }),
-        response: jsonResponse({ echo: `/c/${i}` }, 200, 1),
-      }),
-    );
-    const recording = await writeRecording(exchanges);
-    const run = await replay({
-      recording,
-      target: 'fake://',
-      adapter,
-      pace: 'as-recorded',
-      maxGapMs: 100,
-    });
-    expect(run.exchanges.map((e) => e.scheduled_at_ms)).toEqual([0, 100, 200, 300]);
-    expect(run.pacing).toMatchObject({
-      mode: 'as-recorded',
-      max_gap_ms: 100,
-      gaps_capped: 1,
-      requested_rps: 10,
-    });
-    expect(run.duration_ms).toBeGreaterThanOrEqual(295);
-    expect(run.duration_ms).toBeLessThan(2000);
-    expect(run.stats.overall.matches).toBe(4);
-    expect(validate(run), validate.errors ?? '').toBe(true);
+  // Retried because the absolute bound below is a stall away from failing: stalls of 7 to 10 s
+  // were observed when other suites ran at the same time on a shared machine.
+  it(
+    'caps recorded gaps above --max-gap-ms under as-recorded pacing and records the cap',
+    { retry: 2 },
+    async () => {
+      const adapter: Adapter = {
+        name: 'fake',
+        send: (req) => Promise.resolve(jsonResponse({ echo: req.path }, 200, 1)),
+      };
+      const exchanges = [0, 100, 50_100, 50_200].map((offset, i) =>
+        makeExchange({
+          index: i,
+          offset_ms: offset,
+          request: makeRequest({ path: `/c/${i}` }),
+          response: jsonResponse({ echo: `/c/${i}` }, 200, 1),
+        }),
+      );
+      const recording = await writeRecording(exchanges);
+      const run = await replay({
+        recording,
+        target: 'fake://',
+        adapter,
+        pace: 'as-recorded',
+        maxGapMs: 100,
+      });
+      logFailedAttempt(run);
+      expect(run.exchanges.map((e) => e.scheduled_at_ms)).toEqual([0, 100, 200, 300]);
+      expect(run.pacing).toMatchObject({
+        mode: 'as-recorded',
+        max_gap_ms: 100,
+        gaps_capped: 1,
+        requested_rps: 10,
+      });
+      expect(run.duration_ms).toBeGreaterThanOrEqual(295);
+      // The capped schedule spans 300 ms and a quiet machine finishes within a few milliseconds of
+      // that. The bound leaves 1700 ms of slack over the schedule.
+      expect(run.duration_ms).toBeLessThan(2000);
+      expect(run.stats.overall.matches).toBe(4);
+      expect(validate(run), validate.errors ?? '').toBe(true);
 
-    // Zero disables the cap, and the other modes have no recorded gaps to cap.
-    const short = await writeRecording(exchanges.map((e, i) => ({ ...e, offset_ms: i * 30 })));
-    const uncapped = await replay({
-      recording: short,
-      target: 'fake://',
-      adapter,
-      pace: 'as-recorded',
-      maxGapMs: 0,
-    });
-    expect(uncapped.pacing).toMatchObject({ max_gap_ms: null, gaps_capped: 0 });
-    expect(uncapped.exchanges.map((e) => e.scheduled_at_ms)).toEqual([0, 30, 60, 90]);
-    const fixed = await replay({
-      recording,
-      target: 'fake://',
-      adapter,
-      pace: 'fixed-rate',
-      rps: 200,
-      maxGapMs: 100,
-    });
-    expect(fixed.pacing).toMatchObject({ max_gap_ms: null, gaps_capped: 0, requested_rps: 200 });
-    const max = await replay({ recording, target: 'fake://', adapter, pace: 'max' });
-    expect(max.pacing).toMatchObject({ max_gap_ms: null, gaps_capped: 0 });
-    await expect(
-      replay({ recording, target: 'fake://', adapter, pace: 'max', maxGapMs: -1 }),
-    ).rejects.toThrow(/max gap/);
-  });
+      // Zero disables the cap, and the other modes have no recorded gaps to cap.
+      const short = await writeRecording(exchanges.map((e, i) => ({ ...e, offset_ms: i * 30 })));
+      const uncapped = await replay({
+        recording: short,
+        target: 'fake://',
+        adapter,
+        pace: 'as-recorded',
+        maxGapMs: 0,
+      });
+      expect(uncapped.pacing).toMatchObject({ max_gap_ms: null, gaps_capped: 0 });
+      expect(uncapped.exchanges.map((e) => e.scheduled_at_ms)).toEqual([0, 30, 60, 90]);
+      const fixed = await replay({
+        recording,
+        target: 'fake://',
+        adapter,
+        pace: 'fixed-rate',
+        rps: 200,
+        maxGapMs: 100,
+      });
+      expect(fixed.pacing).toMatchObject({ max_gap_ms: null, gaps_capped: 0, requested_rps: 200 });
+      const max = await replay({ recording, target: 'fake://', adapter, pace: 'max' });
+      expect(max.pacing).toMatchObject({ max_gap_ms: null, gaps_capped: 0 });
+      await expect(
+        replay({ recording, target: 'fake://', adapter, pace: 'max', maxGapMs: -1 }),
+      ).rejects.toThrow(/max gap/);
+    },
+  );
 
   // Retried because the absolute bound below failed with stalls of 7 to 10 s when other suites
   // ran at the same time on a shared machine. The other assertions hold under any stall.
@@ -515,10 +534,11 @@ describe('selection, warmup, and pacing', () => {
       Array.from({ length: 40 }, (_, i) => i * 10),
     );
     // Read from the run's own fields: sends keep order, never run ahead of the schedule beyond
-    // timer granularity, and span at least the 390 ms of the schedule.
+    // timer granularity (5 ms: a send 1.2 ms early was observed once in five runs), and span at
+    // least the 390 ms of the schedule.
     const sent = run.exchanges.map((e) => e.sent_at_ms);
     for (let i = 0; i < sent.length; i += 1) {
-      expect(sent[i]!).toBeGreaterThanOrEqual(i * 10 - 1);
+      expect(sent[i]!).toBeGreaterThanOrEqual(i * 10 - 5);
       if (i > 0) expect(sent[i]!).toBeGreaterThanOrEqual(sent[i - 1]!);
     }
     expect(sent[39]! - sent[0]!).toBeGreaterThanOrEqual(389);
@@ -531,10 +551,12 @@ describe('selection, warmup, and pacing', () => {
     // scheduled time. The duration has a generous absolute bound, since an 800 ms bound held on
     // a quiet machine and failed under CPU contention.
     expect(run.pacing.slip_p50_ms).toBeLessThanOrEqual(10);
-    expect(run.duration_ms).toBeLessThan(390 + 1500);
+    expect(run.duration_ms).toBeLessThan(390 + 2000);
   });
 
-  it('keeps the pool full under max without exceeding the concurrency', async () => {
+  // Retried because the absolute bounds below are a stall away from failing: stalls of 7 to 10 s
+  // were observed when other suites ran at the same time on a shared machine.
+  it('keeps the pool full under max without exceeding the concurrency', { retry: 2 }, async () => {
     let inflight = 0;
     let peak = 0;
     const adapter: Adapter = {
@@ -565,6 +587,7 @@ describe('selection, warmup, and pacing', () => {
       pace: 'max',
       concurrency: 4,
     });
+    logFailedAttempt(run);
     expect(peak).toBe(4);
     // Overlap is read from the run's own fields: the first four sends go out before the first
     // acknowledgement, so the pool was full from the start.
@@ -574,7 +597,8 @@ describe('selection, warmup, and pacing', () => {
     // `peak` above is the proof of concurrency.
     expect(run.duration_ms).toBeLessThan(40 * 15 + 1500);
     // Under max pacing the scheduled time is taken in the same synchronous step as the send, so
-    // the slip is near zero by construction and does not depend on the machine.
+    // the slip is near zero by construction. Only a pause of the whole process between the two
+    // readings, such as a long garbage collection, can reach the bound, which the retry covers.
     expect(run.pacing.slip_max_ms).toBeLessThan(10);
     expect(run.stats.overall.matches).toBe(40);
     expect(run.adapter).toBe('fake');
@@ -809,9 +833,10 @@ describe('inconclusive outcomes and errors', () => {
       });
       logFailedAttempt(run);
       // The second exchange is scheduled 5000 ms after the first. The run's own duration shows the
-      // wait ended on the stop, well before the schedule. The bound is generous because a 2000 ms
-      // bound on a stopwatch around the call failed under CPU contention on a shared machine.
-      expect(run.duration_ms).toBeLessThan(1500);
+      // wait ended on the stop, well before the schedule. A quiet machine measures about 55 ms.
+      // The bound sits 2945 ms above that and still under the 5000 ms schedule, since 2000 ms on a
+      // stopwatch around the call failed under CPU contention on a shared machine.
+      expect(run.duration_ms).toBeLessThan(3000);
       expect(run.exchanges.map((e) => e.path)).toEqual(['/g/0']);
       expect(run.inconclusive).toEqual([
         { kind: 'aborted', detail: 'stopped by signal after 1 of 2 exchanges' },
