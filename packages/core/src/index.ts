@@ -26,3 +26,4 @@ export * from './run/schema.js';
 export * from './run/migrate.js';
 export * from './run/io.js';
 export * from './testing.js';
+export * from './log/index.js';
