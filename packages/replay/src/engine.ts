@@ -19,7 +19,6 @@ import {
   spanIdFor,
   traceparent,
   ulid,
-  type Diff,
   type DiffRules,
   type ThresholdMeasurements,
   type Exchange,
@@ -38,10 +37,11 @@ import {
   type Thresholds,
 } from '@replay-parity/core';
 import { evaluateInvariants } from '@replay-parity/invariants';
-import { toSendError, type Adapter } from './adapter.js';
+import { toSendError, type Adapter, type ReplayContext } from './adapter.js';
 import { candidateExchanges, writeExchanges, type SentExchange } from './candidate-recording.js';
 import { HttpAdapter } from './http-adapter.js';
 import { ScheduleBuilder, round3, summarizeSlip } from './pacing.js';
+import { NO_NOISE, markNoise, noisePaths } from './noise.js';
 import { parseSessionKey, sessionOf } from './sessions.js';
 import {
   DEFAULT_RETRY_BASE_MS,
@@ -77,6 +77,10 @@ import { DependencyIndex, SubstitutionTable } from './substitutions.js';
  *   only, excluded from statistics and thresholds, and marked `control: true`.
  *   A control that fails or returns a different status makes the run
  *   inconclusive with `control_failed`.
+ * - With a reference target, every exchange is sent to the reference at the
+ *   same moment as to the candidate, prepared from the reference's own
+ *   substitution table. The exchange is acknowledged once both answered, so
+ *   every rule above holds for the reference too.
  * - When `signal` aborts, no further exchange is sent, the sends in flight are
  *   aborted, and the run is finished with the results so far plus an
  *   `aborted` condition. Exchanges that were never sent are left out.
@@ -147,6 +151,14 @@ export interface ReplayOptions {
   retryUnsafe?: boolean | undefined;
   /** The jitter source, a number from 0 to 1. Default `Math.random`. */
   random?: (() => number) | undefined;
+  /**
+   * Base URL of the reference. Every exchange is sent to it as well as to the candidate, at
+   * the same moment and in the same order, with its own substitution table. A path where the
+   * reference differs from its own recording is noise and cannot fail the candidate.
+   */
+  referenceTarget?: string | null | undefined;
+  /** Transport for the reference re-replay. Default: an HTTP adapter on `referenceTarget`. */
+  referenceAdapter?: Adapter | undefined;
   /** Write the requests as sent and the candidate responses here, in recording format. */
   candidateRecording?: string | null | undefined;
   /** Header names redacted in the candidate recording. Default: the capture list. */
@@ -424,6 +436,21 @@ interface Slot {
   sent: SentExchange | null;
 }
 
+/** What the candidate returned for one exchange, after every retry. */
+interface CandidateOutcome {
+  response: RecordedResponse | null;
+  error: string | null;
+  firstError: string | null;
+  attempts: number;
+  ackedAt: number | null;
+}
+
+/** The request as sent to the reference re-replay and its answer, null on a failure. */
+interface ReferenceOutcome {
+  request: RecordedRequest;
+  response: RecordedResponse | null;
+}
+
 /** Replays exchanges held in memory. Used by `replay` and by shrinking, which replays per attempt. */
 export async function replayExchanges(
   all: readonly Exchange[],
@@ -482,8 +509,21 @@ export async function replayExchanges(
   let base = 0;
   let dependencies = new DependencyIndex([], rules.substitutions);
   let table = new SubstitutionTable(rules.substitutions);
+  /** The reference's own table, built from the responses of the reference re-replay. */
+  let refTable = new SubstitutionTable(rules.substitutions);
   const differ = createDiffer(rules);
 
+  const referenceTarget = options.referenceTarget ?? null;
+  const ownReference = options.referenceAdapter === undefined && referenceTarget !== null;
+  const reference: Adapter | null =
+    options.referenceAdapter ??
+    (referenceTarget === null
+      ? null
+      : new HttpAdapter(referenceTarget, {
+          timeoutMs: options.timeoutMs,
+          connections: concurrency,
+          maxBodyBytes: options.maxBodyBytes,
+        }));
   const ownAdapter = options.adapter === undefined;
   const adapter: Adapter =
     options.adapter ??
@@ -578,8 +618,8 @@ export async function replayExchanges(
   const isBarrier = (e: Exchange): boolean =>
     isControl(e) || e.tags.some((t) => barrierTags.has(t));
 
-  const prepare = (req: RecordedRequest): RecordedRequest => {
-    const substituted = table.apply(req);
+  const prepare = (req: RecordedRequest, substitutions: SubstitutionTable): RecordedRequest => {
+    const substituted = substitutions.apply(req);
     return {
       ...substituted,
       query: { ...dropRedactedQuery(substituted.query), ...queryOverrides },
@@ -591,49 +631,74 @@ export async function replayExchanges(
     const i = slot.index;
     const e = slot.exchange;
     const control = slot.control;
-    const request = prepare(e.request);
+    const request = prepare(e.request, table);
+    const context: ReplayContext = {
+      id: e.id,
+      index: i,
+      tags: e.tags,
+      signal: shutdown.signal,
+      log,
+      traceparent: traceId === undefined ? undefined : traceparent(traceId, spanIdFor(e.id)),
+    };
     const sentAt = rel();
     const sentWall = Date.now();
-    let candidate: RecordedResponse | null = null;
-    let error: string | null;
-    let firstError: string | null = null;
-    let attempts = 0;
-    const retryable = retry > 0 && (retryUnsafe || isIdempotent(request.method));
-    for (;;) {
-      attempts += 1;
+    const sendCandidate = async (): Promise<CandidateOutcome> => {
+      let error: string;
+      let firstError: string | null = null;
+      let attempts = 0;
+      const retryable = retry > 0 && (retryUnsafe || isIdempotent(request.method));
+      for (;;) {
+        attempts += 1;
+        try {
+          const response = await adapter.send(request, context);
+          return { response, error: null, firstError, attempts, ackedAt: rel() };
+        } catch (err) {
+          const failure = toSendError(err);
+          error = `${failure.kind}: ${failure.message}`;
+          firstError ??= error;
+          if (!retryable || attempts > retry || !retryOn.has(failure.kind)) break;
+          if (shutdown.signal.aborted) break;
+          await sleep(backoffMs(attempts, retryBaseMs, random), undefined, {
+            signal: shutdown.signal,
+          }).catch(() => undefined);
+          if (shutdown.signal.aborted) break;
+        }
+      }
+      return { response: null, error, firstError, attempts, ackedAt: null };
+    };
+    // The reference gets the same exchange at the same moment, prepared from its own table.
+    const sendReference = async (): Promise<ReferenceOutcome | null> => {
+      if (reference === null) return null;
+      const refRequest = prepare(e.request, refTable);
       try {
-        candidate = await adapter.send(request, {
-          id: e.id,
-          index: i,
-          tags: e.tags,
-          signal: shutdown.signal,
-          log,
-          traceparent: traceId === undefined ? undefined : traceparent(traceId, spanIdFor(e.id)),
-        });
-        error = null;
-        break;
-      } catch (err) {
-        const failure = toSendError(err);
-        error = `${failure.kind}: ${failure.message}`;
-        firstError ??= error;
-        if (!retryable || attempts > retry || !retryOn.has(failure.kind)) break;
-        if (shutdown.signal.aborted) break;
-        await sleep(backoffMs(attempts, retryBaseMs, random), undefined, {
-          signal: shutdown.signal,
-        }).catch(() => undefined);
-        if (shutdown.signal.aborted) break;
+        return { request: refRequest, response: await reference.send(refRequest, context) };
+      } catch {
+        return { request: refRequest, response: null };
+      }
+    };
+    const [outcome, refNow] = await Promise.all([sendCandidate(), sendReference()]);
+    const { response: candidate, error, firstError, attempts, ackedAt } = outcome;
+    // Scoped rules apply by this exchange's tags, method, and recorded path, and a request
+    // side capture reads the recorded request and the request as sent.
+    const scope = exchangeContext(e);
+    let noise: ReadonlySet<string> = NO_NOISE;
+    const refResponse = refNow?.response ?? null;
+    if (refNow !== null && refResponse !== null) {
+      refTable.capture(e.tags, e.response, refResponse, {
+        recorded: e.request,
+        sent: refNow.request,
+      });
+      if (!control) {
+        noise = noisePaths(differ.diff(e.response, refResponse, refTable.equivalences, scope));
       }
     }
-    const ackedAt = candidate === null ? null : rel();
-    let diff: Diff | null = null;
+    let diff: ExchangeResult['diff'] = null;
     if (candidate !== null) {
-      // Scoped rules apply by this exchange's tags, method, and recorded path, and a
-      // request side capture reads the recorded request and the request as sent.
-      const context = exchangeContext(e);
       table.capture(e.tags, e.response, candidate, { recorded: e.request, sent: request });
       diff = control
-        ? differ.diffStatus(e.response, candidate, context)
-        : differ.diff(e.response, candidate, table.equivalences, context);
+        ? differ.diffStatus(e.response, candidate, scope)
+        : differ.diff(e.response, candidate, table.equivalences, scope);
+      if (noise.size > 0) diff = markNoise(diff, noise).diff;
     }
     if (control && (error !== null || diff?.verdict === 'mismatch')) {
       const reason =
@@ -664,6 +729,12 @@ export async function replayExchanges(
     if (attempts > 1) {
       result.attempts = attempts;
       result.first_error = firstError as string;
+    }
+    if (reference !== null) {
+      result.reference_now =
+        refResponse === null
+          ? null
+          : { status: refResponse.status, latency_ms: refResponse.latency_ms };
     }
     slot.result = result;
     slot.sent = {
@@ -874,6 +945,7 @@ export async function replayExchanges(
         schedule = new ScheduleBuilder(pace, rps, maxGapMs, speed ?? 1);
         dependencies = new DependencyIndex([], rules.substitutions);
         table = new SubstitutionTable(rules.substitutions);
+        refTable = new SubstitutionTable(rules.substitutions);
         base = rel();
       }
       await readAll(k);
@@ -886,6 +958,7 @@ export async function replayExchanges(
     signal?.removeEventListener('abort', onAbort);
     shutdown.abort();
     if (ownAdapter && adapter.close) await adapter.close();
+    if (ownReference && reference?.close) await reference.close();
   }
   const durationMs = rel();
   // After a stop the acknowledged prefix ends at the first exchange that was never sent.
@@ -903,12 +976,17 @@ export async function replayExchanges(
 
   const collector = new StatsCollector();
   const retried = new TagCounter();
+  const noiseFindings = new TagCounter();
   const slips: number[] = [];
   for (const r of replayed) {
     if (r.control) continue;
     slips.push(r.sent_at_ms - r.scheduled_at_ms);
     if (r.warmup || r.dependency) continue;
     if (r.attempts !== undefined) retried.add(r.tags);
+    if (r.diff !== null) {
+      const marked = r.diff.findings.filter((f) => f.noise === true).length;
+      if (marked > 0) noiseFindings.add(r.tags, marked);
+    }
     collector.record({
       tags: r.tags,
       verdict: r.diff?.verdict ?? null,
@@ -918,6 +996,7 @@ export async function replayExchanges(
   }
   const stats: RunFileStats = collector.finish();
   if (retry > 0) stats.retried = retried.finish();
+  if (reference !== null) stats.noise_findings = noiseFindings.finish();
   const slip = summarizeSlip(slips);
 
   const candidateLog = candidateExchanges({
@@ -968,6 +1047,7 @@ export async function replayExchanges(
       last_ts: all[all.length - 1]?.ts ?? null,
     },
     target: options.target,
+    reference_target: reference === null ? null : (referenceTarget ?? reference.name),
     adapter: adapter.name,
     pacing: {
       mode: pace,

@@ -26,6 +26,7 @@ export {
   type SlipSummary,
 } from './pacing.js';
 export { DependencyIndex, SubstitutionTable, type CaptureRequests } from './substitutions.js';
+export { NOISE_RULE, NO_NOISE, markNoise, noisePaths } from './noise.js';
 export {
   DEFAULT_RETRY_BASE_MS,
   RETRY_KINDS,

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { DiffSchema } from '../differ/schema.js';
+import { DiffSchema, FindingSchema } from '../differ/schema.js';
 import { InvariantReportSchema } from '../invariants/schema.js';
 import { isValidPath } from '../jsonpath/index.js';
 import { RecordedRequestSchema } from '../recording/types.js';
@@ -77,6 +77,19 @@ const EndpointResultSchema = z
   })
   .strict();
 
+/**
+ * A finding as the run records it. `noise` is true on a finding the reference re-replay
+ * tolerated because the reference, replayed now, differs from its own recording at the same
+ * path. Such a finding also has `tolerated: true` and the rule `noise:reference`.
+ */
+export const RunFindingSchema = FindingSchema.extend({
+  noise: z.literal(true).optional(),
+}).strict();
+
+export const RunDiffSchema = DiffSchema.extend({
+  findings: z.array(RunFindingSchema),
+}).strict();
+
 export const ExchangeResultSchema = z
   .object({
     id: z.string().min(1),
@@ -98,7 +111,7 @@ export const ExchangeResultSchema = z
     reference: EndpointResultSchema,
     candidate: EndpointResultSchema.nullable(),
     error: z.string().nullable(),
-    diff: DiffSchema.nullable(),
+    diff: RunDiffSchema.nullable(),
     /**
      * How many times the request was sent, present only when it was retried. `error` and
      * `candidate` describe the last attempt.
@@ -106,6 +119,11 @@ export const ExchangeResultSchema = z
     attempts: z.number().int().min(2).optional(),
     /** The transport failure of the first attempt, present only when the request was retried. */
     first_error: z.string().optional(),
+    /**
+     * The reference's answer to the re-replay of this exchange, or null when it failed.
+     * Present only when the run used `--reference-target`.
+     */
+    reference_now: EndpointResultSchema.nullable().optional(),
   })
   .strict();
 
@@ -127,6 +145,11 @@ export const RunFileStatsSchema = RunStatsSchema.extend({
    * returned, so a candidate that only answers on a retry is visible.
    */
   retried: TagCountsSchema.optional(),
+  /**
+   * Findings the reference re-replay marked as noise, over the counted exchanges, overall and
+   * per tag. Present only when the run used `--reference-target`.
+   */
+  noise_findings: TagCountsSchema.optional(),
 }).strict();
 
 const identifier = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'must be an identifier');
@@ -289,6 +312,11 @@ export const RunSchema = z
       })
       .strict(),
     target: z.string().min(1),
+    /**
+     * Where the reference re-replay sent every exchange, from `--reference-target`, or null.
+     * Absent in a run written before the field existed.
+     */
+    reference_target: z.string().min(1).nullable().optional(),
     adapter: z.string().min(1),
     pacing: PacingSchema,
     warmup: count,
@@ -328,6 +356,8 @@ export type Reproduction = z.output<typeof ReproductionSchema>;
 export type PacingMode = z.output<typeof PacingModeSchema>;
 export type Pacing = z.output<typeof PacingSchema>;
 export type ExchangeResult = z.output<typeof ExchangeResultSchema>;
+export type RunFinding = z.output<typeof RunFindingSchema>;
+export type RunDiff = z.output<typeof RunDiffSchema>;
 export type TagCounts = z.output<typeof TagCountsSchema>;
 export type RunFileStats = z.output<typeof RunFileStatsSchema>;
 export type GeneratedCaseStep = z.output<typeof GeneratedCaseStepSchema>;

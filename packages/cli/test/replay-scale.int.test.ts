@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { Writable } from 'node:stream';
 import { compileRunValidator, readRun, type RunValidator } from '@replay-parity/core';
 import { buildApp as buildCandidate, type DivergenceSetting } from '@replay-parity/demo-candidate';
+import { buildApp as buildReference } from '@replay-parity/demo-reference';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { runCli } from '../src/index.js';
 
@@ -148,5 +149,49 @@ describe('rp replay at scale', () => {
     const bad = await rp(replayArgs('http://127.0.0.1:9', out, ['--retry-on', 'protocol']));
     expect(bad.code).toBe(1);
     expect(bad.err).toContain('--retry-on protocol: expected timeout or connection');
+  });
+
+  it('marks $.created_at as noise on the demo through the reference re-replay without an ignore rule', async () => {
+    const rules = join(dir, 'no-ignore.yaml');
+    await writeFile(rules, RULES.replace('ignore: ["$.created_at"]\n', ''));
+    const reference = buildReference();
+    await reference.listen({ port: 0, host: '127.0.0.1' });
+    cleanups.push(() => reference.close());
+    const refUrl = `http://127.0.0.1:${(reference.server.address() as AddressInfo).port}`;
+    const thresholds = join(dir, 'strict.yaml');
+    await writeFile(thresholds, 'correctness:\n  mismatch_rate_max: 0\n');
+    // Each run gets a fresh candidate, since a replay changes the candidate's state.
+    const args = (target: string, out: string, extra: string[]): string[] => [
+      'replay',
+      '--recording',
+      RECORDING,
+      '--target',
+      target,
+      '--out',
+      out,
+      '--pace',
+      'max',
+      '--concurrency',
+      '1',
+      '--rules',
+      rules,
+      '--thresholds',
+      thresholds,
+      '--quiet',
+      ...extra,
+    ];
+    const plain = await rp(args(await candidate('off'), join(dir, 'plain.json'), []));
+    expect(plain.code).toBe(2);
+    const out = join(dir, 'noise.json');
+    const result = await rp(args(await candidate('off'), out, ['--reference-target', refUrl]));
+    expect(result.err).not.toMatch(/rp: /);
+    expect(result.code).toBe(0);
+    const run = await readRun(out);
+    expect(run.reference_target).toBe(refUrl);
+    const noise = run.exchanges.flatMap((e) => (e.diff?.findings ?? []).filter((f) => f.noise));
+    expect(noise.length).toBeGreaterThan(0);
+    expect(new Set(noise.map((f) => f.path))).toEqual(new Set(['$.created_at']));
+    expect(run.stats.noise_findings?.overall).toBe(noise.length);
+    expect(validate(run), validate.errors ?? '').toBe(true);
   });
 });

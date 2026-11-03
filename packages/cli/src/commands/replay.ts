@@ -96,6 +96,8 @@ export interface ReplayCommandOptions extends UpstreamFlags, AdapterModuleFlags 
   retryOn?: RetryKind[];
   retryBaseMs?: number;
   retryUnsafe?: boolean;
+  /** Base URL of the reference for the re-replay that tells noise apart. */
+  referenceTarget?: string;
   candidateRecording?: string;
   invariants: boolean;
   timeoutMs: number;
@@ -367,6 +369,7 @@ export async function runReplay(
       retryOn: options.retryOn,
       retryBaseMs: options.retryBaseMs ?? DEFAULT_RETRY_BASE_MS,
       retryUnsafe: options.retryUnsafe ?? false,
+      referenceTarget: options.referenceTarget ?? null,
       candidateRecording: options.candidateRecording ?? null,
       invariants: options.invariants,
       timeoutMs: options.timeoutMs,
@@ -541,6 +544,10 @@ export function replayCommand(
       '--retry-unsafe',
       'also retry methods that are not idempotent, such as POST, which may apply a request twice',
       false,
+    )
+    .option(
+      '--reference-target <url>',
+      'also send every exchange to the reference; a path where the reference differs from its own recording is noise and cannot fail the candidate',
     )
     .option(
       '--candidate-recording <path>',
