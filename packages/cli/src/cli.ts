@@ -12,6 +12,7 @@ import { TagRuleError } from '@replay-parity/capture';
 import { CommanderError, Command, InvalidArgumentError, Option } from 'commander';
 import { agentCommand } from './commands/agent.js';
 import { captureCommand } from './commands/capture.js';
+import { compareCommand } from './commands/compare.js';
 import { doctorCommand } from './commands/doctor.js';
 import { invariantsCommand } from './commands/invariants.js';
 import { recordingCommand } from './commands/recording.js';
@@ -91,6 +92,7 @@ export function buildProgram(
   program.addCommand(captureCommand(streams, signal, exit));
   program.addCommand(replayCommand(streams, signal, exit, context));
   program.addCommand(reportCommand(streams, exit));
+  program.addCommand(compareCommand(streams, exit));
   program.addCommand(invariantsCommand(streams, exit));
   program.addCommand(shrinkCommand(streams, signal, exit, context));
   program.addCommand(agentCommand(streams, signal, exit));
