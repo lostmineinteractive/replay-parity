@@ -12,13 +12,18 @@ import {
   exitCodeFor,
   formatDuration,
   generateTraceId,
+  hashRecordingFile,
   loadDiffRules,
   loadThresholds,
   readRecording,
+  readRun,
   replayMetrics,
   writeRun,
+  type Logger,
   type MetricsRegistry,
   type PacingMode,
+  type RunBaseline,
+  type RunFileStats,
 } from '@replay-parity/core';
 import {
   BusAdapter,
@@ -102,6 +107,10 @@ export interface ReplayCommandOptions extends UpstreamFlags, AdapterModuleFlags 
   retryUnsafe?: boolean;
   /** Base URL of the reference for the re-replay that tells noise apart. */
   referenceTarget?: string;
+  /** An earlier run file whose statistics the `baseline` threshold rows compare against. */
+  baseline?: string;
+  /** Accept a baseline that replayed a different recording. Default false. */
+  baselineAnyRecording?: boolean;
   /** Most exchanges read ahead of the oldest one not yet acknowledged. */
   window?: number;
   /** Stream results to the sidecar: true always, false never, absent above 50000 results. */
@@ -208,6 +217,43 @@ export async function serveMetrics(
   };
 }
 
+/**
+ * Reads the run given with `--baseline`, at any schema version `readRun` accepts, and checks
+ * that it replayed the same recording. A baseline from a different recording is refused
+ * unless `anyRecording` is set. A hash missing on either side cannot be checked, which is a
+ * warning.
+ */
+export async function loadBaseline(
+  path: string,
+  recording: string,
+  anyRecording: boolean,
+  log: Logger,
+): Promise<{ run: RunBaseline; stats: RunFileStats }> {
+  const [earlier, hash] = await Promise.all([readRun(path), hashRecordingFile(recording)]);
+  const theirs = earlier.recording.recording_sha256 ?? null;
+  const ours = hash.sha256;
+  if (theirs === null || ours === null) {
+    log.warn(
+      `warning: the baseline ${path} ${theirs === null ? 'records no recording hash' : 'cannot be checked, this recording has no hash'}; comparing with it without checking that it replayed ${recording}`,
+      { baseline: path },
+    );
+  } else if (theirs !== ours) {
+    if (!anyRecording) {
+      throw new ConfigError(
+        `--baseline ${path} replayed a recording with sha256 ${theirs}, and ${recording} has sha256 ${ours}; --baseline-any-recording compares them anyway`,
+      );
+    }
+    log.warn(
+      `warning: the baseline ${path} replayed a recording with sha256 ${theirs}, and ${recording} has sha256 ${ours}; comparing anyway`,
+      { baseline: path, expected: theirs, actual: ours },
+    );
+  }
+  return {
+    run: { path, run_id: earlier.run_id, recording_sha256: theirs },
+    stats: earlier.stats,
+  };
+}
+
 function retryKinds(value: string): RetryKind[] {
   try {
     return parseRetryOn(value);
@@ -245,6 +291,23 @@ export async function runReplay(
   const rules = options.rules === undefined ? emptyRules() : await loadDiffRules(options.rules);
   const thresholds =
     options.thresholds === undefined ? emptyThresholds() : await loadThresholds(options.thresholds);
+  if (options.baselineAnyRecording === true && options.baseline === undefined) {
+    throw new ConfigError('--baseline-any-recording needs --baseline');
+  }
+  const baseline =
+    options.baseline === undefined
+      ? undefined
+      : await loadBaseline(
+          options.baseline,
+          options.recording,
+          options.baselineAnyRecording === true,
+          log,
+        );
+  if (baseline === undefined && thresholds.baseline !== undefined) {
+    log.warn(
+      'the thresholds set baseline limits and no --baseline was given; the baseline rows are not evaluated',
+    );
+  }
   const headers = await resolveHeaders(options.header, options.headersFile, env);
   const queryOverrides = resolveQuery(options.query);
   const upstream = await resolveUpstream(options);
@@ -391,6 +454,7 @@ export async function runReplay(
       retryBaseMs: options.retryBaseMs ?? DEFAULT_RETRY_BASE_MS,
       retryUnsafe: options.retryUnsafe ?? false,
       referenceTarget: options.referenceTarget ?? null,
+      baseline: baseline ?? null,
       window: options.window ?? DEFAULT_WINDOW,
       exchangesPath,
       checkpointPath: checkpointPathFor(options.out),
@@ -595,6 +659,14 @@ export function replayCommand(
     .option(
       '--reference-target <url>',
       'also send every exchange to the reference; a path where the reference differs from its own recording is noise and cannot fail the candidate',
+    )
+    .option(
+      '--baseline <run.json>',
+      'an earlier run to compare with; the baseline section of the thresholds gates this run against its statistics',
+    )
+    .option(
+      '--baseline-any-recording',
+      'compare with a --baseline that replayed a different recording instead of refusing it',
     )
     .addOption(
       new Option(

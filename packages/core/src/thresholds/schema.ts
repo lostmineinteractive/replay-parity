@@ -59,6 +59,38 @@ export const ThroughputLimitsSchema = z
   })
   .strict();
 
+/**
+ * Limits against an earlier run given with `rp replay --baseline`. Latency limits are ratios
+ * of this run's candidate percentiles over the baseline's. Rate limits are the largest growth
+ * of a rate over the baseline's, as a fraction.
+ */
+export const BaselineLimitsSchema = z
+  .object({
+    latency: z
+      .object({
+        overall: RatioLimitsSchema.optional(),
+        by_tag: z.record(z.string(), RatioLimitsSchema).optional(),
+      })
+      .strict()
+      .optional(),
+    correctness: z
+      .object({
+        mismatch_rate_delta_max: rate.optional(),
+        by_tag: z
+          .record(z.string(), z.object({ mismatch_rate_delta_max: rate }).strict())
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    errors: z
+      .object({
+        rate_delta_max: rate.optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
 export const ThresholdsSchema = z
   .object({
     latency: z
@@ -95,6 +127,8 @@ export const ThresholdsSchema = z
     throughput: ThroughputLimitsSchema.optional(),
     /** Absent unless a status limit is set. */
     status: StatusLimitsSchema.optional(),
+    /** Limits against an earlier run. Evaluated only when the replay is given a baseline. */
+    baseline: BaselineLimitsSchema.optional(),
     pacing: z
       .object({
         /** The largest schedule slip the replay may show before the run is inconclusive. */
@@ -127,6 +161,7 @@ export const ThresholdResultSchema = z
       'errors',
       'throughput',
       'status',
+      'baseline',
       'pacing',
       'invariants',
     ]),
@@ -144,6 +179,7 @@ export type RatioLimits = z.output<typeof RatioLimitsSchema>;
 export type RelativeLimits = z.output<typeof RelativeLimitsSchema>;
 export type StatusLimits = z.output<typeof StatusLimitsSchema>;
 export type ThroughputLimits = z.output<typeof ThroughputLimitsSchema>;
+export type BaselineLimits = z.output<typeof BaselineLimitsSchema>;
 export type Thresholds = z.output<typeof ThresholdsSchema>;
 export type ThresholdsInput = z.input<typeof ThresholdsSchema>;
 export type ThresholdOutcome = z.output<typeof ThresholdOutcomeSchema>;

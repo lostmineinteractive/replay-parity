@@ -352,14 +352,35 @@ describe('run model', () => {
   });
 
   it('reads a version 1 run written before the sidecar and the scale fields existed', () => {
-    const { exchanges_path: _p, ...v2 } = makeRun();
+    const { exchanges_path: _p, baseline: _b, ...v2 } = makeRun();
     const v1 = { ...v2, schema_version: 1 };
     const read = parseRun(JSON.stringify(v1), 'v1.json');
-    expect(read.schema_version).toBe(2);
+    expect(read.schema_version).toBe(RUN_SCHEMA_VERSION);
     expect(read.exchanges_path).toBeNull();
+    expect(read.baseline).toBeNull();
     expect(read.pacing.session_key).toBeUndefined();
     expect(read.stats.retried).toBeUndefined();
     expect(read.exchanges).toEqual(v1.exchanges);
+  });
+
+  it('reads a version 2 run written before baselines existed', () => {
+    const { baseline: _b, ...v3 } = makeRun();
+    const v2 = { ...v3, schema_version: 2 };
+    const read = parseRun(JSON.stringify(v2), 'v2.json');
+    expect(read.schema_version).toBe(3);
+    expect(read.baseline).toBeNull();
+    expect(read.stats).toEqual(v2.stats);
+  });
+
+  it('records the baseline a run was compared with', () => {
+    const run = makeRun({
+      baseline: { path: 'nightly.json', run_id: 'prev', recording_sha256: 'a'.repeat(64) },
+    });
+    expect(parseRun(serializeRun(run))).toEqual(run);
+    expect(validate(run), validate.errors ?? '').toBe(true);
+    expect(() =>
+      parseRun(JSON.stringify({ ...run, baseline: { path: 'x', run_id: 'y' } }), 'r.json'),
+    ).toThrow(/baseline\.recording_sha256/);
   });
 
   it('writes and reads a file', async () => {

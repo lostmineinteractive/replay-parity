@@ -33,6 +33,7 @@ import {
   type RecordedRequest,
   type RecordedResponse,
   type Run,
+  type RunBaseline,
   type RunFileStats,
   type TagCounts,
   type Thresholds,
@@ -181,6 +182,11 @@ export interface ReplayOptions {
   invariants?: boolean | undefined;
   /** The invariant module to evaluate. Default: the built in order lifecycle rules. */
   invariantsModule?: LoadedInvariantModule | undefined;
+  /**
+   * An earlier run to compare with. Its statistics feed the `baseline` threshold rows, and
+   * `run` is recorded as the run's `baseline`. Default: none.
+   */
+  baseline?: { run: RunBaseline; stats: RunFileStats } | null | undefined;
   /** Timeout for the default HTTP adapter. Default 30000. */
   timeoutMs?: number | undefined;
   maxBodyBytes?: number | undefined;
@@ -1246,6 +1252,7 @@ async function runEngine(
   const measurements: ThresholdMeasurements = {
     slip_max_ms: slip.max_ms,
     achieved_rps: achievedRps,
+    baseline: options.baseline?.stats,
   };
   let invariants: Run['invariants'] = { reference: null, candidate: null };
   if (options.invariants) {
@@ -1333,6 +1340,7 @@ async function runEngine(
     exchanges_path: sidecar === null ? null : sidecar.path,
     candidate_recording: candidateRecording,
     invariants,
+    baseline: options.baseline?.run ?? null,
     reproduction: null,
   };
   return run;

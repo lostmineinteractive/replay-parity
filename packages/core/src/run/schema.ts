@@ -13,7 +13,7 @@ import { InconclusiveConditionSchema, RunVerdictSchema } from './verdict.js';
  * terminal reports are rendered from it.
  */
 
-export const RUN_SCHEMA_VERSION = 2;
+export const RUN_SCHEMA_VERSION = 3;
 
 const nonneg = z.number().nonnegative();
 const count = z.number().int().nonnegative();
@@ -377,6 +377,23 @@ export const RunSchema = z
         candidate: InvariantReportSchema.nullable(),
       })
       .strict(),
+    /**
+     * The earlier run given with `--baseline`, whose statistics the `baseline` threshold rows
+     * compared against, or null when there was none.
+     */
+    baseline: z
+      .object({
+        /** The baseline file as given on the command line. */
+        path: z.string().min(1),
+        run_id: z.string().min(1),
+        /** The baseline's recording hash, or null when it recorded none. */
+        recording_sha256: z
+          .string()
+          .regex(/^[0-9a-f]{64}$/)
+          .nullable(),
+      })
+      .strict()
+      .nullable(),
     /** Filled by `rp shrink`. Null until then. */
     reproduction: ReproductionSchema.nullable(),
     agent: AgentReportSchema.optional(),
@@ -393,6 +410,7 @@ export type RunFinding = z.output<typeof RunFindingSchema>;
 export type RunDiff = z.output<typeof RunDiffSchema>;
 export type TagCounts = z.output<typeof TagCountsSchema>;
 export type RunFileStats = z.output<typeof RunFileStatsSchema>;
+export type RunBaseline = NonNullable<z.output<typeof RunSchema>['baseline']>;
 export type GeneratedCaseStep = z.output<typeof GeneratedCaseStepSchema>;
 export type GeneratedCase = z.output<typeof GeneratedCaseSchema>;
 export type CaseLatency = z.output<typeof CaseLatencySchema>;

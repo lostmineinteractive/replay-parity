@@ -14,6 +14,10 @@ export const RUN_MIGRATIONS: Readonly<Record<number, RunMigration>> = {
   // Its other additions, the session, speed, loop, retry, and re-replay fields, are optional
   // and stay absent.
   1: (raw) => ({ ...raw, exchanges_path: null }),
+  // Version 3 added the baseline an earlier run was compared against. A version 2 run had none.
+  // Its other additions, the candidate statuses and the throughput, status, and baseline
+  // threshold sections, are optional and stay absent.
+  2: (raw) => ({ ...raw, baseline: null }),
 };
 
 export interface MigrateRunOptions {

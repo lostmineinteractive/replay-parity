@@ -575,4 +575,175 @@ describe('evaluateThresholds', () => {
       });
     });
   });
+
+  describe('baseline rows', () => {
+    const earlier = statsFrom([
+      { tag: 'a', cand: 10, ref: 8 },
+      { tag: 'a', cand: 10, ref: 8 },
+      { tag: 'a', cand: 10, ref: 8 },
+      { tag: 'b', cand: 50, ref: 40 },
+      { tag: 'c', cand: 5, ref: 5 },
+    ]);
+    const t = parseThresholds(
+      [
+        'latency:',
+        '  min_samples: 2',
+        'baseline:',
+        '  latency:',
+        '    overall: { p50_ratio_max: 1.5 }',
+        '    by_tag:',
+        '      a: { p99_ratio_max: 1.1, p50_ratio_max: 1.5 }',
+        '      b: { p99_ratio_max: 2 }',
+        '      ghost: { p99_ratio_max: 2 }',
+        '      c: { p99_ratio_max: 2 }',
+        '  correctness:',
+        '    mismatch_rate_delta_max: 0.3',
+        '    by_tag:',
+        '      a: { mismatch_rate_delta_max: 0.3 }',
+        '      c: { mismatch_rate_delta_max: 0 }',
+        '  errors: { rate_delta_max: 0 }',
+        '',
+      ].join('\n'),
+    );
+
+    it('compares this run with the baseline and is inconclusive where the baseline cannot say', () => {
+      const { results, verdict } = evaluateThresholds(t, baseline, { baseline: earlier });
+      expect(
+        results.map((r) => [r.id, r.section, r.scope, r.outcome, r.measured, r.detail]),
+      ).toEqual([
+        [
+          'baseline.latency.overall.p50_ratio_max',
+          'baseline',
+          'overall',
+          'pass',
+          1.1999,
+          '12.007 ms now, 10.007 ms in the baseline',
+        ],
+        [
+          'baseline.latency.by_tag.a.p50_ratio_max',
+          'baseline',
+          'a',
+          'pass',
+          1.1999,
+          '12.007 ms now, 10.007 ms in the baseline',
+        ],
+        [
+          'baseline.latency.by_tag.a.p99_ratio_max',
+          'baseline',
+          'a',
+          'fail',
+          1.3997,
+          '14.007 ms now, 10.007 ms in the baseline',
+        ],
+        [
+          'baseline.latency.by_tag.b.p99_ratio_max',
+          'baseline',
+          'b',
+          'inconclusive',
+          null,
+          '1 successful sample, minimum 2',
+        ],
+        [
+          'baseline.latency.by_tag.c.p99_ratio_max',
+          'baseline',
+          'c',
+          'inconclusive',
+          null,
+          'no samples for tag "c"',
+        ],
+        [
+          'baseline.latency.by_tag.ghost.p99_ratio_max',
+          'baseline',
+          'ghost',
+          'inconclusive',
+          null,
+          'no samples for tag "ghost"',
+        ],
+        [
+          'baseline.correctness.mismatch_rate_delta_max',
+          'baseline',
+          'overall',
+          'pass',
+          0.25,
+          '0.25 now, 0 in the baseline',
+        ],
+        [
+          'baseline.correctness.by_tag.a.mismatch_rate_delta_max',
+          'baseline',
+          'a',
+          'fail',
+          0.3333,
+          '0.333333 now, 0 in the baseline',
+        ],
+        [
+          'baseline.correctness.by_tag.c.mismatch_rate_delta_max',
+          'baseline',
+          'c',
+          'inconclusive',
+          null,
+          'no samples for tag "c"',
+        ],
+        [
+          'baseline.errors.rate_delta_max',
+          'baseline',
+          'overall',
+          'pass',
+          0,
+          '0 now, 0 in the baseline',
+        ],
+      ]);
+      expect(verdict).toBe('fail');
+    });
+
+    it('is inconclusive when the baseline lacks the tag or the samples', () => {
+      const thin = statsFrom([{ tag: 'a', cand: 10, ref: 8 }]);
+      const { results, inconclusive } = evaluateThresholds(t, baseline, { baseline: thin });
+      const byId = Object.fromEntries(results.map((r) => [r.id, r]));
+      expect(byId['baseline.latency.by_tag.a.p99_ratio_max']?.detail).toBe(
+        'the baseline has 1 successful sample, minimum 2',
+      );
+      expect(byId['baseline.latency.by_tag.b.p99_ratio_max']?.detail).toBe(
+        'the baseline has no samples for tag "b"',
+      );
+      // This run's own shortfall is named before the baseline's.
+      expect(
+        evaluateThresholds(t, thin, { baseline: earlier }).results.find(
+          (r) => r.id === 'baseline.latency.by_tag.a.p99_ratio_max',
+        )?.detail,
+      ).toBe('1 successful sample, minimum 2');
+      const lowB = parseThresholds(
+        'baseline:\n  latency:\n    by_tag:\n      b: { p99_ratio_max: 2 }\n',
+      );
+      expect(evaluateThresholds(lowB, baseline, { baseline: thin }).results[0]).toMatchObject({
+        outcome: 'inconclusive',
+        detail: 'the baseline has no samples for tag "b"',
+      });
+      expect(inconclusive.every((c) => c.kind === 'insufficient_samples')).toBe(true);
+      const empty = new StatsCollector().finish();
+      const delta = parseThresholds('baseline:\n  errors: { rate_delta_max: 0 }\n');
+      expect(evaluateThresholds(delta, baseline, { baseline: empty }).results[0]?.detail).toBe(
+        'the baseline has no samples',
+      );
+      expect(evaluateThresholds(delta, empty, { baseline: earlier }).results[0]?.detail).toBe(
+        'no samples',
+      );
+    });
+
+    it('fails when the baseline value is zero and this run is not', () => {
+      const zero = statsFrom([{ tag: 'a', cand: 0, ref: 1 }]);
+      const ratio = parseThresholds('baseline:\n  latency:\n    overall: { max_ratio_max: 5 }\n');
+      expect(evaluateThresholds(ratio, baseline, { baseline: zero }).results[0]).toMatchObject({
+        outcome: 'fail',
+        measured: null,
+        detail: 'baseline value is zero',
+      });
+    });
+
+    it('evaluates no baseline row without a baseline', () => {
+      expect(evaluateThresholds(t, baseline).results).toEqual([]);
+      expect(
+        evaluateThresholds(emptyThresholds(), baseline, { baseline: earlier }).results,
+      ).toEqual([]);
+    });
+  });
 });

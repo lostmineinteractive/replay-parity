@@ -2,6 +2,7 @@ import { stripUndefined } from '../json.js';
 import { decideVerdict, type InconclusiveCondition, type RunVerdict } from '../run/verdict.js';
 import { LATENCY_METRICS, metricValue, type RunStats, type TagStats } from '../stats/schema.js';
 import type {
+  BaselineLimits,
   LatencyLimits,
   RatioLimits,
   StatusLimits,
@@ -32,6 +33,11 @@ export interface ThresholdMeasurements {
   invariant_violations?: { reference: number; candidate: number } | undefined;
   /** The achieved request rate of the replay, in requests per second. */
   achieved_rps?: number | undefined;
+  /**
+   * The statistics of the earlier run given with `--baseline`. Without it the `baseline`
+   * threshold rows are not evaluated.
+   */
+  baseline?: GateStats | undefined;
 }
 
 /** Rows that could not decide because a measurement was never taken, not for lack of samples. */
@@ -394,6 +400,178 @@ function throughputRow(
   return result({ ...base, measured, outcome: measured >= limit ? 'pass' : 'fail' });
 }
 
+type RowBase = Omit<ThresholdResult, 'measured' | 'outcome' | 'detail'>;
+
+function inconclusiveRow(base: RowBase, detail: string): ThresholdResult {
+  return result({ ...base, measured: null, outcome: 'inconclusive', detail });
+}
+
+/** Why a scope cannot be compared with the baseline on latency, or null when it can. */
+function baselineLatencyGap(
+  scope: string,
+  current: TagStats | undefined,
+  earlier: TagStats | undefined,
+  minimum: number,
+): string | null {
+  if (current === undefined) return `no samples for tag "${scope}"`;
+  if (earlier === undefined) return `the baseline has no samples for tag "${scope}"`;
+  if (current.candidate.count < minimum) return samplesDetail(current.candidate.count, minimum);
+  if (earlier.candidate.count < minimum) {
+    return `the baseline has ${samplesDetail(earlier.candidate.count, minimum)}`;
+  }
+  return null;
+}
+
+function baselineLatencyRows(
+  scope: string,
+  limits: RatioLimits,
+  current: TagStats | undefined,
+  earlier: TagStats | undefined,
+  minimum: number,
+  idPrefix: string,
+): ThresholdResult[] {
+  const rows: ThresholdResult[] = [];
+  for (const metric of LATENCY_METRICS) {
+    const key = `${metric}_ratio_max` as const;
+    const limit = limits[key];
+    if (limit === undefined) continue;
+    const base = {
+      id: `${idPrefix}.${key}`,
+      section: 'baseline' as const,
+      scope,
+      metric: key,
+      limit,
+    };
+    const gap = baselineLatencyGap(scope, current, earlier, minimum);
+    if (gap !== null || current === undefined || earlier === undefined) {
+      rows.push(inconclusiveRow(base, gap ?? 'no samples'));
+      continue;
+    }
+    const now = metricValue(current.candidate, metric);
+    const then = metricValue(earlier.candidate, metric);
+    const row = ratioOutcome(base, now, then, 'baseline');
+    rows.push(
+      row.detail === undefined
+        ? { ...row, detail: `${now} ms now, ${then} ms in the baseline` }
+        : row,
+    );
+  }
+  return rows;
+}
+
+/** A row on how much a rate grew over the baseline's. */
+function baselineDeltaRow(
+  base: RowBase,
+  current: TagStats | undefined,
+  earlier: TagStats | undefined,
+  pick: (stats: TagStats) => { rate: number; over: number },
+): ThresholdResult {
+  if (current === undefined) return inconclusiveRow(base, `no samples for tag "${base.scope}"`);
+  if (earlier === undefined) {
+    return inconclusiveRow(base, `the baseline has no samples for tag "${base.scope}"`);
+  }
+  const now = pick(current);
+  const then = pick(earlier);
+  if (now.over === 0) return inconclusiveRow(base, 'no samples');
+  if (then.over === 0) return inconclusiveRow(base, 'the baseline has no samples');
+  const measured = round(now.rate - then.rate);
+  return result({
+    ...base,
+    measured,
+    outcome: measured <= base.limit ? 'pass' : 'fail',
+    detail: `${now.rate} now, ${then.rate} in the baseline`,
+  });
+}
+
+function baselineRows(
+  limits: BaselineLimits,
+  stats: GateStats,
+  earlier: GateStats,
+  thresholds: Thresholds,
+): ThresholdResult[] {
+  const rows: ThresholdResult[] = [];
+  const defaultMinimum = thresholds.latency.min_samples;
+  if (limits.latency?.overall !== undefined) {
+    rows.push(
+      ...baselineLatencyRows(
+        'overall',
+        limits.latency.overall,
+        stats.overall,
+        earlier.overall,
+        thresholds.latency.overall.min_samples ?? defaultMinimum,
+        'baseline.latency.overall',
+      ),
+    );
+  }
+  const latencyByTag = limits.latency?.by_tag ?? {};
+  for (const tag of Object.keys(latencyByTag).sort()) {
+    rows.push(
+      ...baselineLatencyRows(
+        tag,
+        latencyByTag[tag] as RatioLimits,
+        stats.by_tag[tag],
+        earlier.by_tag[tag],
+        thresholds.latency.by_tag[tag]?.min_samples ?? defaultMinimum,
+        `baseline.latency.by_tag.${tag}`,
+      ),
+    );
+  }
+  const mismatches = (s: TagStats) => ({ rate: s.mismatch_rate, over: s.compared });
+  const delta = limits.correctness?.mismatch_rate_delta_max;
+  if (delta !== undefined) {
+    rows.push(
+      baselineDeltaRow(
+        {
+          id: 'baseline.correctness.mismatch_rate_delta_max',
+          section: 'baseline',
+          scope: 'overall',
+          metric: 'mismatch_rate_delta_max',
+          limit: delta,
+        },
+        stats.overall,
+        earlier.overall,
+        mismatches,
+      ),
+    );
+  }
+  const correctnessByTag = limits.correctness?.by_tag ?? {};
+  for (const tag of Object.keys(correctnessByTag).sort()) {
+    rows.push(
+      baselineDeltaRow(
+        {
+          id: `baseline.correctness.by_tag.${tag}.mismatch_rate_delta_max`,
+          section: 'baseline',
+          scope: tag,
+          metric: 'mismatch_rate_delta_max',
+          limit: (correctnessByTag[tag] as { mismatch_rate_delta_max: number })
+            .mismatch_rate_delta_max,
+        },
+        stats.by_tag[tag],
+        earlier.by_tag[tag],
+        mismatches,
+      ),
+    );
+  }
+  const errorDelta = limits.errors?.rate_delta_max;
+  if (errorDelta !== undefined) {
+    rows.push(
+      baselineDeltaRow(
+        {
+          id: 'baseline.errors.rate_delta_max',
+          section: 'baseline',
+          scope: 'overall',
+          metric: 'rate_delta_max',
+          limit: errorDelta,
+        },
+        stats.overall,
+        earlier.overall,
+        (s) => ({ rate: s.error_rate, over: s.count }),
+      ),
+    );
+  }
+  return rows;
+}
+
 function conditionKind(row: ThresholdResult): InconclusiveCondition['kind'] {
   if (row.section === 'pacing') return 'schedule_not_held';
   if (notMeasured.has(row)) return 'not_measured';
@@ -504,6 +682,9 @@ export function evaluateThresholds(
   }
   if (thresholds.status !== undefined) {
     results.push(...statusRows(thresholds.status, stats));
+  }
+  if (thresholds.baseline !== undefined && measurements.baseline !== undefined) {
+    results.push(...baselineRows(thresholds.baseline, stats, measurements.baseline, thresholds));
   }
   if (thresholds.pacing.slip_max_ms !== undefined) {
     results.push(pacingRow(thresholds.pacing.slip_max_ms, measurements.slip_max_ms));

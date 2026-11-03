@@ -7,7 +7,7 @@
   "properties": {
     "schema_version": {
       "type": "number",
-      "const": 2
+      "const": 3
     },
     "run_id": {
       "type": "string",
@@ -1393,6 +1393,124 @@
           "required": ["by_tag"],
           "additionalProperties": false
         },
+        "baseline": {
+          "type": "object",
+          "properties": {
+            "latency": {
+              "type": "object",
+              "properties": {
+                "overall": {
+                  "type": "object",
+                  "properties": {
+                    "p50_ratio_max": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "p90_ratio_max": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "p99_ratio_max": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "p999_ratio_max": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "max_ratio_max": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "mean_ratio_max": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "by_tag": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "p50_ratio_max": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "p90_ratio_max": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "p99_ratio_max": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "p999_ratio_max": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "max_ratio_max": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      "mean_ratio_max": {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "correctness": {
+              "type": "object",
+              "properties": {
+                "mismatch_rate_delta_max": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "by_tag": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "mismatch_rate_delta_max": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      }
+                    },
+                    "required": ["mismatch_rate_delta_max"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "errors": {
+              "type": "object",
+              "properties": {
+                "rate_delta_max": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
         "pacing": {
           "type": "object",
           "properties": {
@@ -1434,6 +1552,7 @@
               "errors",
               "throughput",
               "status",
+              "baseline",
               "pacing",
               "invariants"
             ]
@@ -2443,6 +2562,39 @@
       "required": ["reference", "candidate"],
       "additionalProperties": false
     },
+    "baseline": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "run_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "recording_sha256": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["path", "run_id", "recording_sha256"],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "reproduction": {
       "anyOf": [
         {
@@ -3074,6 +3226,7 @@
     "exchanges_path",
     "candidate_recording",
     "invariants",
+    "baseline",
     "reproduction"
   ],
   "additionalProperties": false,

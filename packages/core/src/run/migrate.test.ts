@@ -11,18 +11,29 @@ const migrations: Readonly<Record<number, RunMigration>> = {
 
 describe('migrateRun', () => {
   it('ships one migration per earlier version', () => {
-    expect(RUN_SCHEMA_VERSION).toBe(2);
-    expect(Object.keys(RUN_MIGRATIONS)).toEqual(['1']);
+    expect(RUN_SCHEMA_VERSION).toBe(3);
+    expect(Object.keys(RUN_MIGRATIONS)).toEqual(['1', '2']);
   });
 
-  it('brings a version 1 run to version 2 with no sidecar and the new fields absent', () => {
+  it('brings a version 1 run to the current version with no sidecar and no baseline', () => {
     const v1 = { schema_version: 1, run_id: 'r', exchanges: [], pacing: { mode: 'max' } };
     expect(migrateRun(v1)).toEqual({
-      schema_version: 2,
+      schema_version: 3,
       run_id: 'r',
       exchanges: [],
       pacing: { mode: 'max' },
       exchanges_path: null,
+      baseline: null,
+    });
+  });
+
+  it('brings a version 2 run to version 3 with no baseline', () => {
+    const v2 = { schema_version: 2, run_id: 'r', exchanges_path: null };
+    expect(migrateRun(v2)).toEqual({
+      schema_version: 3,
+      run_id: 'r',
+      exchanges_path: null,
+      baseline: null,
     });
   });
 

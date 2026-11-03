@@ -135,6 +135,27 @@ describe('parseThresholds', () => {
     );
   });
 
+  it('parses baseline limits', () => {
+    const t = parseThresholds(
+      'baseline:\n  latency:\n    overall: { p99_ratio_max: 1.2 }\n    by_tag:\n      a: { p50_ratio_max: 1.1 }\n  correctness:\n    mismatch_rate_delta_max: 0.001\n    by_tag:\n      a: { mismatch_rate_delta_max: 0 }\n  errors: { rate_delta_max: 0.01 }\n',
+    );
+    expect(t.baseline).toEqual({
+      latency: { overall: { p99_ratio_max: 1.2 }, by_tag: { a: { p50_ratio_max: 1.1 } } },
+      correctness: {
+        mismatch_rate_delta_max: 0.001,
+        by_tag: { a: { mismatch_rate_delta_max: 0 } },
+      },
+      errors: { rate_delta_max: 0.01 },
+    });
+    expect(parseThresholds('').baseline).toBeUndefined();
+    expect(() => parseThresholds('baseline:\n  latency:\n    p99_ratio_max: 1\n')).toThrow(
+      /unknown key "p99_ratio_max" at baseline\.latency/,
+    );
+    expect(() => parseThresholds('baseline:\n  errors: { rate_delta_max: 2 }\n')).toThrow(
+      /baseline\.errors\.rate_delta_max/,
+    );
+  });
+
   it('loads from a file', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'rp-thr-'));
     const path = join(dir, 'thresholds.yaml');
