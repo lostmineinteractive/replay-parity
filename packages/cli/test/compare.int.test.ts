@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
@@ -235,6 +235,24 @@ describe('rp compare', () => {
     expect(c.latency.every((l) => l.p50_delta_ms === 0 && l.p99_delta_ms === 0)).toBe(true);
     const text = await rp(['compare', pathA, pathA]);
     expect(text.out).toContain('top mismatching paths:\n  no change');
+  });
+
+  it('writes the comparison to --out and leaves stdout empty', async () => {
+    for (const format of ['terminal', 'markdown', 'json'] as const) {
+      const target = join(dir, `compare-out.${format}`);
+      const direct = await rp(['compare', pathA, pathB, '--format', format]);
+      const res = await rp(['compare', pathA, pathB, '--format', format, '--out', target]);
+      expect(res.code, res.err).toBe(0);
+      expect(res.out).toBe('');
+      expect(res.err).toBe(`wrote ${target} (${format})\n`);
+      expect(await readFile(target, 'utf8')).toBe(direct.out);
+    }
+  });
+
+  it('is a tool error when --out cannot be written', async () => {
+    const res = await rp(['compare', pathA, pathB, '--out', join(dir, 'no-such-dir', 'c.txt')]);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('no-such-dir');
   });
 
   it('is a tool error for a missing or invalid run file', async () => {

@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises';
 import { readRun, type Run, type TagStats, type ThresholdResult } from '@replay-parity/core';
 import {
   fmtMs,
@@ -13,6 +14,8 @@ export type CompareFormat = 'terminal' | 'markdown' | 'json';
 
 export interface CompareCommandOptions {
   format?: CompareFormat;
+  /** Write the comparison to this file instead of stdout. */
+  out?: string;
 }
 
 /** One side of a threshold row in a comparison. */
@@ -426,7 +429,14 @@ export async function runCompare(
 ): Promise<number> {
   const [a, b] = await Promise.all([load(runA, streams), load(runB, streams)]);
   const comparison = compareRuns(a, b, { a: runA, b: runB });
-  streams.stdout.write(RENDERERS[options.format ?? 'terminal'](comparison));
+  const format = options.format ?? 'terminal';
+  const text = RENDERERS[format](comparison);
+  if (options.out === undefined) {
+    streams.stdout.write(text);
+  } else {
+    await writeFile(options.out, text, 'utf8');
+    err(streams, `wrote ${options.out} (${format})`);
+  }
   return 0;
 }
 
@@ -442,6 +452,7 @@ export function compareCommand(streams: CliStreams, exit: (code: number) => void
         .choices(['terminal', 'markdown', 'json'])
         .default('terminal'),
     )
+    .option('--out <path>', 'file to write; without it the comparison goes to stdout')
     .action(async (runA: string, runB: string, opts: CompareCommandOptions) => {
       exit(await runCompare(runA, runB, opts, streams));
     });

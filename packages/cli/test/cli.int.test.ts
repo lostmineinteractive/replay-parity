@@ -177,7 +177,7 @@ const FLAGS: Record<string, string[]> = {
     ...CONFIG_FLAGS,
   ],
   doctor: ['--target', '--reference', '--reset', ...CONFIG_FLAGS],
-  compare: ['--format', ...CONFIG_FLAGS],
+  compare: ['--format', '--out', ...CONFIG_FLAGS],
 };
 
 class Sink extends Writable {
