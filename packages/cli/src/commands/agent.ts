@@ -28,9 +28,17 @@ import { Command, Option } from 'commander';
 import { loadDotEnv } from '../env.js';
 import { err, out, type CliStreams } from '../io.js';
 import { formatCheck, hasError, preflight } from '../preflight.js';
+import {
+  addReferenceUpstreamOptions,
+  addUpstreamOptions,
+  resolveReferenceUpstream,
+  resolveUpstream,
+  type ReferenceUpstreamFlags,
+  type UpstreamFlags,
+} from '../upstream.js';
 import { collect, positiveInt, positiveNumber, resolveHeaders } from '../options.js';
 
-export interface AgentCommandOptions {
+export interface AgentCommandOptions extends UpstreamFlags, ReferenceUpstreamFlags {
   run: string;
   recording: string;
   target: string;
@@ -102,6 +110,8 @@ export async function runAgentCommand(
   const prices = resolvePrices(
     options.pricing === undefined ? undefined : await loadPricingFile(options.pricing),
   );
+  const candidateUpstream = await resolveUpstream(options);
+  const referenceUpstream = await resolveReferenceUpstream(options);
   const run = await readRun(options.run);
   const recording = await readRecording(options.recording);
   const rules = options.rules === undefined ? run.rules : await loadDiffRules(options.rules);
@@ -139,13 +149,21 @@ export async function runAgentCommand(
           fallbacks: clientOptions.fallbacks,
         })
       : hooks.clientFactory(apiKey, options.model, clientOptions);
-  const reference = new HttpAdapter(options.reference, { timeoutMs: options.timeoutMs });
-  const candidate = new HttpAdapter(options.target, { timeoutMs: options.timeoutMs });
+  const reference = new HttpAdapter(options.reference, {
+    ...referenceUpstream,
+    timeoutMs: options.timeoutMs,
+  });
+  const candidate = new HttpAdapter(options.target, {
+    ...candidateUpstream,
+    timeoutMs: options.timeoutMs,
+  });
   const resets: ResetHooks = {};
   if (options.resetBetweenCases !== undefined) {
-    resets.candidate = resetByPost(options.resetBetweenCases);
+    resets.candidate = resetByPost(options.resetBetweenCases, fetch, candidateUpstream);
   }
-  if (options.resetReference !== undefined) resets.reference = resetByPost(options.resetReference);
+  if (options.resetReference !== undefined) {
+    resets.reference = resetByPost(options.resetReference, fetch, referenceUpstream);
+  }
   const transcriptPath = join(dirname(options.out), 'agent-transcript.json');
   try {
     const outcome = await runAgent({
@@ -221,7 +239,7 @@ export function agentCommand(
   exit: (code: number) => void,
   hooks: AgentCommandHooks = {},
 ): Command {
-  return new Command('agent')
+  const command = new Command('agent')
     .description(
       'Ask a model for new cases that sharpen the differences a run found, send each to both systems, keep the ones that reveal something new, and add an agent section to the run. Without ANTHROPIC_API_KEY it prints a message and exits 0.',
     )
@@ -285,8 +303,10 @@ export function agentCommand(
     .option(
       '--no-preflight',
       'skip the checks of the rules and thresholds against the recording before the first call',
-    )
-    .action(async (opts: AgentCommandOptions) => {
-      exit(await runAgentCommand(opts, streams, hooks, signal));
-    });
+    );
+  addUpstreamOptions(command);
+  addReferenceUpstreamOptions(command);
+  return command.action(async (opts: AgentCommandOptions) => {
+    exit(await runAgentCommand(opts, streams, hooks, signal));
+  });
 }

@@ -69,3 +69,49 @@ export async function resolveUpstream(flags: UpstreamFlags): Promise<Upstream> {
 export function customUpstream(upstream: Upstream): boolean {
   return hasUpstreamOptions(upstream);
 }
+
+/** The `--reference-` flags of a command that also talks to a reference system. */
+export interface ReferenceUpstreamFlags {
+  referenceCa?: string;
+  referenceCert?: string;
+  referenceKey?: string;
+  referenceInsecure?: boolean;
+  referenceServername?: string;
+  referenceHttpProxy?: string;
+}
+
+/** Registers the same flags as `addUpstreamOptions`, prefixed with `--reference-`, for the reference system. */
+export function addReferenceUpstreamOptions(command: Command): Command {
+  return command
+    .option(
+      '--reference-ca <path>',
+      'PEM file of the authorities that sign the reference certificate',
+    )
+    .option('--reference-cert <path>', 'PEM client certificate to present to the reference')
+    .option('--reference-key <path>', 'PEM private key for --reference-cert')
+    .option('--reference-insecure', 'accept any certificate the reference presents', false)
+    .option(
+      '--reference-servername <name>',
+      'server name sent in SNI and checked against the reference certificate',
+    )
+    .option('--reference-http-proxy <url>', 'HTTP proxy to reach the reference through');
+}
+
+/** Like `resolveUpstream`, for the `--reference-` flags. Errors name the reference flags. */
+export async function resolveReferenceUpstream(flags: ReferenceUpstreamFlags): Promise<Upstream> {
+  if ((flags.referenceCert === undefined) !== (flags.referenceKey === undefined)) {
+    throw new ConfigError('--reference-cert and --reference-key are used together');
+  }
+  const tls: UpstreamTls = {};
+  if (flags.referenceCa !== undefined) {
+    tls.ca = await readPem('--reference-ca', flags.referenceCa);
+  }
+  if (flags.referenceCert !== undefined && flags.referenceKey !== undefined) {
+    tls.cert = await readPem('--reference-cert', flags.referenceCert);
+    tls.key = await readPem('--reference-key', flags.referenceKey);
+  }
+  if (flags.referenceInsecure === true) tls.rejectUnauthorized = false;
+  if (flags.referenceServername !== undefined) tls.servername = flags.referenceServername;
+  const settings = Object.keys(tls).length === 0 ? undefined : tls;
+  return { tls: settings, proxy: flags.referenceHttpProxy };
+}
