@@ -4,10 +4,10 @@ The suite runs under vitest from the repository root. Workspace packages resolve
 
 ## The two projects
 
-| Project       | Files                                                                                               | Timeouts               | Command          |
-| ------------- | --------------------------------------------------------------------------------------------------- | ---------------------- | ---------------- |
-| `unit`        | `packages/*/src/**/*.test.ts`, `demo/*/src/**/*.test.ts`                                            | vitest defaults        | `pnpm test:unit` |
-| `integration` | `packages/*/test/**/*.int.test.ts`, `demo/*/test/**/*.int.test.ts`, `scripts/test/**/*.int.test.ts` | 30 s per test and hook | `pnpm test:int`  |
+| Project       | Files                                                                                               | Timeouts                     | Command          |
+| ------------- | --------------------------------------------------------------------------------------------------- | ---------------------------- | ---------------- |
+| `unit`        | `packages/*/src/**/*.test.ts`, `demo/*/src/**/*.test.ts`                                            | 20 s per test                | `pnpm test:unit` |
+| `integration` | `packages/*/test/**/*.int.test.ts`, `demo/*/test/**/*.int.test.ts`, `scripts/test/**/*.int.test.ts` | 60 s per test, 30 s per hook | `pnpm test:int`  |
 
 `pnpm test` runs both. A unit test sits beside the module it covers and needs no network, file system, or process. An integration test lives in the package's `test` directory and may start servers, write temporary files, or run the whole engine. The Redis Streams bus test needs a server at `REDIS_URL` and is skipped without it.
 

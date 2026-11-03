@@ -49,6 +49,8 @@ The demo services, the load generator, and the repository scripts live outside `
 
 ## Decisions
 
+Each decision below also has a record in `docs/adr/`, with its status, the date of the commit that introduced it, and its context and consequences.
+
 **JSON Lines for recordings.** One exchange per line, append only, valid when every line parses and `offset_ms` never decreases. A capture that dies mid write loses one line and nothing else. A recording can be split, sampled, filtered, and diffed in git with ordinary tools. The reader streams, so a recording larger than memory still replays.
 
 **Diff rules are data.** A rules file names what to ignore, which numbers tolerate how much, which arrays are sets and by which key, which statuses are equivalent, which headers to compare, which values are substituted, and which tags are harness controls. The differ reports the path, both values, and the rule that tolerated a difference, in a deterministic order. A reviewer can read the rules and the findings without reading code, and two runs with the same rules diff cleanly.
