@@ -1,8 +1,12 @@
 # Recording tools
 
-`rp recording` holds the tools that work on a recording file without replaying it: validate, stats, filter, sample, split, merge, and scan. Every subcommand reads its input one line at a time through the same streaming reader the replay engine uses, so a recording larger than memory is handled, and no subcommand alters its input. The one exception to streaming is `filter --include-dependencies`, which is explained below. Every subcommand has `--help`.
+`rp recording` holds the tools that work on a recording file without replaying it: validate, stats, filter, sample, split, merge, scan, migrate, and anonymize. Every subcommand reads its input one line at a time through the same streaming reader the replay engine uses, so a recording larger than memory is handled, and no subcommand alters its input. The one exception to streaming is `filter --include-dependencies`, which is explained below. Every subcommand has `--help`.
 
-A recording is JSON Lines, one exchange per line, valid when every line parses and `offset_ms` never decreases. `docs/report-format.md` describes the exchange shape under "Exchange results" and the body rules.
+A recording is JSON Lines, one exchange per line, valid when every line parses and `offset_ms` never decreases. The first line may be a manifest that says which tool, target, tag rules, redaction, and sampling produced the file; every subcommand skips it when reading exchanges. `docs/capture.md` describes the manifest, lossless numbers, and the capture options, and `docs/report-format.md` describes the exchange shape under "Exchange results" and the body rules.
+
+## Gzip
+
+Every subcommand reads a path ending in `.gz` as gzip, a file of several gzip members included, so the parts `rp capture --gzip` writes work as they are. An output path ending in `.gz` is written as gzip, and `split` of a gzip input writes gzip parts named `recording-0001.jsonl.gz`. Nothing else about a subcommand changes. The recording hash of a gzip file is the hash of its compressed bytes on disk.
 
 ## The recording hash
 
@@ -24,7 +28,7 @@ rp: other.jsonl is not the recording the run replayed: the run recorded sha256 7
 rp recording validate demo/recording.jsonl
 ```
 
-Parses every line against the exchange schema, checks that `offset_ms` never decreases and that no id repeats, and prints the count of exchanges, the span of offsets, and the count per tag. Exits 0 when the file is valid and 1 with the line number and the message of the first problem, along with how many exchanges were parsed before it.
+Parses every line against the exchange schema, checks that `offset_ms` never decreases and that no id repeats, and prints the count of exchanges, the span of offsets, the manifest when the file has one, and the count per tag. A manifest anywhere but the first line, or one that does not match the manifest schema, is a problem with its line number. Exits 0 when the file is valid and 1 with the line number and the message of the first problem, along with how many exchanges were parsed before it.
 
 ```
 demo/recording.jsonl: valid, 283 exchanges, offsets 0 to 12849 ms
@@ -126,3 +130,24 @@ traffic.jsonl: scanned 1200 exchanges
   request.body:$.items[*].ip     ipv4            806  10****.1
   request.headers:x-api-key      high-entropy   1200  k3****************************Eu
 ```
+
+## migrate
+
+```sh
+rp recording migrate demo/recording.jsonl --out demo-with-manifest.jsonl \
+  --target http://reference:3000 \
+  --tag-rule 'POST /v1/orders=create-order' --tag-rule 'GET /v1/orders/*=get-order' \
+  --created-at 2026-10-16T20:50:45.469Z
+```
+
+Writes a copy of a recording that starts with a manifest built from the flags, followed by every byte of the input unchanged: each exchange line, its line ending, and a missing final newline are kept. The output minus its first line is the input byte for byte. The flags describe how the recording was made: `--target`, `--tag-rule` (repeatable), `--redact-header` and `--redact-query` (repeatable, defaulting to the capture's default lists), `--sample`, `--sample-seed`, `--session-key`, and `--created-at` (default: now). `tool_version` is the running version.
+
+The input is validated first, and nothing is written when it is invalid, when it already has a manifest, or when `--out` names the input. A `.gz` input is copied decompressed and a `.gz` output is written compressed, and the byte for byte guarantee holds for the decompressed bytes. The output has a different recording hash from the input, as any edit gives.
+
+## anonymize
+
+```sh
+RP_REDACTION_KEY=... rp recording anonymize traffic.jsonl --capture-rules capture-rules.yaml --out shareable.jsonl
+```
+
+Applies the redaction of a capture rules file to every exchange and writes the result, keeping ids, order, and offsets. The rules file and its `drop` and `hash` modes are described in `docs/capture.md` under "Body redaction"; body paths apply to request and response bodies stored as JSON, and header and query entries to those names. Without `--redact-header` and `--redact-query`, only the rules file applies; with them, those names are dropped as well. A rule in `hash` mode needs `RP_REDACTION_KEY`, and the command refuses to run without it. A manifest on the input is kept with its redaction lists and rules extended; an input without a manifest gives an output without one. `--out` may not be the input.
