@@ -29,6 +29,8 @@ export interface CaptureCommandOptions extends UpstreamFlags {
   out: string;
   tagRule: string[];
   sample: number;
+  sampleBy?: string;
+  sampleSeed?: number;
   redactHeader: string[];
   redactQuery: string[];
   maxBodyBytes: number;
@@ -77,6 +79,8 @@ export async function runCapture(
     append: options.append,
     tagRules: options.tagRule.map(parseTagRule),
     sample: options.sample,
+    sampleBy: options.sampleBy,
+    sampleSeed: options.sampleSeed,
     redactHeaders:
       options.redactHeader.length === 0 ? DEFAULT_REDACTED_HEADERS : options.redactHeader,
     redactQuery: options.redactQuery.length === 0 ? DEFAULT_REDACTED_QUERY : options.redactQuery,
@@ -86,6 +90,18 @@ export async function runCapture(
     onError: (error, context) =>
       log.error(`capture: ${context}: ${String(error)}`, { context, error: String(error) }),
   });
+  if (options.sample < 1 && options.sampleBy === undefined) {
+    log.warn(
+      `warning: --sample ${options.sample} without --sample-by samples each request on its own, so a create can be kept while the reads that use its id are dropped and substitution chains may break`,
+      { sample: options.sample },
+    );
+  }
+  if (capture.sampleSeed !== null) {
+    log.info(
+      `sampling sessions by ${options.sampleBy ?? ''} at ${options.sample} with seed ${capture.sampleSeed}`,
+      { sample_by: options.sampleBy, sample: options.sample, seed: capture.sampleSeed },
+    );
+  }
   const address = await capture.listen({ port: options.listen.port, host: options.listen.host });
   log.info(
     `capturing on ${address.address}:${address.port} -> ${options.target}, writing ${options.out}`,
@@ -151,9 +167,22 @@ export function captureCommand(
       [],
     )
     .addOption(
-      new Option('--sample <fraction>', 'fraction of exchanges to record')
+      new Option(
+        '--sample <fraction>',
+        'fraction of exchanges, or of sessions with --sample-by, to record',
+      )
         .default(1)
         .argParser(fraction),
+    )
+    .option(
+      '--sample-by <selector>',
+      'keep or drop whole sessions by header:<name>, cookie:<name>, or a request body JSONPath; requests without a session value are sampled one by one',
+    )
+    .addOption(
+      new Option(
+        '--sample-seed <n>',
+        'seed of the session hash for a repeatable sample; default: random, logged and written in the manifest',
+      ).argParser(nonNegativeInt),
     )
     .option(
       '--redact-header <name>',

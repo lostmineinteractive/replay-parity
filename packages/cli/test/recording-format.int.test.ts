@@ -192,3 +192,53 @@ describe('rp capture writes a manifest', () => {
     expect(await readRecording(out)).toHaveLength(1);
   });
 });
+
+describe('rp capture sampling flags', () => {
+  it('warns once that per request sampling may break substitution chains', async () => {
+    const capture = await startCapture([
+      '--out',
+      join(dir, 'per-request.jsonl'),
+      '--sample',
+      '0.5',
+    ]);
+    const res = await capture.stop();
+    expect(res.code, res.err).toBe(0);
+    const warnings = res.err.split('\n').filter((l) => l.includes('substitution chains may break'));
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('samples by session without the warning and logs the seed', async () => {
+    const out = join(dir, 'by-session.jsonl');
+    const capture = await startCapture([
+      '--out',
+      out,
+      '--sample',
+      '0.5',
+      '--sample-by',
+      'header:x-session',
+      '--sample-seed',
+      '9',
+    ]);
+    for (const s of ['a', 'b', 'c', 'd', 'e', 'f']) {
+      for (let i = 0; i < 2; i += 1) {
+        await fetch(`${capture.url}/${s}/${i}`, { headers: { 'x-session': s } }).then((r) =>
+          r.text(),
+        );
+      }
+    }
+    const res = await capture.stop();
+    expect(res.code, res.err).toBe(0);
+    expect(res.err).not.toContain('substitution chains may break');
+    expect(res.err).toContain('sampling sessions by header:x-session at 0.5 with seed 9');
+    const counts = new Map<string, number>();
+    for (const e of await readRecording(out)) {
+      const s = e.request.path.split('/')[1] as string;
+      counts.set(s, (counts.get(s) ?? 0) + 1);
+    }
+    for (const n of counts.values()) expect(n).toBe(2);
+    expect(await readRecordingManifest(out)).toMatchObject({
+      sample: { fraction: 0.5, seed: 9 },
+      session_key: 'header:x-session',
+    });
+  });
+});

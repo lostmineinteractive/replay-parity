@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { performance } from 'node:perf_hooks';
+import { randomInt } from 'node:crypto';
 import { Transform } from 'node:stream';
 import {
   DEFAULT_MAX_BODY_BYTES,
@@ -21,6 +22,7 @@ import {
 import { Pool, type Dispatcher } from 'undici';
 import { CappedBody } from './capped-body.js';
 import { OrderedSink } from './ordered-sink.js';
+import { SessionSampler, parseSessionSelector, type SessionDecision } from './session-sampler.js';
 import { formatTagRule, tagsFor, type TagRule } from './tag-rules.js';
 
 /**
@@ -58,8 +60,16 @@ export interface CaptureOptions {
   /** Append to an existing file (default) or start a new one. */
   append?: boolean;
   tagRules?: readonly TagRule[];
-  /** Fraction of exchanges to record, from 0 to 1. Default 1. */
+  /** Fraction of exchanges, or of sessions with `sampleBy`, to record, from 0 to 1. Default 1. */
   sample?: number;
+  /**
+   * Keep or drop whole sessions: `header:<name>`, `cookie:<name>`, or a
+   * request body JSONPath. A request without a session value is sampled on
+   * its own.
+   */
+  sampleBy?: string | undefined;
+  /** Seed of the session hash. Default: random, and written in the manifest. */
+  sampleSeed?: number | undefined;
   redactHeaders?: readonly string[];
   /** Query parameter names whose values are replaced in the recording. Default `DEFAULT_REDACTED_QUERY`. */
   redactQuery?: readonly string[];
@@ -240,6 +250,7 @@ export class CaptureServer {
   private readonly sink: OrderedSink<PendingExchange>;
   private readonly tagRules: readonly TagRule[];
   private readonly sample: number;
+  private readonly sampler: SessionSampler | null;
   private readonly redacted: readonly string[];
   private readonly redactedQuery: readonly string[];
   private readonly maxBodyBytes: number;
@@ -248,24 +259,35 @@ export class CaptureServer {
   private readonly random: () => number;
   private readonly nextId: () => string;
   private readonly onError: (error: unknown, context: string) => void;
+  private readonly seed: number | null;
   private firstTs: number | null = null;
   private inflight = 0;
   private drainWaiters: (() => void)[] = [];
   private closing = false;
   private readonly counts: CaptureStats = { seen: 0, recorded: 0, failed: 0 };
 
-  private constructor(options: CaptureOptions, writer: RecordingWriter) {
+  private constructor(options: CaptureOptions, writer: RecordingWriter, seed: number | null) {
     this.writer = writer;
     this.tagRules = options.tagRules ?? [];
     this.sample = options.sample ?? 1;
     if (!(this.sample > 0 && this.sample <= 1)) {
       throw new RangeError(`sample must be greater than 0 and at most 1, got ${this.sample}`);
     }
+    this.random = options.random ?? Math.random;
+    this.sampler =
+      options.sampleBy === undefined || seed === null
+        ? null
+        : new SessionSampler({
+            fraction: this.sample,
+            seed,
+            selector: parseSessionSelector(options.sampleBy),
+            random: this.random,
+          });
+    this.seed = seed;
     this.redacted = options.redactHeaders ?? DEFAULT_REDACTED_HEADERS;
     this.redactedQuery = options.redactQuery ?? DEFAULT_REDACTED_QUERY;
     this.maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
     this.now = options.now ?? Date.now;
-    this.random = options.random ?? Math.random;
     this.nextId = options.ulid ?? defaultUlid;
     this.onError = options.onError ?? (() => undefined);
     this.upstreamTimeoutMs = options.upstreamTimeoutMs ?? 30_000;
@@ -296,6 +318,15 @@ export class CaptureServer {
     if (!(sample > 0 && sample <= 1)) {
       throw new RangeError(`sample must be greater than 0 and at most 1, got ${sample}`);
     }
+    const selector =
+      options.sampleBy === undefined ? undefined : parseSessionSelector(options.sampleBy);
+    if (
+      options.sampleSeed !== undefined &&
+      !(Number.isInteger(options.sampleSeed) && options.sampleSeed >= 0)
+    ) {
+      throw new RangeError(`sampleSeed must be a non negative integer, got ${options.sampleSeed}`);
+    }
+    const seed = selector === undefined ? null : (options.sampleSeed ?? randomInt(2 ** 31));
     const manifest =
       options.toolVersion === undefined
         ? undefined
@@ -306,18 +337,25 @@ export class CaptureServer {
             tag_rules: (options.tagRules ?? []).map(formatTagRule),
             headers: options.redactHeaders ?? DEFAULT_REDACTED_HEADERS,
             query: options.redactQuery ?? DEFAULT_REDACTED_QUERY,
-            fraction: options.sample ?? 1,
+            fraction: sample,
+            seed,
+            session_key: selector?.text ?? null,
           });
     const writer = await RecordingWriter.open(options.out, {
       append: options.append ?? true,
       manifest,
     });
     try {
-      return new CaptureServer(options, writer);
+      return new CaptureServer(options, writer, seed);
     } catch (err) {
       await writer.close();
       throw err;
     }
+  }
+
+  /** The seed of the session hash, or null without `sampleBy`. */
+  get sampleSeed(): number | null {
+    return this.seed;
   }
 
   get stats(): CaptureStats {
@@ -367,10 +405,13 @@ export class CaptureServer {
     this.inflight += 1;
     const seq = this.sink.reserve();
     const tsMs = this.now();
-    const sampled = this.random() < this.sample;
+    const decision: SessionDecision =
+      this.sampler === null
+        ? this.random() < this.sample
+        : this.sampler.fromHeaders(normalizeHeaders(req.headers));
     let pending: PendingExchange | null = null;
     try {
-      pending = await this.forward(req, res, tsMs, sampled);
+      pending = await this.forward(req, res, tsMs, decision);
     } catch (err) {
       this.counts.failed += 1;
       this.onError(err, `${req.method ?? 'GET'} ${req.url ?? '/'}`);
@@ -388,8 +429,11 @@ export class CaptureServer {
     req: IncomingMessage,
     res: ServerResponse,
     tsMs: number,
-    sampled: boolean,
+    decision: SessionDecision,
   ): Promise<PendingExchange | null> {
+    // A body selector cannot decide before the request body is in, so both
+    // bodies are kept up to the cap until it can.
+    const sampled = decision !== false;
     const method = req.method ?? 'GET';
     const url = new URL(req.url ?? '/', 'http://placeholder');
     const requestHeaders = normalizeHeaders(req.headers);
@@ -456,6 +500,13 @@ export class CaptureServer {
       );
     }
     if (responseBody === null) return null;
+    const requestFields = upload?.body?.fields(
+      requestHeaders['content-type'],
+      requestHeaders['content-encoding'],
+    );
+    if (decision === 'body' && !(this.sampler as SessionSampler).fromBody(requestFields?.body)) {
+      return null;
+    }
 
     const latencyMs = Math.max(0, lastByteAt - startedAt);
     const responseHeaders = normalizeHeaders(upstream.headers);
@@ -474,7 +525,7 @@ export class CaptureServer {
         path: url.pathname,
         query: redactQuery(parseQuery(url.searchParams), this.redactedQuery),
         headers: redactHeaders(recordedRequestHeaders, this.redacted),
-        ...upload?.body?.fields(requestHeaders['content-type'], requestHeaders['content-encoding']),
+        ...requestFields,
       },
       response: {
         status: upstream.statusCode,
