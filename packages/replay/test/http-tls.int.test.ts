@@ -117,6 +117,30 @@ describe('HttpAdapter over TLS', () => {
   });
 });
 
+describe('HttpAdapter tracing over TLS', () => {
+  it('sends the traceparent from the context', async () => {
+    const received: (string | string[] | undefined)[] = [];
+    const server = createServer({ cert, key }, (req, res) => {
+      received.push(req.headers.traceparent);
+      res.end('{}');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    closers.push(
+      () =>
+        new Promise<void>((resolve) => {
+          server.closeAllConnections();
+          server.close(() => resolve());
+        }),
+    );
+    const url = `https://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const adapter = new HttpAdapter(url, { tls: { ca: cert } });
+    closers.push(() => adapter.close());
+    const traceparent = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01';
+    await adapter.send(get, { ...ctx, traceparent });
+    expect(received).toEqual([traceparent]);
+  });
+});
+
 describe('HttpAdapter through a proxy', () => {
   async function startProxy(): Promise<{ url: string; tunnels: string[] }> {
     const tunnels: string[] = [];
