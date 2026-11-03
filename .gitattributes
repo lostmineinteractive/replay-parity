@@ -1,0 +1,9 @@
+# Recordings are byte exact: their SHA-256 is recorded in run files and pinned
+# in tests, so git must never rewrite their line endings. Everything else that
+# is text is checked out with LF on every platform, so prettier, the guards,
+# and the tests see the same bytes on Windows as on Linux and macOS.
+* text=auto eol=lf
+*.jsonl -text
+*.png binary
+*.crt -text
+*.private-key -text
