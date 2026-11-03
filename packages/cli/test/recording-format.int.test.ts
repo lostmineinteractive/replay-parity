@@ -6,12 +6,22 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Writable } from 'node:stream';
 import {
+  hashRedaction,
   hashRecordingFile,
+  loadDiffRules,
+  makeExchange,
+  makeRequest,
+  makeResponse,
+  type Exchange,
+  type JsonObject,
+  type RecordedRequest,
+  type RecordedResponse,
   manifestLine,
   readRecording,
   readRecordingManifest,
 } from '@replay-parity/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { replayExchanges, type Adapter } from '@replay-parity/replay';
 import { runCli } from '../src/index.js';
 
 /** The recording format through the CLI: manifest, migrate, and capture flags. */
@@ -361,5 +371,153 @@ describe('rp capture limits, rotation, and gzip', () => {
     expect(total).toBe(4);
     const validate = await rp(['recording', 'validate', join(sub, names[1] as string)]);
     expect(validate.out).toContain('part 2');
+  });
+});
+
+describe('body redaction through the CLI', () => {
+  const KEY = 'cli-redaction-key';
+  const RULES =
+    "redact:\n  body:\n    - { path: '$..order_id', mode: hash }\n    - { path: '$.card', mode: drop }\n";
+
+  /** Two orders, each created and then looked up by its id in the request body. */
+  function orderExchanges(): Exchange[] {
+    const out: Exchange[] = [];
+    for (const [n, id] of ['ord-7', 'ord-8'].entries()) {
+      out.push(
+        makeExchange({
+          index: n * 2,
+          offset_ms: n * 20,
+          tags: ['create-order'],
+          request: {
+            ...makeRequest(),
+            method: 'POST',
+            path: '/v1/orders',
+            headers: { 'content-type': 'application/json' },
+            body: { sku: 'A', card: '4111' },
+          },
+          response: { ...makeResponse(), status: 201, body: { order_id: id, status: 'open' } },
+        }),
+        makeExchange({
+          index: n * 2 + 1,
+          offset_ms: n * 20 + 10,
+          tags: ['lookup'],
+          request: {
+            ...makeRequest(),
+            method: 'POST',
+            path: '/v1/orders/lookup',
+            headers: { 'content-type': 'application/json' },
+            body: { order_id: id },
+          },
+          response: { ...makeResponse(), status: 200, body: { order_id: id, status: 'open' } },
+        }),
+      );
+    }
+    return out;
+  }
+
+  it('anonymize refuses hash rules without RP_REDACTION_KEY', async () => {
+    const rules = join(dir, 'rules-nokey.yaml');
+    await writeFile(rules, RULES);
+    const res = await rp([
+      'recording',
+      'anonymize',
+      DEMO,
+      '--out',
+      join(dir, 'x.jsonl'),
+      '--capture-rules',
+      rules,
+    ]);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('RP_REDACTION_KEY');
+  });
+
+  it('capture refuses to start with a hash rule and no key', async () => {
+    const rules = join(dir, 'rules-capture.yaml');
+    await writeFile(rules, RULES);
+    const res = await rp([
+      'capture',
+      '--listen',
+      '127.0.0.1:1',
+      '--target',
+      target,
+      '--out',
+      join(dir, 'never.jsonl'),
+      '--capture-rules',
+      rules,
+    ]);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('RP_REDACTION_KEY');
+  });
+
+  it('a hashed order id still substitutes correctly in a replay', async () => {
+    const input = join(dir, 'orders.jsonl');
+    await writeFile(
+      input,
+      `${orderExchanges()
+        .map((e) => JSON.stringify(e))
+        .join('\n')}\n`,
+    );
+    const rulesPath = join(dir, 'rules.yaml');
+    await writeFile(rulesPath, RULES);
+    const out = join(dir, 'orders-anon.jsonl');
+    const res = await rp(
+      ['recording', 'anonymize', input, '--out', out, '--capture-rules', rulesPath],
+      { RP_REDACTION_KEY: KEY },
+    );
+    expect(res.code, res.err).toBe(0);
+    expect(res.out).toContain('anonymized 4 exchanges');
+    const anon = await readRecording(out);
+    const text = await readFile(out, 'utf8');
+    expect(text).not.toContain('ord-7');
+    expect(text).not.toContain('4111');
+    // The same id hashes the same in the create's response and the lookup's request.
+    const hashed = hashRedaction(KEY, 'ord-7');
+    expect((anon[0]?.response.body as JsonObject).order_id).toBe(hashed);
+    expect((anon[1]?.request.body as JsonObject).order_id).toBe(hashed);
+
+    const created = new Set<string>();
+    const lookedUp: string[] = [];
+    let next = 100;
+    const reply = (status: number, body: JsonObject): Promise<RecordedResponse> =>
+      Promise.resolve({ status, headers: {}, latency_ms: 1, body });
+    const candidate: Adapter = {
+      name: 'stub',
+      send: (req: RecordedRequest): Promise<RecordedResponse> => {
+        if (req.path === '/v1/orders') {
+          const id = `cand-${next++}`;
+          created.add(id);
+          return reply(201, { order_id: id, status: 'open' });
+        }
+        const id = (req.body as JsonObject).order_id as string;
+        lookedUp.push(id);
+        return created.has(id)
+          ? reply(200, { order_id: id, status: 'open' })
+          : reply(404, { error: 'not_found' });
+      },
+    };
+    const diffRules = join(dir, 'diff-rules.yaml');
+    await writeFile(
+      diffRules,
+      "substitutions:\n  - name: order_id\n    capture: { tag: create-order, path: '$.order_id' }\n",
+    );
+    const run = await replayExchanges(anon, {
+      recording: out,
+      target: 'http://stub',
+      adapter: candidate,
+      pace: 'max',
+      concurrency: 1,
+      rules: await loadDiffRules(diffRules),
+    });
+    expect(lookedUp).toEqual(['cand-100', 'cand-101']);
+    expect(run.stats.overall.mismatches).toBe(0);
+    const lookups = run.exchanges.filter((e) => e.tags.includes('lookup'));
+    expect(lookups.map((e) => e.candidate?.status)).toEqual([200, 200]);
+    expect(lookups[0]?.diff?.findings).toEqual([
+      expect.objectContaining({
+        path: '$.order_id',
+        tolerated: true,
+        rule: 'substitution:order_id',
+      }),
+    ]);
   });
 });

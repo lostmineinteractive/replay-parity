@@ -11,11 +11,11 @@ import {
   DEFAULT_REDACTED_QUERY,
   buildManifest,
   normalizeHeaders,
-  redactHeaders,
-  redactQuery,
+  Redactor,
   ulid as defaultUlid,
   type Exchange,
   type HeaderMap,
+  type CaptureRules,
   type Query,
 } from '@replay-parity/core';
 import { Pool, type Dispatcher } from 'undici';
@@ -73,6 +73,10 @@ export interface CaptureOptions {
   redactHeaders?: readonly string[];
   /** Query parameter names whose values are replaced in the recording. Default `DEFAULT_REDACTED_QUERY`. */
   redactQuery?: readonly string[];
+  /** Body, query, and header redaction from a capture rules file, on top of the two lists. */
+  captureRules?: CaptureRules | undefined;
+  /** The HMAC key for rules that hash. Required when one does. Never written to the recording. */
+  redactionKey?: string | undefined;
   /** Bodies above this size, on the wire or once decoded, are stored as a hash. */
   maxBodyBytes?: number;
   /** Upstream headers and body timeout in milliseconds. Default 30000. */
@@ -264,8 +268,7 @@ export class CaptureServer {
   private readonly tagRules: readonly TagRule[];
   private readonly sample: number;
   private readonly sampler: SessionSampler | null;
-  private readonly redacted: readonly string[];
-  private readonly redactedQuery: readonly string[];
+  private readonly redactor: Redactor;
   private readonly maxBodyBytes: number;
   private readonly upstreamTimeoutMs: number;
   private readonly now: () => number;
@@ -289,7 +292,12 @@ export class CaptureServer {
   private closing = false;
   private readonly counts: CaptureStats = { seen: 0, recorded: 0, failed: 0 };
 
-  private constructor(options: CaptureOptions, output: CaptureOutput, seed: number | null) {
+  private constructor(
+    options: CaptureOptions,
+    output: CaptureOutput,
+    seed: number | null,
+    redactor: Redactor,
+  ) {
     this.output = output;
     this.maxExchanges = options.maxExchanges;
     this.durationMs = options.durationMs;
@@ -312,8 +320,7 @@ export class CaptureServer {
             random: this.random,
           });
     this.seed = seed;
-    this.redacted = options.redactHeaders ?? DEFAULT_REDACTED_HEADERS;
-    this.redactedQuery = options.redactQuery ?? DEFAULT_REDACTED_QUERY;
+    this.redactor = redactor;
     this.maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
     this.now = options.now ?? Date.now;
     this.nextId = options.ulid ?? defaultUlid;
@@ -355,6 +362,13 @@ export class CaptureServer {
       throw new RangeError(`sampleSeed must be a non negative integer, got ${options.sampleSeed}`);
     }
     const seed = selector === undefined ? null : (options.sampleSeed ?? randomInt(2 ** 31));
+    // Built before the file is opened, so a hash rule without a key fails before anything is written.
+    const redactor = new Redactor({
+      headers: options.redactHeaders ?? DEFAULT_REDACTED_HEADERS,
+      query: options.redactQuery ?? DEFAULT_REDACTED_QUERY,
+      rules: options.captureRules,
+      key: options.redactionKey,
+    });
     const manifest =
       options.toolVersion === undefined
         ? undefined
@@ -365,6 +379,7 @@ export class CaptureServer {
             tag_rules: (options.tagRules ?? []).map(formatTagRule),
             headers: options.redactHeaders ?? DEFAULT_REDACTED_HEADERS,
             query: options.redactQuery ?? DEFAULT_REDACTED_QUERY,
+            rules: redactor.manifestRules,
             fraction: sample,
             seed,
             session_key: selector?.text ?? null,
@@ -387,7 +402,7 @@ export class CaptureServer {
       now: options.now ?? Date.now,
     });
     try {
-      return new CaptureServer(options, output, seed);
+      return new CaptureServer(options, output, seed, redactor);
     } catch (err) {
       await output.close();
       throw err;
@@ -573,22 +588,22 @@ export class CaptureServer {
       id: this.nextId(),
       ts: new Date(tsMs).toISOString(),
       adapter: 'http',
-      request: {
+      request: this.redactor.request({
         method,
         path: url.pathname,
-        query: redactQuery(parseQuery(url.searchParams), this.redactedQuery),
-        headers: redactHeaders(recordedRequestHeaders, this.redacted),
+        query: parseQuery(url.searchParams),
+        headers: recordedRequestHeaders,
         ...requestFields,
-      },
-      response: {
+      }),
+      response: this.redactor.response({
         status: upstream.statusCode,
-        headers: redactHeaders(responseHeaders, this.redacted),
+        headers: responseHeaders,
         latency_ms: Math.round(latencyMs * 1000) / 1000,
         ...responseBody.fields(
           responseHeaders['content-type'],
           responseHeaders['content-encoding'],
         ),
-      },
+      }),
       tags: tagsFor(this.tagRules, method, url.pathname),
     };
     return { tsMs, exchange };

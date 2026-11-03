@@ -7,7 +7,11 @@ import {
   compileFilter,
   filterExchanges,
   filterRecording,
+  REDACTION_KEY_ENV,
+  Redactor,
+  anonymizeRecording,
   buildManifest,
+  loadCaptureRules,
   loadDiffRules,
   mergeRecordings,
   migrateRecording,
@@ -379,6 +383,34 @@ export async function runMigrate(
   return EXIT_CODES.pass;
 }
 
+export interface AnonymizeCommandOptions {
+  out: string;
+  captureRules: string;
+  redactHeader: string[];
+  redactQuery: string[];
+}
+
+export async function runAnonymize(
+  inPath: string,
+  options: AnonymizeCommandOptions,
+  streams: CliStreams,
+  env: NodeJS.ProcessEnv,
+): Promise<number> {
+  const rules = await loadCaptureRules(options.captureRules);
+  const redactor = new Redactor({
+    headers: options.redactHeader,
+    query: options.redactQuery,
+    rules,
+    key: env[REDACTION_KEY_ENV],
+  });
+  const result = await anonymizeRecording(inPath, options.out, redactor);
+  out(
+    streams,
+    `anonymized ${result.exchanges} exchanges to ${options.out}${result.manifest ? ', manifest kept with the rules added' : ''}`,
+  );
+  return EXIT_CODES.pass;
+}
+
 /** Applies the program's stream and exit settings to a nested command, which commander does not inherit. */
 function configure(cmd: Command, streams: CliStreams): Command {
   return cmd
@@ -398,9 +430,10 @@ export function recordingCommand(
   streams: CliStreams,
   exit: (code: number) => void,
   version = '0.0.0',
+  env: NodeJS.ProcessEnv = process.env,
 ): Command {
   const recording = new Command('recording').description(
-    'Validate, summarize, filter, sample, split, merge, scan, and migrate a recording file. Every subcommand streams its input and never alters it.',
+    'Validate, summarize, filter, sample, split, merge, scan, migrate, and anonymize a recording file. Every subcommand streams its input and never alters it.',
   );
   recording.addCommand(
     configure(
@@ -587,6 +620,33 @@ export function recordingCommand(
         .option('--created-at <iso>', 'the creation time to record; default: now')
         .action(async (inPath: string, opts: MigrateCommandOptions) => {
           exit(await runMigrate(inPath, opts, streams, version));
+        }),
+      streams,
+    ),
+  );
+  recording.addCommand(
+    configure(
+      new Command('anonymize')
+        .description(
+          `Apply the redaction of a capture rules file to every exchange and write the result, keeping ids, order, and offsets. Hash rules need ${REDACTION_KEY_ENV}.`,
+        )
+        .argument('<in>', 'the recording to read')
+        .requiredOption('--out <path>', 'the recording to write')
+        .requiredOption('--capture-rules <path>', 'YAML capture rules with the redact section')
+        .option(
+          '--redact-header <name>',
+          'also drop this header, repeatable; default: only the rules file',
+          collect,
+          [],
+        )
+        .option(
+          '--redact-query <name>',
+          'also drop this query parameter, repeatable; default: only the rules file',
+          collect,
+          [],
+        )
+        .action(async (inPath: string, opts: AnonymizeCommandOptions) => {
+          exit(await runAnonymize(inPath, opts, streams, env));
         }),
       streams,
     ),

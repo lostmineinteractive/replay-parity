@@ -12,7 +12,9 @@ import {
   DEFAULT_PROGRESS_EVERY,
   DEFAULT_REDACTED_HEADERS,
   DEFAULT_REDACTED_QUERY,
+  REDACTION_KEY_ENV,
   formatDuration,
+  loadCaptureRules,
 } from '@replay-parity/core';
 import { Command, Option } from 'commander';
 import { endProgress, logger, startProgress, type CliStreams } from '../io.js';
@@ -54,6 +56,9 @@ export interface CaptureCommandOptions extends UpstreamFlags {
   duration?: number;
   /** The version written in the manifest of a new file. Default 0.0.0. */
   toolVersion?: string;
+  captureRules?: string;
+  /** The environment `RP_REDACTION_KEY` is read from. Default: the process environment. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** How often the progress reads the server's counters. */
@@ -77,6 +82,8 @@ export async function runCapture(
     throw new ConfigError('--tls-cert and --tls-key are used together');
   }
   const { tls: upstream } = await resolveUpstream(options);
+  const captureRules =
+    options.captureRules === undefined ? undefined : await loadCaptureRules(options.captureRules);
   const listenTls =
     options.tlsCert === undefined || options.tlsKey === undefined
       ? undefined
@@ -100,6 +107,8 @@ export async function runCapture(
     maxBodyBytes: options.maxBodyBytes,
     upstreamTimeoutMs: options.upstreamTimeoutMs,
     toolVersion: options.toolVersion ?? '0.0.0',
+    captureRules,
+    redactionKey: (options.env ?? process.env)[REDACTION_KEY_ENV],
     rotateBytes: options.rotateBytes,
     rotateIntervalMs: options.rotateInterval,
     gzip: options.gzip === true ? true : undefined,
@@ -181,6 +190,7 @@ export function captureCommand(
   signal: AbortSignal,
   exit: (code: number) => void,
   version = '0.0.0',
+  env: NodeJS.ProcessEnv = process.env,
 ): Command {
   const command = new Command('capture')
     .description(
@@ -237,6 +247,10 @@ export function captureCommand(
         .default(DEFAULT_MAX_BODY_BYTES)
         .argParser(nonNegativeInt),
     )
+    .option(
+      '--capture-rules <path>',
+      'YAML capture rules with redact.body, redact.query, and redact.headers, each in drop or hash mode; hash needs RP_REDACTION_KEY',
+    )
     .option('--no-append', 'start a new recording file instead of appending')
     .addOption(
       new Option(
@@ -290,6 +304,6 @@ export function captureCommand(
     .option('--tls-key <path>', 'PEM private key for --tls-cert');
   addUpstreamOptions(command, false);
   return command.action(async (opts: CaptureCommandOptions) => {
-    exit(await runCapture({ ...opts, toolVersion: version }, streams, signal));
+    exit(await runCapture({ ...opts, toolVersion: version, env }, streams, signal));
   });
 }

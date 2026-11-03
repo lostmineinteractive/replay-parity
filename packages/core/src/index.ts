@@ -12,6 +12,7 @@ export * from './recording/writer.js';
 export * from './recording/hash.js';
 export * from './recording/ops.js';
 export * from './recording/migrate.js';
+export * from './recording/capture-rules.js';
 export * from './jsonpath/index.js';
 export * from './rules/schema.js';
 export * from './rules/scope.js';

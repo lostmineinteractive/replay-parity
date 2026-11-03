@@ -1,11 +1,14 @@
-import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { gunzipSync } from 'node:zlib';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  CaptureRulesSchema,
+  REDACTED,
   bucketOf,
+  hashRedaction,
   makeExchange,
   readRecording,
   readRecordingManifest,
@@ -347,5 +350,63 @@ describe('limits that end a capture', () => {
   it('refuses limits that are not positive integers', async () => {
     await expect(start({ maxExchanges: 0 })).rejects.toThrow(RangeError);
     await expect(start({ durationMs: 1.5 })).rejects.toThrow(RangeError);
+  });
+});
+
+describe('body redaction from capture rules', () => {
+  const KEY = 'capture-test-key';
+  const rules = CaptureRulesSchema.parse({
+    redact: {
+      body: [
+        { path: '$.secret', mode: 'drop' },
+        { path: '$..user', mode: 'hash' },
+      ],
+      query: [{ name: 'q', mode: 'hash' }],
+      headers: [{ name: 'x-user', mode: 'hash' }],
+    },
+  });
+
+  it('drops and hashes request and response bodies, query, and headers', async () => {
+    const h = await start(
+      { captureRules: rules, redactionKey: KEY, toolVersion: '1.0.0' },
+      undefined,
+      (req, res) => {
+        req.resume();
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ user: 'u-1', list: [{ user: 'u-2' }], secret: 's' }));
+        });
+      },
+    );
+    await send(h, '/r?q=find&page=2', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-user': 'u-1' },
+      body: JSON.stringify({ user: 'u-1', secret: 'pw', keep: 1 }),
+    });
+    const [e] = await stop(h);
+    const hash = (t: string): string => hashRedaction(KEY, t);
+    expect(e?.request.body).toEqual({ user: hash('u-1'), secret: REDACTED, keep: 1 });
+    expect(e?.response.body).toEqual({
+      user: hash('u-1'),
+      list: [{ user: hash('u-2') }],
+      secret: REDACTED,
+    });
+    expect(e?.request.query).toEqual({ q: hash('find'), page: '2' });
+    expect(e?.request.headers['x-user']).toBe(hash('u-1'));
+    const text = await readFile(h.out, 'utf8');
+    expect(text).not.toContain(KEY);
+    expect(text).not.toContain('"u-1"');
+    const manifest = await readRecordingManifest(h.out);
+    expect(manifest?.redaction.rules?.body).toEqual([
+      { path: '$.secret', mode: 'drop' },
+      { path: '$..user', mode: 'hash' },
+    ]);
+  });
+
+  it('refuses to start with a hash rule and no key, before creating the file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'rp-capture-format-'));
+    const out = join(dir, 'never.jsonl');
+    await expect(start({ captureRules: rules }, out)).rejects.toThrow(/RP_REDACTION_KEY/);
+    await expect(access(out)).rejects.toThrow();
   });
 });
