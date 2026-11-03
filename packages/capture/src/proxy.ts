@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { performance } from 'node:perf_hooks';
 import { Transform } from 'node:stream';
@@ -26,7 +27,29 @@ import { tagsFor, type TagRule } from './tag-rules.js';
  * response back unchanged, and appends the exchange to the recording.
  */
 
+/** TLS settings for listening. Values are PEM text or buffers. */
+export interface CaptureListenTls {
+  cert: string | Buffer;
+  key: string | Buffer;
+  passphrase?: string | undefined;
+}
+
+/** TLS settings for the connection to the reference system. Values are PEM text or buffers. */
+export interface CaptureUpstreamTls {
+  ca?: string | Buffer | readonly (string | Buffer)[] | undefined;
+  cert?: string | Buffer | undefined;
+  key?: string | Buffer | undefined;
+  passphrase?: string | undefined;
+  /** False accepts any certificate the reference presents. Default true. */
+  rejectUnauthorized?: boolean | undefined;
+  servername?: string | undefined;
+}
+
 export interface CaptureOptions {
+  /** Listen over HTTPS with this certificate and key. Default: plain HTTP. */
+  tls?: CaptureListenTls | undefined;
+  /** TLS settings for an https target. */
+  upstream?: CaptureUpstreamTls | undefined;
   /** Base URL of the reference system, for example `http://localhost:3000`. */
   target: string;
   /** Recording file path. */
@@ -204,7 +227,7 @@ function sendError(res: ServerResponse, status: number, error: string): void {
 }
 
 export class CaptureServer {
-  private readonly server: Server;
+  private readonly server: Server | HttpsServer;
   private readonly pool: Pool;
   private readonly writer: RecordingWriter;
   private readonly sink: OrderedSink<PendingExchange>;
@@ -239,7 +262,12 @@ export class CaptureServer {
     this.nextId = options.ulid ?? defaultUlid;
     this.onError = options.onError ?? (() => undefined);
     this.upstreamTimeoutMs = options.upstreamTimeoutMs ?? 30_000;
+    const connect: Record<string, unknown> = {};
+    for (const [name, value] of Object.entries(options.upstream ?? {})) {
+      if (value !== undefined) connect[name] = value;
+    }
     this.pool = new Pool(options.target, {
+      connect,
       headersTimeout: this.upstreamTimeoutMs,
       bodyTimeout: this.upstreamTimeoutMs,
     });
@@ -247,9 +275,13 @@ export class CaptureServer {
       (item) => this.persist(item),
       (err) => this.onError(err, 'recording write'),
     );
-    this.server = createServer((req, res) => {
+    const onRequest = (req: IncomingMessage, res: ServerResponse): void => {
       void this.handle(req, res);
-    });
+    };
+    this.server =
+      options.tls === undefined
+        ? createServer(onRequest)
+        : createHttpsServer({ ...options.tls }, onRequest);
   }
 
   static async create(options: CaptureOptions): Promise<CaptureServer> {
