@@ -40,3 +40,12 @@ export {
 } from './module.js';
 export { loadInvariantModule, validateInvariantModule } from './load.js';
 export { evaluateInvariants, type EvaluateOptions } from './evaluate.js';
+export {
+  DECLARATIVE_NAME,
+  DECLARATIVE_VERSION,
+  declarativeModule,
+  loadDeclarativeRules,
+  parseDeclarativeRules,
+} from './declarative/module.js';
+export type { DeclarativeEpoch } from './declarative/rules.js';
+export type { ExchangeCommand } from './declarative/source.js';

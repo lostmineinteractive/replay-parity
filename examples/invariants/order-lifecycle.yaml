@@ -1,0 +1,39 @@
+# Declarative invariants for the demo's order lifecycle, run with
+#   rp invariants --recording demo/recording.jsonl --rules examples/invariants/order-lifecycle.yaml
+# They restate part of what the built in order-lifecycle module checks, with no code.
+# docs/invariants.md explains every key.
+
+# An accepted exchange with this tag starts a new epoch.
+reset_tag: admin-reset
+
+# A create retried under the same key with the same body names the same order,
+# and a different body under that key is not accepted.
+idempotency:
+  header: idempotency-key
+  by_payload: true
+  tag: create-order
+  identity: '$.order_id'
+
+# Cumulative shipped quantity never goes down for one order, across every
+# response that shows it.
+monotonic:
+  - name: shipped-never-decreases
+    path: '$.shipped'
+    key: '$.order_id'
+
+# A read of an order after an acknowledged quantity change shows the new quantity.
+read_your_writes:
+  - name: quantity-change-visible
+    write_tag: set-quantity
+    read_tag: get-order
+    substitution: 'path:^/v1/orders/([^/]+)'
+    fields: ['$.quantity']
+
+# The order status moves forward only. REJECTED, SHIPPED, and CANCELED are final.
+transitions:
+  name: order-status
+  path: '$.status'
+  key: '$.order_id'
+  allowed:
+    OPEN: [PARTIALLY_SHIPPED, SHIPPED, CANCELED]
+    PARTIALLY_SHIPPED: [SHIPPED, CANCELED]

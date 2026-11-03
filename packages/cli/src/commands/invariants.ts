@@ -1,6 +1,10 @@
 import { writeFile } from 'node:fs/promises';
-import { EXIT_CODES, readRecording, type InvariantReport } from '@replay-parity/core';
-import { evaluateInvariants, loadInvariantModule } from '@replay-parity/invariants';
+import { ConfigError, EXIT_CODES, readRecording, type InvariantReport } from '@replay-parity/core';
+import {
+  evaluateInvariants,
+  loadDeclarativeRules,
+  loadInvariantModule,
+} from '@replay-parity/invariants';
 import { invariantSummary } from '@replay-parity/report';
 import { Command } from 'commander';
 import { err, out, type CliStreams } from '../io.js';
@@ -11,6 +15,8 @@ export interface InvariantsCommandOptions {
   system: string;
   /** An ES module that exports an invariant module. Default: the built in order lifecycle rules. */
   module?: string;
+  /** A declarative rules file, `invariants.yaml`, evaluated by the built in declarative module. */
+  rules?: string;
 }
 
 export function renderInvariantReport(report: InvariantReport): string {
@@ -54,8 +60,15 @@ export async function runInvariants(
   options: InvariantsCommandOptions,
   streams: CliStreams,
 ): Promise<number> {
+  if (options.module !== undefined && options.rules !== undefined) {
+    throw new ConfigError('--module and --rules cannot be used together');
+  }
   const module =
-    options.module === undefined ? undefined : await loadInvariantModule(options.module);
+    options.module !== undefined
+      ? await loadInvariantModule(options.module)
+      : options.rules !== undefined
+        ? await loadDeclarativeRules(options.rules)
+        : undefined;
   const exchanges = await readRecording(options.recording);
   const report = evaluateInvariants(exchanges, {
     system: options.system,
@@ -73,13 +86,14 @@ export async function runInvariants(
 export function invariantsCommand(streams: CliStreams, exit: (code: number) => void): Command {
   return new Command('invariants')
     .description(
-      'Evaluate independent invariants against one recording: the ten built in order lifecycle rules, or the rules of --module. Exits 0 when every invariant holds, 2 on a violation, 3 when a rule could not decide.',
+      'Evaluate independent invariants against one recording: the ten built in order lifecycle rules, the rules of --module, or the declarative rules of --rules. Exits 0 when every invariant holds, 2 on a violation, 3 when a rule could not decide.',
     )
     .requiredOption('--recording <path>', 'the recording of one system')
     .option(
       '--module <path>',
       'an ES module exporting name, version, parse, and rules; see docs/invariants.md',
     )
+    .option('--rules <path>', 'a declarative invariants.yaml; see docs/invariants.md')
     .option('--out <path>', 'write the report as JSON here')
     .option('--system <label>', 'label for the report', 'system')
     .action(async (opts: InvariantsCommandOptions) => {

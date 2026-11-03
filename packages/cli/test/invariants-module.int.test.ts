@@ -142,3 +142,53 @@ describe('rp invariants --module', () => {
     expect(res.out).toContain('16 ledger reads, 69 stock reads, 109 order reads');
   });
 });
+
+describe('rp invariants --rules', () => {
+  const EXAMPLE = join(ROOT, 'examples/invariants/order-lifecycle.yaml');
+
+  it('holds every declarative rule of the example on the demo recording', async () => {
+    const res = await rp(['invariants', '--recording', RECORDING, '--rules', EXAMPLE]);
+    expect(res.code).toBe(0);
+    expect(res.out).toContain('4 hold');
+    expect(res.out).toContain('module declarative 1.0.0 sha256 ');
+    expect(res.out).toMatch(/ 4\. holds\s+order-status \(\d+ checks\)/);
+  });
+
+  it('exits 2 and names the exchange on a violation', async () => {
+    const recording = join(dir, 'went-down.jsonl');
+    const exchanges = [3, 2].map((version, index) =>
+      makeExchange({
+        index,
+        tags: ['get'],
+        request: makeRequest({ path: '/kv/a' }),
+        response: jsonResponse({ version }),
+      }),
+    );
+    await writeFile(recording, exchanges.map((e) => `${JSON.stringify(e)}\n`).join(''));
+    const rules = join(dir, 'monotonic.yaml');
+    await writeFile(rules, "monotonic: [{ path: '$.version', key: 'path:^/kv/(.+)$' }]\n");
+    const res = await rp(['invariants', '--recording', recording, '--rules', rules]);
+    expect(res.code).toBe(2);
+    expect(res.out).toContain('violated');
+    expect(res.out).toContain(`(exchange ${exchanges[1]?.id})`);
+  });
+
+  it('rejects --module with --rules and names a bad rules file', async () => {
+    const both = await rp([
+      'invariants',
+      '--recording',
+      RECORDING,
+      '--rules',
+      EXAMPLE,
+      '--module',
+      join(dir, 'module.mjs'),
+    ]);
+    expect(both.code).toBe(1);
+    expect(both.err).toContain('--module and --rules cannot be used together');
+    const bad = join(dir, 'bad.yaml');
+    await writeFile(bad, 'monotonic: yes\n');
+    const res = await rp(['invariants', '--recording', RECORDING, '--rules', bad]);
+    expect(res.code).toBe(1);
+    expect(res.err).toContain(`${bad}: `);
+  });
+});
