@@ -122,8 +122,11 @@ Latency varies from one replay to the next, so a single replay cannot say whethe
 
 Because the judgement is over a sample, a different run of the same shrink can keep a different subset. The reproduction is labeled `reduced reproduction (statistical)` and records `repeat`. Treat it as a strong hint about which steps cause the slowdown, and confirm it by replaying the reduced recording. Raise `--latency-repeat` when the result is noisy. Each attempt costs `--latency-repeat` replays of the subset.
 
+## Invariant modules
+
+`rp shrink --invariants-module <path>` and `rp shrink --invariants-rules <path>` judge every attempt with an invariant module or a declarative `invariants.yaml` instead of the built in order lifecycle rules, loaded the way `rp replay` loads them. An `invariant:<system>:<name>` rule then names a rule of that module. The two flags cannot be combined. The attempt cache key includes the module's name, version, and hash, so a cache made with one module is never read for another. See `docs/invariants.md` for writing a module.
+
 ## What is not done
 
 - `--preflight-probe` probes the first target and the first reset URL only.
-- A module of invariants given to `rp replay` with `--invariants-module` is not passed to `rp shrink`; an invariant rule is judged by the built in rules.
 - The cache is not shared between machines and is not versioned against the candidate.
