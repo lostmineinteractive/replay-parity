@@ -5,3 +5,13 @@ packages:
 
 onlyBuiltDependencies:
   - esbuild
+
+# Security overrides for transitive dependencies flagged by the OSV scan in CI.
+# fast-uri: patch releases that fix GHSA-333x-w4r6-6crp, GHSA-w74x-v6f9-j3xg,
+# GHSA-wjr9-j795-jxcr, and GHSA-xhq7-xmqj-769h (pulled in by ajv and fastify).
+# minimatch: GHSA-g3hv-75wg-m249 is fixed only in 11.0.1; eslint and
+# typescript-eslint still request ^10, and lint output is identical under 11.
+overrides:
+  fast-uri@<3.1.9: ^3.1.9
+  fast-uri@>=4.0.0 <4.2.3: ^4.2.3
+  minimatch@<11.0.1: ^11.0.1
