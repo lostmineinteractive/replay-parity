@@ -24,6 +24,11 @@ export const TagStatsSchema = z
     tolerated: z.number().int().nonnegative(),
     mismatches: z.number().int().nonnegative(),
     mismatch_rate: nonneg,
+    /**
+     * Compared exchanges per candidate status code, keyed by the code as text. Absent when
+     * the statistics were collected without statuses, as in a run written before the field.
+     */
+    candidate_status: z.record(z.string(), z.number().int().nonnegative()).optional(),
     candidate: LatencySummarySchema,
     reference: LatencySummarySchema,
     histogram: z

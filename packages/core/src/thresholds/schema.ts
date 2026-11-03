@@ -34,6 +34,31 @@ export const RatioLimitsSchema = z
   })
   .strict();
 
+/** Ratio limits overall, plus the same limits per tag. */
+export const RelativeLimitsSchema = RatioLimitsSchema.extend({
+  /** Candidate over reference per tag. Absent when no tag is limited. */
+  by_tag: z.record(z.string(), RatioLimitsSchema).optional(),
+}).strict();
+
+/** An HTTP status code as a three digit key, such as `'404'`. */
+const statusCode = z.string().regex(/^[1-5][0-9][0-9]$/, 'must be a status code from 100 to 599');
+
+export const StatusLimitsSchema = z
+  .object({
+    /** Per tag, per candidate status code, the largest share of compared exchanges with that status. */
+    by_tag: z
+      .record(z.string(), z.record(statusCode, z.object({ rate_max: rate }).strict()))
+      .prefault({}),
+  })
+  .strict();
+
+export const ThroughputLimitsSchema = z
+  .object({
+    /** The least achieved request rate, in requests per second. */
+    achieved_rps_min: nonneg.optional(),
+  })
+  .strict();
+
 export const ThresholdsSchema = z
   .object({
     latency: z
@@ -42,13 +67,18 @@ export const ThresholdsSchema = z
         min_samples: minSamples.prefault(1),
         overall: LatencyLimitsSchema.prefault({}),
         by_tag: z.record(z.string(), LatencyLimitsSchema).prefault({}),
-        relative_to_reference: RatioLimitsSchema.prefault({}),
+        relative_to_reference: RelativeLimitsSchema.prefault({}),
       })
       .strict()
       .prefault({}),
     correctness: z
       .object({
         mismatch_rate_max: rate.optional(),
+        /**
+         * The most findings the reference re-replay marked as noise per compared exchange.
+         * Above 1 is possible, since one exchange can hold several noise findings.
+         */
+        noise_rate_max: nonneg.optional(),
         by_tag: z.record(z.string(), z.object({ mismatch_rate_max: rate }).strict()).prefault({}),
       })
       .strict()
@@ -56,9 +86,15 @@ export const ThresholdsSchema = z
     errors: z
       .object({
         rate_max: rate.optional(),
+        /** Per tag error rate limits. Absent when no tag is limited. */
+        by_tag: z.record(z.string(), z.object({ rate_max: rate }).strict()).optional(),
       })
       .strict()
       .prefault({}),
+    /** Absent unless a throughput limit is set, so an older thresholds file parses as before. */
+    throughput: ThroughputLimitsSchema.optional(),
+    /** Absent unless a status limit is set. */
+    status: StatusLimitsSchema.optional(),
     pacing: z
       .object({
         /** The largest schedule slip the replay may show before the run is inconclusive. */
@@ -85,7 +121,15 @@ export const ThresholdOutcomeSchema = z.enum(['pass', 'fail', 'inconclusive']);
 export const ThresholdResultSchema = z
   .object({
     id: z.string().min(1),
-    section: z.enum(['latency', 'correctness', 'errors', 'pacing', 'invariants']),
+    section: z.enum([
+      'latency',
+      'correctness',
+      'errors',
+      'throughput',
+      'status',
+      'pacing',
+      'invariants',
+    ]),
     scope: z.string().min(1),
     metric: z.string().min(1),
     limit: z.number(),
@@ -97,6 +141,9 @@ export const ThresholdResultSchema = z
 
 export type LatencyLimits = z.output<typeof LatencyLimitsSchema>;
 export type RatioLimits = z.output<typeof RatioLimitsSchema>;
+export type RelativeLimits = z.output<typeof RelativeLimitsSchema>;
+export type StatusLimits = z.output<typeof StatusLimitsSchema>;
+export type ThroughputLimits = z.output<typeof ThroughputLimitsSchema>;
 export type Thresholds = z.output<typeof ThresholdsSchema>;
 export type ThresholdsInput = z.input<typeof ThresholdsSchema>;
 export type ThresholdOutcome = z.output<typeof ThresholdOutcomeSchema>;

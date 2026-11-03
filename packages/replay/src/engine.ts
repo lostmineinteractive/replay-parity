@@ -899,6 +899,7 @@ async function runEngine(
       verdict,
       candidateLatencyMs: r.candidate?.latency_ms ?? null,
       referenceLatencyMs: r.reference.latency_ms,
+      candidateStatus: r.candidate?.status ?? null,
     });
   };
 
@@ -1241,7 +1242,11 @@ async function runEngine(
   });
   if (candidateRecording !== null) await writeExchanges(candidateRecording, candidateLog);
 
-  const measurements: ThresholdMeasurements = { slip_max_ms: slip.max_ms };
+  const achievedRps = durationMs > 0 ? round3((results * 1000) / durationMs) : 0;
+  const measurements: ThresholdMeasurements = {
+    slip_max_ms: slip.max_ms,
+    achieved_rps: achievedRps,
+  };
   let invariants: Run['invariants'] = { reference: null, candidate: null };
   if (options.invariants) {
     const reference = evaluateInvariants(selectedLog, {
@@ -1290,7 +1295,7 @@ async function runEngine(
       rps,
       concurrency,
       requested_rps: firstSchedule.requestedRps(),
-      achieved_rps: durationMs > 0 ? round3((results * 1000) / durationMs) : 0,
+      achieved_rps: achievedRps,
       slip_p50_ms: slip.p50_ms,
       slip_max_ms: slip.max_ms,
       barrier_tags: [...barrierTags].sort(),

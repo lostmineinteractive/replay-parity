@@ -66,4 +66,45 @@ describe('StatsCollector', () => {
     expect(stats.overall).toMatchObject({ count: 0, error_rate: 0, mismatch_rate: 0, compared: 0 });
     expect(stats.by_tag).toEqual({});
   });
+
+  it('counts compared exchanges per candidate status when samples carry one', () => {
+    const c = new StatsCollector();
+    c.record({
+      tags: ['a'],
+      verdict: 'match',
+      candidateLatencyMs: 1,
+      referenceLatencyMs: 1,
+      candidateStatus: 404,
+    });
+    c.record({
+      tags: ['a'],
+      verdict: 'match',
+      candidateLatencyMs: 1,
+      referenceLatencyMs: 1,
+      candidateStatus: 200,
+    });
+    c.record({
+      tags: ['a', 'b'],
+      verdict: 'mismatch',
+      candidateLatencyMs: 1,
+      referenceLatencyMs: 1,
+      candidateStatus: 200,
+    });
+    c.record({
+      tags: ['b'],
+      verdict: null,
+      candidateLatencyMs: null,
+      referenceLatencyMs: 1,
+      candidateStatus: null,
+    });
+    const stats = c.finish();
+    expect(stats.overall.candidate_status).toEqual({ '200': 2, '404': 1 });
+    expect(Object.keys(stats.overall.candidate_status ?? {})).toEqual(['200', '404']);
+    expect(stats.by_tag.a?.candidate_status).toEqual({ '200': 2, '404': 1 });
+    expect(stats.by_tag.b?.candidate_status).toEqual({ '200': 1 });
+
+    const without = new StatsCollector();
+    without.record({ tags: ['a'], verdict: 'match', candidateLatencyMs: 1, referenceLatencyMs: 1 });
+    expect(without.finish().overall.candidate_status).toBeUndefined();
+  });
 });

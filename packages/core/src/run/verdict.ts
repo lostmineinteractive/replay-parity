@@ -22,6 +22,8 @@ export const InconclusiveKindSchema = z.enum([
   'control_failed',
   /** A threshold row had fewer successful samples than its minimum. */
   'insufficient_samples',
+  /** A threshold row needs a measurement the run did not take, such as the achieved rate. */
+  'not_measured',
   /** The run was stopped by SIGINT or SIGTERM before every selected exchange was sent. */
   'aborted',
 ]);

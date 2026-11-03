@@ -1,7 +1,13 @@
 import { stripUndefined } from '../json.js';
 import { decideVerdict, type InconclusiveCondition, type RunVerdict } from '../run/verdict.js';
 import { LATENCY_METRICS, metricValue, type RunStats, type TagStats } from '../stats/schema.js';
-import type { LatencyLimits, RatioLimits, ThresholdResult, Thresholds } from './schema.js';
+import type {
+  LatencyLimits,
+  RatioLimits,
+  StatusLimits,
+  ThresholdResult,
+  Thresholds,
+} from './schema.js';
 
 export interface ThresholdEvaluation {
   verdict: RunVerdict;
@@ -16,6 +22,16 @@ export interface ThresholdMeasurements {
   slip_max_ms?: number | undefined;
   /** Invariant violations per system, when the invariants ran. */
   invariant_violations?: { reference: number; candidate: number } | undefined;
+  /** The achieved request rate of the replay, in requests per second. */
+  achieved_rps?: number | undefined;
+}
+
+/** Rows that could not decide because a measurement was never taken, not for lack of samples. */
+const notMeasured = new WeakSet<ThresholdResult>();
+
+function unmeasured(row: ThresholdResult): ThresholdResult {
+  notMeasured.add(row);
+  return row;
 }
 
 function result(
@@ -78,19 +94,36 @@ function latencyRows(
   return rows;
 }
 
-function ratioRows(limits: RatioLimits, stats: TagStats, minimum: number): ThresholdResult[] {
+function ratioRows(
+  scope: string,
+  limits: RatioLimits,
+  stats: TagStats | undefined,
+  minimum: number,
+  idPrefix: string,
+): ThresholdResult[] {
   const rows: ThresholdResult[] = [];
   for (const metric of LATENCY_METRICS) {
     const key = `${metric}_ratio_max` as const;
     const limit = limits[key];
     if (limit === undefined) continue;
     const base = {
-      id: `latency.relative_to_reference.${key}`,
+      id: `${idPrefix}.${key}`,
       section: 'latency' as const,
-      scope: 'overall',
+      scope,
       metric: key,
       limit,
     };
+    if (stats === undefined) {
+      rows.push(
+        result({
+          ...base,
+          measured: null,
+          outcome: 'inconclusive',
+          detail: `no samples for tag "${scope}"`,
+        }),
+      );
+      continue;
+    }
     if (stats.candidate.count < minimum || stats.reference.count === 0) {
       rows.push(
         result({
@@ -102,23 +135,39 @@ function ratioRows(limits: RatioLimits, stats: TagStats, minimum: number): Thres
       );
       continue;
     }
-    const ref = metricValue(stats.reference, metric);
-    const cand = metricValue(stats.candidate, metric);
-    if (ref === 0) {
-      if (cand === 0) {
-        rows.push(result({ ...base, measured: 1, outcome: 1 <= limit ? 'pass' : 'fail' }));
-      } else {
-        // A measured fact about the data, not a harness limitation.
-        rows.push(
-          result({ ...base, measured: null, outcome: 'fail', detail: 'reference value is zero' }),
-        );
-      }
-      continue;
-    }
-    const measured = round(cand / ref);
-    rows.push(result({ ...base, measured, outcome: measured <= limit ? 'pass' : 'fail' }));
+    rows.push(
+      ratioOutcome(
+        base,
+        metricValue(stats.candidate, metric),
+        metricValue(stats.reference, metric),
+        'reference',
+      ),
+    );
   }
   return rows;
+}
+
+/** A row judged on `numerator / denominator` against its limit. */
+function ratioOutcome(
+  base: Omit<ThresholdResult, 'measured' | 'outcome' | 'detail'>,
+  numerator: number,
+  denominator: number,
+  denominatorName: string,
+): ThresholdResult {
+  if (denominator === 0) {
+    if (numerator === 0) {
+      return result({ ...base, measured: 1, outcome: 1 <= base.limit ? 'pass' : 'fail' });
+    }
+    // A measured fact about the data, not a harness limitation.
+    return result({
+      ...base,
+      measured: null,
+      outcome: 'fail',
+      detail: `${denominatorName} value is zero`,
+    });
+  }
+  const measured = round(numerator / denominator);
+  return result({ ...base, measured, outcome: measured <= base.limit ? 'pass' : 'fail' });
 }
 
 function correctnessRow(
@@ -176,15 +225,130 @@ function pacingRow(limit: number, measured: number | undefined): ThresholdResult
   });
 }
 
+function errorRow(
+  scope: string,
+  limit: number,
+  stats: TagStats | undefined,
+  id: string,
+): ThresholdResult {
+  const base = { id, section: 'errors' as const, scope, metric: 'rate_max', limit };
+  if (stats === undefined) {
+    return result({
+      ...base,
+      measured: null,
+      outcome: 'inconclusive',
+      detail: `no samples for tag "${scope}"`,
+    });
+  }
+  if (stats.count === 0) {
+    return result({ ...base, measured: null, outcome: 'inconclusive', detail: 'no samples' });
+  }
+  return result({
+    ...base,
+    measured: stats.error_rate,
+    outcome: stats.error_rate <= limit ? 'pass' : 'fail',
+  });
+}
+
+function statusRows(limits: StatusLimits, stats: RunStats): ThresholdResult[] {
+  const rows: ThresholdResult[] = [];
+  for (const tag of Object.keys(limits.by_tag).sort()) {
+    const codes = limits.by_tag[tag] as Record<string, { rate_max: number }>;
+    const tagStats = stats.by_tag[tag];
+    for (const code of Object.keys(codes).sort()) {
+      const base = {
+        id: `status.by_tag.${tag}.${code}.rate_max`,
+        section: 'status' as const,
+        scope: tag,
+        metric: `status_${code}_rate_max`,
+        limit: (codes[code] as { rate_max: number }).rate_max,
+      };
+      if (tagStats === undefined) {
+        rows.push(
+          result({
+            ...base,
+            measured: null,
+            outcome: 'inconclusive',
+            detail: `no samples for tag "${tag}"`,
+          }),
+        );
+      } else if (tagStats.compared === 0) {
+        rows.push(
+          result({
+            ...base,
+            measured: null,
+            outcome: 'inconclusive',
+            detail: 'no compared exchanges',
+          }),
+        );
+      } else if (tagStats.candidate_status === undefined) {
+        rows.push(
+          unmeasured(
+            result({
+              ...base,
+              measured: null,
+              outcome: 'inconclusive',
+              detail: 'candidate statuses were not recorded',
+            }),
+          ),
+        );
+      } else {
+        const seen = tagStats.candidate_status[code] ?? 0;
+        const measured = round(seen / tagStats.compared);
+        rows.push(
+          result({
+            ...base,
+            measured,
+            outcome: measured <= base.limit ? 'pass' : 'fail',
+            detail: `${seen} of ${tagStats.compared} compared exchanges answered ${code}`,
+          }),
+        );
+      }
+    }
+  }
+  return rows;
+}
+
+function throughputRow(
+  limit: number,
+  measured: number | undefined,
+  stats: RunStats,
+): ThresholdResult {
+  const base = {
+    id: 'throughput.achieved_rps_min',
+    section: 'throughput' as const,
+    scope: 'overall',
+    metric: 'achieved_rps_min',
+    limit,
+  };
+  if (measured === undefined) {
+    return unmeasured(
+      result({
+        ...base,
+        measured: null,
+        outcome: 'inconclusive',
+        detail: 'achieved rate was not measured',
+      }),
+    );
+  }
+  if (stats.overall.count === 0) {
+    return result({ ...base, measured: null, outcome: 'inconclusive', detail: 'no samples' });
+  }
+  return result({ ...base, measured, outcome: measured >= limit ? 'pass' : 'fail' });
+}
+
+function conditionKind(row: ThresholdResult): InconclusiveCondition['kind'] {
+  if (row.section === 'pacing') return 'schedule_not_held';
+  if (notMeasured.has(row)) return 'not_measured';
+  return 'insufficient_samples';
+}
+
 function conditionsFor(results: readonly ThresholdResult[]): InconclusiveCondition[] {
   const conditions: InconclusiveCondition[] = [];
   for (const row of results) {
     if (row.outcome !== 'inconclusive') continue;
     const detail = `${row.id}: ${row.detail ?? 'inconclusive'}`;
-    conditions.push({
-      kind: row.section === 'pacing' ? 'schedule_not_held' : 'insufficient_samples',
-      detail,
-    });
+    conditions.push({ kind: conditionKind(row), detail });
   }
   return conditions;
 }
@@ -217,9 +381,30 @@ export function evaluateThresholds(
       ...latencyRows(tag, limits, stats.by_tag[tag], `latency.by_tag.${tag}`, defaultMinimum),
     );
   }
+  const relative = thresholds.latency.relative_to_reference;
   results.push(
-    ...ratioRows(thresholds.latency.relative_to_reference, stats.overall, overallMinimum),
+    ...ratioRows(
+      'overall',
+      relative,
+      stats.overall,
+      overallMinimum,
+      'latency.relative_to_reference',
+    ),
   );
+  const relativeByTag = relative.by_tag ?? {};
+  for (const tag of Object.keys(relativeByTag).sort()) {
+    const limits = relativeByTag[tag] as RatioLimits;
+    const minimum = thresholds.latency.by_tag[tag]?.min_samples ?? defaultMinimum;
+    results.push(
+      ...ratioRows(
+        tag,
+        limits,
+        stats.by_tag[tag],
+        minimum,
+        `latency.relative_to_reference.by_tag.${tag}`,
+      ),
+    );
+  }
   if (thresholds.correctness.mismatch_rate_max !== undefined) {
     results.push(
       correctnessRow(
@@ -238,27 +423,20 @@ export function evaluateThresholds(
     );
   }
   if (thresholds.errors.rate_max !== undefined) {
-    const limit = thresholds.errors.rate_max;
-    const base = {
-      id: 'errors.rate_max',
-      section: 'errors' as const,
-      scope: 'overall',
-      metric: 'rate_max',
-      limit,
-    };
-    if (stats.overall.count === 0) {
-      results.push(
-        result({ ...base, measured: null, outcome: 'inconclusive', detail: 'no samples' }),
-      );
-    } else {
-      results.push(
-        result({
-          ...base,
-          measured: stats.overall.error_rate,
-          outcome: stats.overall.error_rate <= limit ? 'pass' : 'fail',
-        }),
-      );
-    }
+    results.push(errorRow('overall', thresholds.errors.rate_max, stats.overall, 'errors.rate_max'));
+  }
+  const errorsByTag = thresholds.errors.by_tag ?? {};
+  for (const tag of Object.keys(errorsByTag).sort()) {
+    const limit = (errorsByTag[tag] as { rate_max: number }).rate_max;
+    results.push(errorRow(tag, limit, stats.by_tag[tag], `errors.by_tag.${tag}.rate_max`));
+  }
+  if (thresholds.throughput?.achieved_rps_min !== undefined) {
+    results.push(
+      throughputRow(thresholds.throughput.achieved_rps_min, measurements.achieved_rps, stats),
+    );
+  }
+  if (thresholds.status !== undefined) {
+    results.push(...statusRows(thresholds.status, stats));
   }
   if (thresholds.pacing.slip_max_ms !== undefined) {
     results.push(pacingRow(thresholds.pacing.slip_max_ms, measurements.slip_max_ms));

@@ -5,7 +5,13 @@ import { evaluateThresholds } from './evaluate.js';
 import { emptyThresholds, parseThresholds } from './schema.js';
 
 function statsFrom(
-  samples: { tag: string; cand: number | null; ref: number; verdict?: 'match' | 'mismatch' }[],
+  samples: {
+    tag: string;
+    cand: number | null;
+    ref: number;
+    verdict?: 'match' | 'mismatch';
+    status?: number;
+  }[],
 ): RunStats {
   const c = new StatsCollector();
   for (const s of samples) {
@@ -14,6 +20,7 @@ function statsFrom(
       verdict: s.cand === null ? null : (s.verdict ?? 'match'),
       candidateLatencyMs: s.cand,
       referenceLatencyMs: s.ref,
+      ...(s.status === undefined ? {} : { candidateStatus: s.cand === null ? null : s.status }),
     });
   }
   return c.finish();
@@ -309,5 +316,169 @@ describe('evaluateThresholds', () => {
     const { verdict, results } = evaluateThresholds(t, baseline, { slip_max_ms: 3 });
     expect(results.every((r) => r.outcome === 'pass')).toBe(true);
     expect(verdict).toBe('pass');
+  });
+
+  it('evaluates ratios to the reference per tag', () => {
+    const t = parseThresholds(
+      'latency:\n  by_tag:\n    a: { min_samples: 3 }\n  relative_to_reference:\n    by_tag:\n      a: { p50_ratio_max: 1.6 }\n      b: { max_ratio_max: 1.2 }\n      ghost: { p99_ratio_max: 2 }\n',
+    );
+    const { verdict, results, inconclusive } = evaluateThresholds(t, baseline);
+    expect(results.map((r) => [r.id, r.section, r.scope, r.outcome, r.measured])).toEqual([
+      ['latency.relative_to_reference.by_tag.a.p50_ratio_max', 'latency', 'a', 'pass', 1.5003],
+      ['latency.relative_to_reference.by_tag.b.max_ratio_max', 'latency', 'b', 'fail', 1.25],
+      [
+        'latency.relative_to_reference.by_tag.ghost.p99_ratio_max',
+        'latency',
+        'ghost',
+        'inconclusive',
+        null,
+      ],
+    ]);
+    expect(verdict).toBe('fail');
+    expect(inconclusive).toEqual([
+      {
+        kind: 'insufficient_samples',
+        detail:
+          'latency.relative_to_reference.by_tag.ghost.p99_ratio_max: no samples for tag "ghost"',
+      },
+    ]);
+    // The per tag min_samples of the latency block applies to the tag's ratio rows.
+    const strict = parseThresholds(
+      'latency:\n  by_tag:\n    b: { min_samples: 2 }\n  relative_to_reference:\n    by_tag:\n      b: { max_ratio_max: 2 }\n',
+    );
+    expect(evaluateThresholds(strict, baseline).results[0]).toMatchObject({
+      outcome: 'inconclusive',
+      detail: '1 successful sample, minimum 2',
+    });
+  });
+
+  it('evaluates the error rate per tag', () => {
+    const t = parseThresholds(
+      'errors:\n  by_tag:\n    a: { rate_max: 0.4 }\n    b: { rate_max: 0.4 }\n    ghost: { rate_max: 0 }\n',
+    );
+    const stats = statsFrom([
+      { tag: 'a', cand: null, ref: 1 },
+      { tag: 'a', cand: 1, ref: 1 },
+      { tag: 'b', cand: 1, ref: 1 },
+    ]);
+    const { results } = evaluateThresholds(t, stats);
+    expect(results.map((r) => [r.id, r.section, r.scope, r.outcome, r.measured])).toEqual([
+      ['errors.by_tag.a.rate_max', 'errors', 'a', 'fail', 0.5],
+      ['errors.by_tag.b.rate_max', 'errors', 'b', 'pass', 0],
+      ['errors.by_tag.ghost.rate_max', 'errors', 'ghost', 'inconclusive', null],
+    ]);
+  });
+
+  it('gates the achieved request rate', () => {
+    const t = parseThresholds('throughput:\n  achieved_rps_min: 50\n');
+    const fast = evaluateThresholds(t, baseline, { achieved_rps: 80 });
+    expect(fast.results).toEqual([
+      {
+        id: 'throughput.achieved_rps_min',
+        section: 'throughput',
+        scope: 'overall',
+        metric: 'achieved_rps_min',
+        limit: 50,
+        measured: 80,
+        outcome: 'pass',
+      },
+    ]);
+    expect(evaluateThresholds(t, baseline, { achieved_rps: 49.9 }).verdict).toBe('fail');
+    const unmeasured = evaluateThresholds(t, baseline);
+    expect(unmeasured.results[0]).toMatchObject({
+      outcome: 'inconclusive',
+      detail: 'achieved rate was not measured',
+    });
+    expect(unmeasured.inconclusive).toEqual([
+      {
+        kind: 'not_measured',
+        detail: 'throughput.achieved_rps_min: achieved rate was not measured',
+      },
+    ]);
+    const empty = evaluateThresholds(t, new StatsCollector().finish(), { achieved_rps: 0 });
+    expect(empty.results[0]).toMatchObject({ outcome: 'inconclusive', detail: 'no samples' });
+  });
+
+  it('gates the share of a status code per tag over compared exchanges', () => {
+    const t = parseThresholds(
+      "status:\n  by_tag:\n    get-order: { '404': { rate_max: 0.25 }, '500': { rate_max: 0 } }\n    ghost: { '404': { rate_max: 0 } }\n",
+    );
+    const stats = statsFrom([
+      { tag: 'get-order', cand: 1, ref: 1, status: 200 },
+      { tag: 'get-order', cand: 1, ref: 1, status: 404 },
+      { tag: 'get-order', cand: 1, ref: 1, status: 200 },
+      { tag: 'get-order', cand: 1, ref: 1, status: 200 },
+      // An error is not a compared exchange and has no status.
+      { tag: 'get-order', cand: null, ref: 1, status: 0 },
+    ]);
+    expect(stats.by_tag['get-order']?.candidate_status).toEqual({ '200': 3, '404': 1 });
+    const { verdict, results } = evaluateThresholds(t, stats);
+    expect(results).toEqual([
+      {
+        id: 'status.by_tag.get-order.404.rate_max',
+        section: 'status',
+        scope: 'get-order',
+        metric: 'status_404_rate_max',
+        limit: 0.25,
+        measured: 0.25,
+        outcome: 'pass',
+        detail: '1 of 4 compared exchanges answered 404',
+      },
+      {
+        id: 'status.by_tag.get-order.500.rate_max',
+        section: 'status',
+        scope: 'get-order',
+        metric: 'status_500_rate_max',
+        limit: 0,
+        measured: 0,
+        outcome: 'pass',
+        detail: '0 of 4 compared exchanges answered 500',
+      },
+      {
+        id: 'status.by_tag.ghost.404.rate_max',
+        section: 'status',
+        scope: 'ghost',
+        metric: 'status_404_rate_max',
+        limit: 0,
+        measured: null,
+        outcome: 'inconclusive',
+        detail: 'no samples for tag "ghost"',
+      },
+    ]);
+    expect(verdict).toBe('inconclusive');
+    const strict = parseThresholds(
+      "status:\n  by_tag:\n    get-order: { '404': { rate_max: 0.2 } }\n",
+    );
+    expect(evaluateThresholds(strict, stats).verdict).toBe('fail');
+  });
+
+  it('is inconclusive on a status row it cannot decide', () => {
+    const t = parseThresholds("status:\n  by_tag:\n    a: { '404': { rate_max: 0 } }\n");
+    // Statistics collected without statuses, as in a run written before they existed.
+    const noStatuses = evaluateThresholds(t, baseline);
+    expect(noStatuses.results[0]).toMatchObject({
+      outcome: 'inconclusive',
+      detail: 'candidate statuses were not recorded',
+    });
+    expect(noStatuses.inconclusive[0]?.kind).toBe('not_measured');
+    const allErrors = statsFrom([{ tag: 'a', cand: null, ref: 1, status: 0 }]);
+    expect(evaluateThresholds(t, allErrors).results[0]).toMatchObject({
+      outcome: 'inconclusive',
+      detail: 'no compared exchanges',
+    });
+  });
+
+  it('keeps the rows of a file that uses no new key', () => {
+    const t = parseThresholds(
+      'latency:\n  overall: { p99_ms: 100 }\n  relative_to_reference: { p99_ratio_max: 9 }\ncorrectness:\n  mismatch_rate_max: 0.5\nerrors:\n  rate_max: 0\npacing:\n  slip_max_ms: 10\n',
+    );
+    const { results } = evaluateThresholds(t, baseline, { slip_max_ms: 3, achieved_rps: 1 });
+    expect(results.map((r) => r.id)).toEqual([
+      'latency.overall.p99_ms',
+      'latency.relative_to_reference.p99_ratio_max',
+      'correctness.mismatch_rate_max',
+      'errors.rate_max',
+      'pacing.slip_max_ms',
+    ]);
   });
 });

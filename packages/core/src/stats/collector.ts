@@ -9,6 +9,11 @@ export interface StatsSample {
   /** `null` when the exchange errored. */
   candidateLatencyMs: number | null;
   referenceLatencyMs: number;
+  /**
+   * The candidate's status code, or null when the exchange errored. When no sample of a
+   * bucket gives one, its statistics carry no `candidate_status`.
+   */
+  candidateStatus?: number | null | undefined;
 }
 
 class Bucket {
@@ -19,8 +24,11 @@ class Bucket {
   mismatches = 0;
   readonly candidate = new LatencyAccumulator();
   readonly reference = new LatencyAccumulator();
+  /** Compared exchanges per candidate status. Null until a sample gives a status. */
+  statuses: Map<number, number> | null = null;
 
   record(sample: StatsSample): void {
+    if (sample.candidateStatus !== undefined) this.statuses ??= new Map();
     this.count += 1;
     this.reference.record(sample.referenceLatencyMs);
     if (sample.candidateLatencyMs === null || sample.verdict === null) {
@@ -28,6 +36,10 @@ class Bucket {
       return;
     }
     this.candidate.record(sample.candidateLatencyMs);
+    if (this.statuses !== null && typeof sample.candidateStatus === 'number') {
+      const code = sample.candidateStatus;
+      this.statuses.set(code, (this.statuses.get(code) ?? 0) + 1);
+    }
     if (sample.verdict === 'match') this.matches += 1;
     else if (sample.verdict === 'tolerated') this.tolerated += 1;
     else this.mismatches += 1;
@@ -35,7 +47,7 @@ class Bucket {
 
   stats(): TagStats {
     const compared = this.count - this.errors;
-    return {
+    const stats: TagStats = {
       count: this.count,
       errors: this.errors,
       error_rate: this.count === 0 ? 0 : round(this.errors / this.count),
@@ -51,6 +63,14 @@ class Bucket {
         reference: this.reference.binCounts(),
       },
     };
+    if (this.statuses !== null) {
+      const candidate_status: Record<string, number> = {};
+      for (const code of [...this.statuses.keys()].sort((a, b) => a - b)) {
+        candidate_status[String(code)] = this.statuses.get(code) as number;
+      }
+      stats.candidate_status = candidate_status;
+    }
+    return stats;
   }
 }
 

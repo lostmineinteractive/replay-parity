@@ -94,6 +94,47 @@ describe('parseThresholds', () => {
     ).toThrow(/p99_ratio_max/);
   });
 
+  it('parses the completed matrix and leaves every new key absent when unused', () => {
+    const t = parseThresholds(
+      [
+        'latency:',
+        '  relative_to_reference:',
+        '    p99_ratio_max: 1.5',
+        '    by_tag:',
+        '      a: { p50_ratio_max: 1.2 }',
+        'errors:',
+        '  by_tag:',
+        '    a: { rate_max: 0.01 }',
+        'throughput: { achieved_rps_min: 1 }',
+      ].join('\n'),
+    );
+    expect(t.latency.relative_to_reference).toEqual({
+      p99_ratio_max: 1.5,
+      by_tag: { a: { p50_ratio_max: 1.2 } },
+    });
+    expect(t.errors.by_tag).toEqual({ a: { rate_max: 0.01 } });
+    expect(t.throughput).toEqual({ achieved_rps_min: 1 });
+    expect(t.status).toBeUndefined();
+    const s = parseThresholds(
+      "status:\n  by_tag:\n    get-order: { '404': { rate_max: 0.05 }, '500': { rate_max: 0 } }\n",
+    );
+    expect(s.status).toEqual({
+      by_tag: { 'get-order': { '404': { rate_max: 0.05 }, '500': { rate_max: 0 } } },
+    });
+    expect(() =>
+      parseThresholds("status:\n  by_tag:\n    a: { '4xx': { rate_max: 0 } }\n"),
+    ).toThrow(/invalid key in record at status\.by_tag\.a\.4xx/i);
+    expect(() =>
+      parseThresholds("status:\n  by_tag:\n    a: { '404': { rate_max: 2 } }\n"),
+    ).toThrow(/rate_max/);
+    expect(() => parseThresholds('throughput: { achieved_rps_min: -1 }\n')).toThrow(
+      /achieved_rps_min/,
+    );
+    expect(() => parseThresholds('errors:\n  by_tag:\n    a: { rate: 0 }\n')).toThrow(
+      /unknown key/,
+    );
+  });
+
   it('loads from a file', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'rp-thr-'));
     const path = join(dir, 'thresholds.yaml');
