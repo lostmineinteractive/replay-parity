@@ -75,6 +75,8 @@ export interface ReplayCommandOptions extends UpstreamFlags, AdapterModuleFlags 
   thresholds?: string;
   adapter: 'http' | 'bus';
   busUrl?: string;
+  busGroup?: string;
+  busConsumer?: string;
   header: string[];
   headersFile?: string;
   query: string[];
@@ -304,7 +306,10 @@ export async function runReplay(
     });
   } else if (options.adapter === 'bus') {
     if (options.busUrl === undefined) throw new ConfigError('--adapter bus needs --bus-url');
-    bus = await RedisStreamsBus.connect(options.busUrl);
+    bus = await RedisStreamsBus.connect(options.busUrl, {
+      group: options.busGroup,
+      consumer: options.busConsumer,
+    });
     adapter = await BusAdapter.create(bus, { timeoutMs: options.timeoutMs });
   } else if (customUpstream(upstream)) {
     adapter = new HttpAdapter(options.target, {
@@ -436,6 +441,8 @@ export function replayCommand(
     .option('--thresholds <path>', 'thresholds file (thresholds.yaml)')
     .addOption(new Option('--adapter <name>', 'transport').choices(['http', 'bus']).default('http'))
     .option('--bus-url <url>', 'Redis URL for the bus adapter')
+    .option('--bus-group <name>', 'Redis consumer group the bus adapter reads replies through')
+    .option('--bus-consumer <name>', 'consumer name within --bus-group, default a random name')
     .option(
       '--header <name: value>',
       'header applied to every request over the recorded value, repeatable',
