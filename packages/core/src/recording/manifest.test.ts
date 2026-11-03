@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -13,7 +14,7 @@ import {
   parseManifestRecord,
 } from './manifest.js';
 import { migrateRecording } from './migrate.js';
-import { validateRecording } from './ops.js';
+import { partFileName, validateRecording } from './ops.js';
 import {
   RecordingParseError,
   iterateRecording,
@@ -21,7 +22,7 @@ import {
   readRecording,
   readRecordingManifest,
 } from './reader.js';
-import { RecordingWriter } from './writer.js';
+import { RecordingWriter, isGzipPath } from './writer.js';
 
 const DEMO = resolve(import.meta.dirname, '../../../../demo/recording.jsonl');
 const DEMO_SHA256 = '7cda06869f89dfd093a305fe21162d2f499bd809cf2ac852dc0189124d438503';
@@ -224,5 +225,72 @@ describe('migrateRecording', () => {
       ConfigError,
     );
     await expect(migrateRecording(bad, bad, manifest)).rejects.toThrow(/must differ/);
+  });
+});
+
+describe('gzip recordings', () => {
+  it('writes gzip for a .gz path and reads it back with its manifest', async () => {
+    const path = join(await tempDir(), 'rec.jsonl.gz');
+    expect(isGzipPath(path)).toBe(true);
+    expect(isGzipPath('rec.jsonl')).toBe(false);
+    const writer = await RecordingWriter.open(path, { manifest });
+    expect(writer.gzip).toBe(true);
+    for (let i = 0; i < 50; i += 1) await writer.write(makeExchange({ index: i, offset_ms: i }));
+    await writer.flush();
+    await writer.close();
+    const raw = await readFile(path);
+    expect(raw[0]).toBe(0x1f);
+    expect(raw[1]).toBe(0x8b);
+    const text = gunzipSync(raw).toString('utf8');
+    expect(writer.bytes).toBe(Buffer.byteLength(text));
+    expect(text.startsWith(manifestLine(manifest))).toBe(true);
+    expect(await readRecordingManifest(path)).toEqual(manifest);
+    expect(await readRecording(path)).toEqual(parseRecordingText(text));
+    expect((await validateRecording(path)).exchanges).toBe(50);
+  });
+
+  it('appends a second gzip member that reads as one stream', async () => {
+    const path = join(await tempDir(), 'rec.jsonl.gz');
+    const first = await RecordingWriter.open(path);
+    await first.write(makeExchange({ index: 0, offset_ms: 0 }));
+    await first.close();
+    const second = await RecordingWriter.open(path, { manifest });
+    expect(second.wroteManifest).toBe(false);
+    await second.write(makeExchange({ index: 1, offset_ms: 5 }));
+    await second.close();
+    expect((await readRecording(path)).map((e) => e.offset_ms)).toEqual([0, 5]);
+  });
+
+  it('reads a gzip file without a final newline and with CRLF endings', async () => {
+    const path = join(await tempDir(), 'crlf.jsonl.gz');
+    await writeFile(path, gzipSync(`${line(0)}\r\n${line(1)}`));
+    expect(await readRecording(path)).toHaveLength(2);
+  });
+
+  it('names the problem with a file that is not gzip and with a missing file', async () => {
+    const dir = await tempDir();
+    const path = join(dir, 'plain.jsonl.gz');
+    await writeFile(path, `${line(0)}\n`);
+    await expect(readRecording(path)).rejects.toThrow(/header/);
+    await expect(validateRecording(join(dir, 'none.jsonl.gz'))).rejects.toThrow(ConfigError);
+  });
+
+  it('keeps gzip in split part names', () => {
+    expect(partFileName('/x/rec.jsonl.gz', 3)).toBe('rec-0003.jsonl.gz');
+    expect(partFileName('/x/rec.jsonl', 3)).toBe('rec-0003.jsonl');
+  });
+
+  it('migrates a gzip input to a gzip output with the exchange bytes unchanged', async () => {
+    const dir = await tempDir();
+    const input = join(dir, 'in.jsonl.gz');
+    const text = `${line(0)}\n${line(1)}\n`;
+    await writeFile(input, gzipSync(text));
+    await appendFile(input, gzipSync(`${line(2)}\n`));
+    const out = join(dir, 'out.jsonl.gz');
+    const result = await migrateRecording(input, out, manifest);
+    expect(result.exchanges).toBe(3);
+    expect(gunzipSync(await readFile(out)).toString('utf8')).toBe(
+      `${manifestLine(manifest)}${text}${line(2)}\n`,
+    );
   });
 });

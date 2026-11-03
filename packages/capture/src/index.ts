@@ -1,5 +1,6 @@
 export {
   CaptureServer,
+  type CaptureEndReason,
   type CaptureListenTls,
   type CaptureOptions,
   type CaptureStats,
@@ -15,3 +16,11 @@ export {
   type SessionSamplerOptions,
   type SessionSelector,
 } from './session-sampler.js';
+export {
+  CaptureOutput,
+  nextPartIndex,
+  partPath,
+  usesParts,
+  type CaptureOutputOptions,
+  type RotationOptions,
+} from './capture-output.js';

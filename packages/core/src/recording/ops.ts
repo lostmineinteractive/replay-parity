@@ -17,7 +17,7 @@ import {
 import { REDACTED } from './redact.js';
 import type { RecordingManifest } from './manifest.js';
 import type { Exchange } from './types.js';
-import { RecordingWriter } from './writer.js';
+import { RecordingWriter, isGzipPath } from './writer.js';
 
 /**
  * Operations over recording files: validate, stats, filter, sample, split,
@@ -603,10 +603,11 @@ export interface SplitResult {
   parts: SplitPart[];
 }
 
-/** `recording.jsonl` and 3 give `recording-0003.jsonl`. */
+/** `recording.jsonl` and 3 give `recording-0003.jsonl`; a gzip input gives gzip parts, `recording-0003.jsonl.gz`. */
 export function partFileName(inPath: string, index: number): string {
-  const stem = basename(inPath).replace(/\.jsonl$/i, '');
-  return `${stem}-${String(index).padStart(4, '0')}.jsonl`;
+  const gzip = isGzipPath(inPath);
+  const stem = basename(inPath).replace(/(\.jsonl)?(\.gz)?$/i, '');
+  return `${stem}-${String(index).padStart(4, '0')}.jsonl${gzip ? '.gz' : ''}`;
 }
 
 /**

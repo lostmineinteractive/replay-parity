@@ -1,4 +1,5 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { gzipSync } from 'node:zlib';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -240,5 +241,125 @@ describe('rp capture sampling flags', () => {
       sample: { fraction: 0.5, seed: 9 },
       session_key: 'header:x-session',
     });
+  });
+});
+
+describe('every rp recording subcommand accepts gzip', () => {
+  let gz: string;
+  let count: number;
+  beforeAll(async () => {
+    gz = join(dir, 'demo.jsonl.gz');
+    await writeFile(gz, gzipSync(await readFile(DEMO)));
+    count = (await readRecording(DEMO)).length;
+  });
+
+  it('validate, stats, and scan read it', async () => {
+    const validate = await rp(['recording', 'validate', gz]);
+    expect(validate.code, validate.err).toBe(0);
+    expect(validate.out).toContain(`valid, ${count} exchanges`);
+    const stats = await rp(['recording', 'stats', gz, '--json']);
+    expect(stats.code, stats.err).toBe(0);
+    expect((JSON.parse(stats.out) as { exchanges: number }).exchanges).toBe(count);
+    const scan = await rp(['recording', 'scan', gz]);
+    expect(scan.code, scan.err).toBe(0);
+    expect(scan.out).toContain(`scanned ${count} exchanges`);
+  });
+
+  it('filter, sample, split, merge, and migrate read it and write gzip for a .gz output', async () => {
+    const filtered = join(dir, 'filtered.jsonl.gz');
+    expect(
+      (await rp(['recording', 'filter', gz, '--out', filtered, '--method', 'POST'])).code,
+    ).toBe(0);
+    const posts = (await readRecording(filtered)).length;
+    expect(posts).toBeGreaterThan(0);
+    expect(posts).toBe(
+      (await readRecording(DEMO)).filter((e) => e.request.method === 'POST').length,
+    );
+
+    const sampled = join(dir, 'sampled.jsonl');
+    const sample = await rp([
+      'recording',
+      'sample',
+      gz,
+      '--out',
+      sampled,
+      '--fraction',
+      '0.5',
+      '--seed',
+      '1',
+    ]);
+    expect(sample.code, sample.err).toBe(0);
+
+    const parts = join(dir, 'parts');
+    const split = await rp(['recording', 'split', gz, '--out-dir', parts, '--every', '100']);
+    expect(split.code, split.err).toBe(0);
+    const names = (await readdir(parts)).sort();
+    expect(names[0]).toBe('demo-0001.jsonl.gz');
+
+    const merged = join(dir, 'merged.jsonl');
+    const merge = await rp([
+      'recording',
+      'merge',
+      ...names.map((n) => join(parts, n)),
+      '--out',
+      merged,
+    ]);
+    expect(merge.code, merge.err).toBe(0);
+    expect(await readRecording(merged)).toHaveLength(count);
+
+    const migrated = join(dir, 'migrated.jsonl.gz');
+    expect((await rp(['recording', 'migrate', gz, '--out', migrated])).code).toBe(0);
+    expect(await readRecording(migrated)).toEqual(await readRecording(DEMO));
+    expect(await readRecordingManifest(migrated)).not.toBeNull();
+  });
+});
+
+describe('rp capture limits, rotation, and gzip', () => {
+  it('ends by itself after --max-exchanges with the same close as a signal', async () => {
+    const out = join(dir, 'limited.jsonl');
+    const capture = await startCapture(['--out', out, '--max-exchanges', '2']);
+    for (let i = 0; i < 2; i += 1) await fetch(`${capture.url}/l/${i}`).then((r) => r.text());
+    const res = await capture.done;
+    expect(res.code, res.err).toBe(0);
+    expect(res.err).toContain('capture reached --max-exchanges 2, closing');
+    expect(res.err).toContain('capture closed: 2 requests seen, 2 recorded');
+    expect(await readRecording(out)).toHaveLength(2);
+  });
+
+  it('ends by itself after --duration', async () => {
+    const out = join(dir, 'timed.jsonl');
+    const capture = await startCapture(['--out', out, '--duration', '100']);
+    const res = await capture.done;
+    expect(res.code, res.err).toBe(0);
+    expect(res.err).toContain('capture reached --duration 100 ms, closing');
+  });
+
+  it('writes gzip parts with --gzip and --rotate-bytes and names them', async () => {
+    const sub = await mkdtemp(join(dir, 'rotate-'));
+    const out = join(sub, 'cap.jsonl');
+    const capture = await startCapture([
+      '--out',
+      out,
+      '--gzip',
+      '--rotate-bytes',
+      '600',
+      '--max-exchanges',
+      '4',
+    ]);
+    for (let i = 0; i < 4; i += 1) await fetch(`${capture.url}/r/${i}`).then((r) => r.text());
+    const res = await capture.done;
+    expect(res.code, res.err).toBe(0);
+    const names = (await readdir(sub)).sort();
+    expect(names.length).toBeGreaterThan(1);
+    expect(names.every((n) => /^cap\.\d{4}\.jsonl\.gz$/.test(n))).toBe(true);
+    expect(res.err).toContain(`wrote ${names.length} parts`);
+    let total = 0;
+    for (const n of names) {
+      expect((await readRecordingManifest(join(sub, n)))?.part).toBe(Number(n.slice(4, 8)));
+      total += (await readRecording(join(sub, n))).length;
+    }
+    expect(total).toBe(4);
+    const validate = await rp(['recording', 'validate', join(sub, names[1] as string)]);
+    expect(validate.out).toContain('part 2');
   });
 });

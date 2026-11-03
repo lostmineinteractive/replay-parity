@@ -1,5 +1,10 @@
 import { once } from 'node:events';
-import { CaptureServer, parseTagRule, type CaptureStats } from '@replay-parity/capture';
+import {
+  CaptureServer,
+  parseTagRule,
+  type CaptureEndReason,
+  type CaptureStats,
+} from '@replay-parity/capture';
 import {
   DEFAULT_HEARTBEAT_MS,
   ConfigError,
@@ -42,6 +47,11 @@ export interface CaptureCommandOptions extends UpstreamFlags {
   progressEvery?: number;
   /** With `--progress`, print the line again after this long without one. 0 disables. Default 60000. */
   heartbeatMs?: number;
+  rotateBytes?: number;
+  rotateInterval?: number;
+  gzip?: boolean;
+  maxExchanges?: number;
+  duration?: number;
   /** The version written in the manifest of a new file. Default 0.0.0. */
   toolVersion?: string;
 }
@@ -53,7 +63,10 @@ export function formatCaptureProgress(stats: CaptureStats, elapsedMs: number): s
   return `capture seen ${stats.seen} recorded ${stats.recorded} failed ${stats.failed} elapsed ${formatDuration(elapsedMs)}`;
 }
 
-/** Runs the capture proxy until `signal` aborts, then flushes and returns 0. */
+/**
+ * Runs the capture proxy until `signal` aborts or the capture reaches
+ * `--max-exchanges` or `--duration`, then flushes and returns 0.
+ */
 export async function runCapture(
   options: CaptureCommandOptions,
   streams: CliStreams,
@@ -87,6 +100,11 @@ export async function runCapture(
     maxBodyBytes: options.maxBodyBytes,
     upstreamTimeoutMs: options.upstreamTimeoutMs,
     toolVersion: options.toolVersion ?? '0.0.0',
+    rotateBytes: options.rotateBytes,
+    rotateIntervalMs: options.rotateInterval,
+    gzip: options.gzip === true ? true : undefined,
+    maxExchanges: options.maxExchanges,
+    durationMs: options.duration,
     onError: (error, context) =>
       log.error(`capture: ${context}: ${String(error)}`, { context, error: String(error) }),
   });
@@ -128,7 +146,16 @@ export async function runCapture(
   };
   const poll = progress === undefined ? undefined : setInterval(sync, CAPTURE_POLL_MS);
   poll?.unref();
-  if (!signal.aborted) await once(signal, 'abort');
+  let reason: CaptureEndReason | 'signal' = 'signal';
+  if (!signal.aborted) {
+    const aborted = once(signal, 'abort').then(() => 'signal' as const);
+    reason = await Promise.race([aborted, capture.ended]);
+  }
+  if (reason === 'max-exchanges') {
+    log.info(`capture reached --max-exchanges ${options.maxExchanges ?? ''}, closing`, { reason });
+  } else if (reason === 'duration') {
+    log.info(`capture reached --duration ${options.duration ?? ''} ms, closing`, { reason });
+  }
   if (poll !== undefined) clearInterval(poll);
   await capture.close();
   if (progress !== undefined) {
@@ -136,6 +163,12 @@ export async function runCapture(
     endProgress(streams, progress);
   }
   const { seen, recorded, failed } = capture.stats;
+  const files = capture.files;
+  if (files.length > 1 || files[0] !== options.out) {
+    log.info(`wrote ${files.length} part${files.length === 1 ? '' : 's'}: ${files.join(', ')}`, {
+      files,
+    });
+  }
   log.info(
     `capture closed: ${seen} requests seen, ${recorded} recorded, ${failed} failed upstream`,
     { seen, recorded, failed },
@@ -151,7 +184,7 @@ export function captureCommand(
 ): Command {
   const command = new Command('capture')
     .description(
-      'Run the recording reverse proxy in front of the reference system until SIGINT or SIGTERM.',
+      'Run the recording reverse proxy in front of the reference system until SIGINT, SIGTERM, --max-exchanges, or --duration.',
     )
     .addOption(
       new Option('--listen <addr>', 'address to listen on, as [host]:port')
@@ -159,7 +192,10 @@ export function captureCommand(
         .argParser(parseListen),
     )
     .requiredOption('--target <url>', 'base URL of the reference system to forward to')
-    .requiredOption('--out <path>', 'recording file to append to')
+    .requiredOption(
+      '--out <path>',
+      'recording file to append to; with rotation or --gzip, the stem of the numbered parts',
+    )
     .option(
       '--tag-rule <rule>',
       'tag rule "[METHOD ]<glob>=<tag>", first match wins, repeatable',
@@ -202,6 +238,31 @@ export function captureCommand(
         .argParser(nonNegativeInt),
     )
     .option('--no-append', 'start a new recording file instead of appending')
+    .addOption(
+      new Option(
+        '--rotate-bytes <n>',
+        'write numbered parts, starting a new one once a part holds this many bytes before compression',
+      ).argParser(positiveInt),
+    )
+    .addOption(
+      new Option(
+        '--rotate-interval <ms>',
+        'write numbered parts, starting a new one once an exchange arrives this long after the first of its part',
+      ).argParser(positiveInt),
+    )
+    .option('--gzip', 'write numbered gzip parts, <stem>.0001.jsonl.gz')
+    .addOption(
+      new Option(
+        '--max-exchanges <n>',
+        'end the capture after recording this many exchanges, closing as on a signal',
+      ).argParser(positiveInt),
+    )
+    .addOption(
+      new Option(
+        '--duration <ms>',
+        'end the capture this long after it starts listening, closing as on a signal',
+      ).argParser(positiveInt),
+    )
     .addOption(
       new Option('--upstream-timeout-ms <n>', 'upstream headers and body timeout')
         .default(30_000)

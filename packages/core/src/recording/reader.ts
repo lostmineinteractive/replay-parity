@@ -1,7 +1,10 @@
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
+import { StringDecoder } from 'node:string_decoder';
+import { createGunzip } from 'node:zlib';
 import { ExchangeSchema, type Exchange } from './types.js';
 import { isManifestRecord, parseManifestRecord, type RecordingManifest } from './manifest.js';
+import { isGzipPath } from './writer.js';
 import { formatZodError } from '../yaml.js';
 
 export class RecordingParseError extends Error {
@@ -97,12 +100,46 @@ export function parseRecordingText(text: string): Exchange[] {
 }
 
 /**
+ * Splits decoded text chunks into lines on `\n`, dropping a `\r` before it.
+ * A last line without a newline is yielded too.
+ */
+async function* splitLines(chunks: AsyncIterable<Buffer>): AsyncGenerator<string, void, undefined> {
+  const decoder = new StringDecoder('utf8');
+  let rest = '';
+  for await (const chunk of chunks) {
+    rest += decoder.write(chunk);
+    let at = rest.indexOf('\n');
+    while (at >= 0) {
+      const line = rest.slice(0, at);
+      yield line.endsWith('\r') ? line.slice(0, -1) : line;
+      rest = rest.slice(at + 1);
+      at = rest.indexOf('\n');
+    }
+  }
+  rest += decoder.end();
+  if (rest.length > 0) yield rest.endsWith('\r') ? rest.slice(0, -1) : rest;
+}
+
+/**
  * The text lines of a recording file, with the stream closed when the
- * consumer stops early.
+ * consumer stops early. A path ending in `.gz` is decompressed on the way,
+ * and a gzip file of several members reads as one.
  */
 export async function* readRecordingTextLines(
   path: string,
 ): AsyncGenerator<string, void, undefined> {
+  if (isGzipPath(path)) {
+    const file = createReadStream(path);
+    const gunzip = createGunzip();
+    file.on('error', (err) => gunzip.destroy(err));
+    try {
+      yield* splitLines(file.pipe(gunzip));
+    } finally {
+      gunzip.destroy();
+      file.destroy();
+    }
+    return;
+  }
   const input = createReadStream(path, { encoding: 'utf8' });
   const rl = createInterface({ input, crlfDelay: Infinity });
   try {

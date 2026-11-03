@@ -9,7 +9,6 @@ import {
   DEFAULT_MAX_BODY_BYTES,
   DEFAULT_REDACTED_HEADERS,
   DEFAULT_REDACTED_QUERY,
-  RecordingWriter,
   buildManifest,
   normalizeHeaders,
   redactHeaders,
@@ -21,6 +20,7 @@ import {
 } from '@replay-parity/core';
 import { Pool, type Dispatcher } from 'undici';
 import { CappedBody } from './capped-body.js';
+import { CaptureOutput } from './capture-output.js';
 import { OrderedSink } from './ordered-sink.js';
 import { SessionSampler, parseSessionSelector, type SessionDecision } from './session-sampler.js';
 import { formatTagRule, tagsFor, type TagRule } from './tag-rules.js';
@@ -77,6 +77,16 @@ export interface CaptureOptions {
   maxBodyBytes?: number;
   /** Upstream headers and body timeout in milliseconds. Default 30000. */
   upstreamTimeoutMs?: number;
+  /** Start a new part once a part holds this many bytes of JSON Lines, before compression. */
+  rotateBytes?: number | undefined;
+  /** Start a new part once an exchange arrives this many milliseconds after the part's first. */
+  rotateIntervalMs?: number | undefined;
+  /** Write gzip. With any of the three rotation options the capture writes numbered parts. */
+  gzip?: boolean | undefined;
+  /** End the capture once this many exchanges are recorded. See `ended`. */
+  maxExchanges?: number | undefined;
+  /** End the capture this many milliseconds after `listen`. See `ended`. */
+  durationMs?: number | undefined;
   /**
    * The version written in the manifest. When given, a manifest line starts
    * the file if the file is new or empty. A file that already has content is
@@ -89,6 +99,9 @@ export interface CaptureOptions {
   ulid?: () => string;
   onError?: (error: unknown, context: string) => void;
 }
+
+/** Why a capture ended on its own. */
+export type CaptureEndReason = 'max-exchanges' | 'duration';
 
 export interface CaptureStats {
   /** Requests received. */
@@ -246,7 +259,7 @@ function sendError(res: ServerResponse, status: number, error: string): void {
 export class CaptureServer {
   private readonly server: Server | HttpsServer;
   private readonly pool: Pool;
-  private readonly writer: RecordingWriter;
+  private readonly output: CaptureOutput;
   private readonly sink: OrderedSink<PendingExchange>;
   private readonly tagRules: readonly TagRule[];
   private readonly sample: number;
@@ -260,14 +273,29 @@ export class CaptureServer {
   private readonly nextId: () => string;
   private readonly onError: (error: unknown, context: string) => void;
   private readonly seed: number | null;
+  private readonly maxExchanges: number | undefined;
+  private readonly durationMs: number | undefined;
+  private durationTimer: NodeJS.Timeout | null = null;
+  private endWith: (reason: CaptureEndReason) => void = () => undefined;
+  /**
+   * Resolves when the capture reaches `maxExchanges` or `durationMs` on its
+   * own. The owner then calls `close`, as it does on a signal. Never
+   * resolves when neither limit is set.
+   */
+  readonly ended: Promise<CaptureEndReason>;
   private firstTs: number | null = null;
   private inflight = 0;
   private drainWaiters: (() => void)[] = [];
   private closing = false;
   private readonly counts: CaptureStats = { seen: 0, recorded: 0, failed: 0 };
 
-  private constructor(options: CaptureOptions, writer: RecordingWriter, seed: number | null) {
-    this.writer = writer;
+  private constructor(options: CaptureOptions, output: CaptureOutput, seed: number | null) {
+    this.output = output;
+    this.maxExchanges = options.maxExchanges;
+    this.durationMs = options.durationMs;
+    this.ended = new Promise((resolve) => {
+      this.endWith = resolve;
+    });
     this.tagRules = options.tagRules ?? [];
     this.sample = options.sample ?? 1;
     if (!(this.sample > 0 && this.sample <= 1)) {
@@ -341,14 +369,27 @@ export class CaptureServer {
             seed,
             session_key: selector?.text ?? null,
           });
-    const writer = await RecordingWriter.open(options.out, {
+    for (const [name, value] of [
+      ['maxExchanges', options.maxExchanges],
+      ['durationMs', options.durationMs],
+    ] as const) {
+      if (value !== undefined && !(Number.isInteger(value) && value > 0)) {
+        throw new RangeError(`${name} must be a positive integer, got ${value}`);
+      }
+    }
+    const output = await CaptureOutput.open({
+      out: options.out,
       append: options.append ?? true,
       manifest,
+      rotateBytes: options.rotateBytes,
+      rotateIntervalMs: options.rotateIntervalMs,
+      gzip: options.gzip,
+      now: options.now ?? Date.now,
     });
     try {
-      return new CaptureServer(options, writer, seed);
+      return new CaptureServer(options, output, seed);
     } catch (err) {
-      await writer.close();
+      await output.close();
       throw err;
     }
   }
@@ -356,6 +397,11 @@ export class CaptureServer {
   /** The seed of the session hash, or null without `sampleBy`. */
   get sampleSeed(): number | null {
     return this.seed;
+  }
+
+  /** The recording files written so far: the `out` file, or every part in order. */
+  get files(): string[] {
+    return this.output.paths;
   }
 
   get stats(): CaptureStats {
@@ -375,6 +421,9 @@ export class CaptureServer {
         resolve();
       });
     });
+    if (this.durationMs !== undefined && this.durationTimer === null) {
+      this.durationTimer = setTimeout(() => this.endWith('duration'), this.durationMs);
+    }
     return this.address as AddressInfo;
   }
 
@@ -382,6 +431,7 @@ export class CaptureServer {
   async close(): Promise<void> {
     if (this.closing) return;
     this.closing = true;
+    if (this.durationTimer !== null) clearTimeout(this.durationTimer);
     const closed = new Promise<void>((resolve) => this.server.close(() => resolve()));
     this.server.closeIdleConnections();
     if (this.inflight > 0) {
@@ -390,14 +440,17 @@ export class CaptureServer {
     this.server.closeIdleConnections();
     await closed;
     await this.sink.idle();
-    await this.writer.close();
+    await this.output.close();
     await this.pool.close();
   }
 
   private async persist(item: PendingExchange): Promise<void> {
+    // Requests already in flight when the limit is reached are answered but not recorded.
+    if (this.maxExchanges !== undefined && this.counts.recorded >= this.maxExchanges) return;
     this.firstTs ??= item.tsMs;
-    await this.writer.write({ ...item.exchange, offset_ms: item.tsMs - this.firstTs });
+    await this.output.write({ ...item.exchange, offset_ms: item.tsMs - this.firstTs }, item.tsMs);
     this.counts.recorded += 1;
+    if (this.counts.recorded === this.maxExchanges) this.endWith('max-exchanges');
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {

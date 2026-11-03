@@ -1,9 +1,11 @@
 import { createReadStream, createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
+import { createGunzip, createGzip } from 'node:zlib';
 import { resolve } from 'node:path';
 import { ConfigError } from '../yaml.js';
 import { manifestLine, type RecordingManifest } from './manifest.js';
 import { validateRecording } from './ops.js';
+import { isGzipPath } from './writer.js';
 
 export interface MigrateResult {
   exchanges: number;
@@ -13,8 +15,9 @@ export interface MigrateResult {
 
 /**
  * Writes `manifest` as the first line of `outPath` and then every byte of
- * `inPath` as it is on disk, so each exchange line, its line ending, and a
- * missing final newline are kept. The input is validated first and must not
+ * `inPath`, so each exchange line, its line ending, and a missing final
+ * newline are kept. A `.gz` input is copied decompressed and a `.gz` output
+ * is written compressed; the bytes compared are the decompressed ones. The input is validated first and must not
  * already have a manifest. Nothing is written when a check fails.
  */
 export async function migrateRecording(
@@ -33,16 +36,22 @@ export async function migrateRecording(
   if (check.manifest !== null) {
     throw new ConfigError(`${inPath} already has a manifest`);
   }
-  const out = createWriteStream(outPath);
   let copied = 0;
+  const source = async function* (): AsyncGenerator<Buffer> {
+    yield Buffer.from(manifestLine(manifest), 'utf8');
+    const file = createReadStream(inPath);
+    const input = isGzipPath(inPath) ? file.pipe(createGunzip()) : file;
+    for await (const chunk of input) {
+      copied += (chunk as Buffer).byteLength;
+      yield chunk as Buffer;
+    }
+  };
   try {
-    await pipeline(async function* () {
-      yield Buffer.from(manifestLine(manifest), 'utf8');
-      for await (const chunk of createReadStream(inPath)) {
-        copied += (chunk as Buffer).byteLength;
-        yield chunk as Buffer;
-      }
-    }, out);
+    if (isGzipPath(outPath)) {
+      await pipeline(source, createGzip(), createWriteStream(outPath));
+    } else {
+      await pipeline(source, createWriteStream(outPath));
+    }
   } catch (err) {
     throw new ConfigError(`${outPath}: ${(err as Error).message}`);
   }
