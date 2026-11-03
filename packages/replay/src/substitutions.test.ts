@@ -1,4 +1,10 @@
-import { jsonResponse, makeExchange, makeRequest, parseDiffRules } from '@replay-parity/core';
+import {
+  jsonResponse,
+  makeExchange,
+  makeRequest,
+  makeResponse,
+  parseDiffRules,
+} from '@replay-parity/core';
 import { describe, expect, it } from 'vitest';
 import { DependencyIndex, SubstitutionTable } from './substitutions.js';
 
@@ -157,5 +163,76 @@ describe('SubstitutionTable', () => {
     );
     const binary = makeRequest({ method: 'POST', path: '/x', body: 'by0x', encoding: 'base64' });
     expect(table.apply(binary).body).toBe('by0x');
+  });
+});
+
+describe('header and request captures', () => {
+  const headerRules = parseDiffRules(
+    [
+      'substitutions:',
+      '  - name: order_ref',
+      '    capture: { tag: create-order, header: Location, pattern: "/v1/orders/([^/?]+)" }',
+      '  - name: client_ref',
+      '    capture: { tag: create-order, from: request, path: "$.client_ref" }',
+      '    apply: [body]',
+    ].join('\n'),
+  ).substitutions;
+
+  it('captures the first group of the pattern on a response header', () => {
+    const table = new SubstitutionTable(headerRules);
+    table.capture(
+      ['create-order'],
+      makeResponse({ status: 201, headers: { location: '/v1/orders/o-1' } }),
+      makeResponse({ status: 201, headers: { location: '/v1/orders/c-9?x=1' } }),
+    );
+    expect(table.apply(makeRequest({ path: '/v1/orders/o-1' })).path).toBe('/v1/orders/c-9');
+    expect(table.equivalences.get('order_ref')?.get('"o-1"')).toBe('"c-9"');
+  });
+
+  it('records nothing for a header that is absent or does not match on either side', () => {
+    const table = new SubstitutionTable(headerRules);
+    table.capture(
+      ['create-order'],
+      makeResponse({ headers: { location: '/v1/orders/o-1' } }),
+      makeResponse({ headers: { location: '/elsewhere' } }),
+    );
+    table.capture(
+      ['create-order'],
+      makeResponse({ headers: {} }),
+      makeResponse({ headers: { location: '/v1/orders/o-2' } }),
+    );
+    expect(table.size).toBe(0);
+  });
+
+  it('captures a request path from the recorded request and the request as sent', () => {
+    const recorded = makeRequest({ method: 'POST', body: { client_ref: 'r-1' } });
+    const sent = makeRequest({ method: 'POST', body: { client_ref: 'r-2' } });
+    const table = new SubstitutionTable(headerRules);
+    table.capture(['create-order'], jsonResponse({}), jsonResponse({}), { recorded, sent });
+    expect(table.apply(makeRequest({ body: { ref: 'r-1' } })).body).toEqual({ ref: 'r-2' });
+
+    // A bare request stands for both sides; without one a request capture records nothing.
+    const same = new SubstitutionTable(headerRules);
+    same.capture(['create-order'], jsonResponse({}), jsonResponse({}), recorded);
+    expect(same.equivalences.get('client_ref')?.get('"r-1"')).toBe('"r-1"');
+    const none = new SubstitutionTable(headerRules);
+    none.capture(['create-order'], jsonResponse({}), jsonResponse({}));
+    expect(none.size).toBe(0);
+  });
+
+  it('indexes header and request producers for the dependency wait', () => {
+    const exchanges = [
+      makeExchange({
+        index: 0,
+        tags: ['create-order'],
+        request: makeRequest({ method: 'POST', body: { client_ref: 'r-1' } }),
+        response: makeResponse({ status: 201, headers: { location: '/v1/orders/o-1' } }),
+      }),
+      makeExchange({ index: 1, request: makeRequest({ path: '/v1/orders/o-1' }) }),
+      makeExchange({ index: 2, request: makeRequest({ method: 'POST', body: { c: 'r-1' } }) }),
+    ];
+    const index = new DependencyIndex(exchanges, headerRules);
+    expect(index.dependenciesOf(1, exchanges[1]!.request)).toEqual([0]);
+    expect(index.dependenciesOf(2, exchanges[2]!.request)).toEqual([0]);
   });
 });

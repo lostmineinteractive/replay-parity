@@ -1,23 +1,32 @@
 import {
   canonicalJson,
-  get,
+  captureValue,
   isJsonObject,
-  parsePath,
+  parseNumericText,
   type Exchange,
   type JsonValue,
   type Query,
   type RecordedRequest,
   type RecordedResponse,
-  type Segment,
+  type SubstitutionCapture,
   type SubstitutionRule,
   type ValueEquivalences,
 } from '@replay-parity/core';
 
 /**
- * Substitutions. A rule captures a value at a JSONPath from the response of
- * every exchange carrying the capture tag, on the reference side and on the
- * candidate side, and later requests have the reference value replaced with
- * the candidate value in the chosen locations.
+ * Substitutions. A rule captures a value from every exchange carrying the
+ * capture tag, on the reference side and on the candidate side, and later
+ * requests have the reference value replaced with the candidate value in the
+ * chosen locations.
+ *
+ * The value comes from a JSONPath in the response body, from a response
+ * header through an optional pattern, or, with `from: request`, from a
+ * JSONPath in the request body. A request capture reads the recorded request
+ * on the reference side and the request as sent on the candidate side. The
+ * two are the same value unless an earlier substitution or an override
+ * rewrote the request, so the capture seeds an equivalence for a response
+ * that echoes the value and names the exchange that introduced the value as
+ * a producer the later exchanges wait for.
  *
  * The first exchange to produce a reference value wins. A later exchange that
  * produces the same reference value with a different candidate value is a
@@ -29,15 +38,33 @@ type Location = 'path' | 'query' | 'body';
 interface CompiledRule {
   name: string;
   tag: string;
-  segments: Segment[];
+  capture: SubstitutionCapture;
   apply: ReadonlySet<Location>;
+}
+
+/**
+ * The requests of one exchange, for a request capture: the recorded request
+ * on the reference side and the request as sent on the candidate side. Without
+ * `sent` the recorded request stands for both.
+ */
+export interface CaptureRequests {
+  recorded: RecordedRequest;
+  sent?: RecordedRequest | undefined;
+}
+
+function requestPair(
+  request: RecordedRequest | CaptureRequests | undefined,
+): [RecordedRequest | undefined, RecordedRequest | undefined] {
+  if (request === undefined) return [undefined, undefined];
+  if ('recorded' in request) return [request.recorded, request.sent ?? request.recorded];
+  return [request, request];
 }
 
 function compileRules(rules: readonly SubstitutionRule[]): CompiledRule[] {
   return rules.map((r) => ({
     name: r.name,
     tag: r.capture.tag,
-    segments: parsePath(r.capture.path),
+    capture: r.capture,
     apply: new Set(r.apply),
   }));
 }
@@ -49,7 +76,8 @@ function isLeaf(value: JsonValue | undefined): value is string | number {
 /** The lookup keys for a text found in a path or a query. A number is tried too. */
 function textKeys(text: string): string[] {
   const keys = [canonicalJson(text)];
-  if (/^-?(0|[1-9][0-9]*)(\.[0-9]+)?$/.test(text)) keys.push(canonicalJson(Number(text)));
+  const n = parseNumericText(text);
+  if (n !== undefined) keys.push(canonicalJson(n));
   return keys;
 }
 
@@ -93,8 +121,8 @@ export class DependencyIndex {
       const map = new Map<string, number>();
       selected.forEach((exchange, index) => {
         if (!exchange.tags.includes(rule.tag)) return;
-        const value = get(exchange.response.body, rule.segments);
-        if (!isLeaf(value)) return;
+        const value = captureValue(rule.capture, exchange.response, exchange.request);
+        if (value === undefined) return;
         const key = canonicalJson(value);
         if (!map.has(key)) map.set(key, index);
       });
@@ -157,13 +185,25 @@ export class SubstitutionTable {
     return this.canonical;
   }
 
-  /** Records the pairs produced by a completed exchange. The first producer of a reference value wins. */
-  capture(tags: readonly string[], reference: RecordedResponse, candidate: RecordedResponse): void {
+  /**
+   * Records the pairs produced by a completed exchange. The first producer of
+   * a reference value wins. `request` is needed by request captures only: a
+   * rule with `from: request` records nothing without it. It is the recorded
+   * request, which then stands for both sides, or the recorded request and
+   * the request as sent.
+   */
+  capture(
+    tags: readonly string[],
+    reference: RecordedResponse,
+    candidate: RecordedResponse,
+    request?: RecordedRequest | CaptureRequests,
+  ): void {
+    const [recorded, sent] = requestPair(request);
     for (const rule of this.rules) {
       if (!tags.includes(rule.tag)) continue;
-      const refValue = get(reference.body, rule.segments);
-      const candValue = get(candidate.body, rule.segments);
-      if (!isLeaf(refValue) || !isLeaf(candValue)) continue;
+      const refValue = captureValue(rule.capture, reference, recorded);
+      const candValue = captureValue(rule.capture, candidate, sent);
+      if (refValue === undefined || candValue === undefined) continue;
       const key = canonicalJson(refValue);
       const values = this.values.get(rule.name) as Map<string, string | number>;
       if (values.has(key)) continue;

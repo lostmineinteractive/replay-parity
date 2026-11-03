@@ -24,7 +24,7 @@ export {
   type Schedule,
   type SlipSummary,
 } from './pacing.js';
-export { DependencyIndex, SubstitutionTable } from './substitutions.js';
+export { DependencyIndex, SubstitutionTable, type CaptureRequests } from './substitutions.js';
 export {
   DEFAULT_BARRIER_TIMEOUT_MS,
   DEFAULT_CONCURRENCY,

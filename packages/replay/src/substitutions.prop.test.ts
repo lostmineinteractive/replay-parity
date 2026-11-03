@@ -81,8 +81,8 @@ function fillTable(rules: SubstitutionRule[], captures: Capture[]): Substitution
     const rule = rules[c.rule % rules.length] as SubstitutionRule;
     table.capture(
       [rule.capture.tag],
-      jsonResponse(bodyAt(rule.capture.path, c.ref), 201),
-      jsonResponse(bodyAt(rule.capture.path, c.cand), 201),
+      jsonResponse(bodyAt(rule.capture.path ?? '$', c.ref), 201),
+      jsonResponse(bodyAt(rule.capture.path ?? '$', c.cand), 201),
     );
   }
   return table;
@@ -304,7 +304,7 @@ describe('DependencyIndex properties', () => {
             const producer = exchanges[d] as Exchange;
             const produces = rules.some((rule) => {
               if (!producer.tags.includes(rule.capture.tag)) return false;
-              const value = get(producer.response.body, rule.capture.path);
+              const value = get(producer.response.body, rule.capture.path ?? '$');
               if (typeof value !== 'string' && typeof value !== 'number') return false;
               return used.has(String(value)) || used.has(canonicalJson(value));
             });

@@ -1002,3 +1002,64 @@ describe('recorded query parameters', () => {
     }
   });
 });
+
+describe('substitutions captured from a response header', () => {
+  let server: Server;
+  let urls: string[] = [];
+
+  afterEach(async () => {
+    urls = [];
+    if (server) await new Promise<void>((r) => server.close(() => r()));
+  });
+
+  it('rewrites a later path with the id the stand-in returns in its location header', async () => {
+    server = createServer((req, res) => {
+      urls.push(`${req.method} ${req.url}`);
+      if (req.method === 'POST') {
+        res.writeHead(201, { 'content-type': 'application/json', location: '/v1/orders/cand-7' });
+        res.end(JSON.stringify({ created: true }));
+        return;
+      }
+      const found = req.url === '/v1/orders/cand-7';
+      res.writeHead(found ? 200 : 404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(found ? { state: 'open' } : { error: 'not found' }));
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const exchanges = [
+      makeExchange({
+        index: 0,
+        tags: ['create-order'],
+        request: makeRequest({ method: 'POST', path: '/v1/orders', body: { sku: 'A' } }),
+        response: {
+          ...jsonResponse({ created: true }, 201),
+          headers: { 'content-type': 'application/json', location: '/v1/orders/ref-1' },
+        },
+      }),
+      makeExchange({
+        index: 1,
+        tags: ['get-order'],
+        request: makeRequest({ path: '/v1/orders/ref-1' }),
+        response: jsonResponse({ state: 'open' }),
+      }),
+    ];
+    const rules = parseDiffRules(
+      [
+        'substitutions:',
+        '  - name: order_ref',
+        '    capture: { tag: create-order, header: location, pattern: "^/v1/orders/(.+)$" }',
+        '    apply: [path]',
+      ].join('\n'),
+    );
+    const run = await replay({
+      recording: await writeRecording(exchanges),
+      target: url,
+      pace: 'max',
+      concurrency: 4,
+      rules,
+    });
+    expect(urls).toEqual(['POST /v1/orders', 'GET /v1/orders/cand-7']);
+    expect(run.stats.overall.matches).toBe(2);
+    expect(run.stats.overall.mismatches).toBe(0);
+  });
+});
