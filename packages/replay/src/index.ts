@@ -16,6 +16,7 @@ export {
   type HttpAdapterOptions,
   type UpstreamTls,
 } from './http-adapter.js';
+export { loadAdapterModule, pluginAdapterName, type AdapterModuleOptions } from './plugin.js';
 export {
   buildSchedule,
   requestedRps,
