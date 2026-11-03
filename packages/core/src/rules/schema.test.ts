@@ -31,6 +31,29 @@ substitutions:
     apply: [path, body]
 `;
 
+describe('the shrink key', () => {
+  it('is absent by default and lists the paths to lower and to simplify', () => {
+    expect(emptyRules().shrink).toBeUndefined();
+    const rules = parseDiffRules(`
+shrink:
+  lower: ['$.qty', '$.items[*].quantity']
+  simplify: ['$.note', '$.tags']
+`);
+    expect(rules.shrink).toEqual({
+      lower: ['$.qty', '$.items[*].quantity'],
+      simplify: ['$.note', '$.tags'],
+    });
+    expect(parseDiffRules('shrink: { simplify: ["$.note"] }').shrink).toEqual({
+      simplify: ['$.note'],
+    });
+  });
+
+  it('rejects an unknown key and a path outside the plain subset', () => {
+    expect(() => parseDiffRules('shrink: { raise: ["$.qty"] }')).toThrow(ConfigError);
+    expect(() => parseDiffRules('shrink: { lower: ["$..qty"] }')).toThrow(/unsupported JSONPath/);
+  });
+});
+
 describe('parseDiffRules', () => {
   it('parses the full example', () => {
     const rules = parseDiffRules(example);

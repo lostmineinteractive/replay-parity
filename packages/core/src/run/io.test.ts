@@ -202,6 +202,10 @@ describe('run model', () => {
             tags: ['create-order'],
             body: { sku: 'H-800', qty: 2 },
             quantity_reduced: true,
+            changed: [
+              { path: '$.qty', from: 5, to: 2 },
+              { path: '$.note', from: 'a note', to: '' },
+            ],
           },
           {
             id: 'b',
@@ -216,6 +220,10 @@ describe('run model', () => {
     expect(RunSchema.parse(run)).toEqual(run);
     expect(validate(run), validate.errors ?? '').toBe(true);
     expect(makeRun().reproduction).toBeNull();
+    const badChange = structuredClone(run);
+    (badChange.reproduction?.steps[0]?.changed as unknown[]).push({ path: '$.x', from: 1 });
+    expect(RunSchema.safeParse(badChange).success).toBe(false);
+    expect(validate(badChange)).toBe(false);
     const badLabel = { ...run, reproduction: { ...run.reproduction, label: 'minimal' } };
     expect(RunSchema.safeParse(badLabel).success).toBe(false);
     expect(validate(badLabel)).toBe(false);

@@ -249,6 +249,16 @@ export const AgentReportSchema = z
   })
   .strict();
 
+/** A value of a step's request body that shrinking changed from the recording. */
+export const ValueChangeSchema = z
+  .object({
+    /** The concrete path in the body, such as `$.items[1].quantity`. */
+    path: z.string().min(1),
+    from: z.json(),
+    to: z.json(),
+  })
+  .strict();
+
 export const ReproductionStepSchema = z
   .object({
     id: z.string().min(1),
@@ -258,6 +268,8 @@ export const ReproductionStepSchema = z
     body: z.json().optional(),
     /** True when a quantity in the body was lowered from the recorded value. */
     quantity_reduced: z.boolean(),
+    /** Every value changed from the recording, with the recorded value and the one kept. */
+    changed: z.array(ValueChangeSchema).optional(),
   })
   .strict();
 
@@ -360,6 +372,7 @@ export const RunSchema = z
   })
   .strict();
 
+export type ValueChange = z.output<typeof ValueChangeSchema>;
 export type ReproductionStep = z.output<typeof ReproductionStepSchema>;
 export type Reproduction = z.output<typeof ReproductionSchema>;
 export type PacingMode = z.output<typeof PacingModeSchema>;

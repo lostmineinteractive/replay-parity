@@ -292,3 +292,42 @@ describe('rp shrink reset strategies', () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(250 * state.resets - 100);
   }, 60_000);
 });
+
+describe('rp shrink value lowering from the rules file', () => {
+  it('lowers the listed paths, simplifies the others, and records the changes in the run', async () => {
+    const url = await candidate(['shipment-applied-twice']);
+    const runPath = await failingRun(url, 'lowering');
+    const rules = join(dir, 'shrink-rules.yaml');
+    await writeFile(
+      rules,
+      `${RULES}shrink:\n  lower: ['$.qty', '$.quantity']\n  simplify: ['$.note', '$.reason']\n`,
+    );
+    const res = await rp([
+      'shrink',
+      '--run',
+      runPath,
+      '--recording',
+      RECORDING,
+      '--target',
+      url,
+      '--reset-url',
+      `${url}/admin/reset`,
+      '--rules',
+      rules,
+      '--out',
+      join(dir, 'lowering.jsonl'),
+    ]);
+    expect(res.code).toBe(0);
+    const reproduction = await readReproduction(runPath);
+    expect(reproduction.successful).toBe(true);
+    const lowered = reproduction.steps.filter((s) => s.changed !== undefined);
+    expect(lowered.length).toBeGreaterThan(0);
+    for (const step of lowered) {
+      for (const change of step.changed ?? []) {
+        expect(['$.qty', '$.quantity']).toContain(change.path);
+        expect(change.to).toBeLessThan(change.from as number);
+      }
+    }
+    expect(res.out).toMatch(/\(quantity reduced\)\s*\(changed \$\.qty \d+ -> \d+/);
+  }, 60_000);
+});

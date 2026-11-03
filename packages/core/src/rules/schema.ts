@@ -156,6 +156,18 @@ export const SubstitutionRuleSchema = z
   })
   .strict();
 
+/**
+ * What `rp shrink` may change in a request body. `lower` lists the paths of
+ * integers lowered toward one. `simplify` lists the paths of values replaced
+ * by "", [], or {}. Without `lower` the fields `qty` and `quantity` are lowered.
+ */
+export const ShrinkRulesSchema = z
+  .object({
+    lower: z.array(PathSchema).optional(),
+    simplify: z.array(PathSchema).optional(),
+  })
+  .strict();
+
 export const DiffRulesSchema = z
   .object({
     ignore: z.array(IgnoreRuleSchema).default([]),
@@ -202,6 +214,8 @@ export const DiffRulesSchema = z
       })
       .strict()
       .default({ tags: [] }),
+    /** Paths `rp shrink` lowers and simplifies. Absent means the default quantity fields. */
+    shrink: ShrinkRulesSchema.optional(),
   })
   .strict();
 
@@ -218,6 +232,7 @@ export type TimeRule = z.output<typeof TimeRuleSchema>;
 export type MaskRule = z.output<typeof MaskRuleSchema>;
 export type SubstitutionCapture = z.output<typeof SubstitutionCaptureSchema>;
 export type SubstitutionRule = z.output<typeof SubstitutionRuleSchema>;
+export type ShrinkRules = z.output<typeof ShrinkRulesSchema>;
 export type DiffRules = z.output<typeof DiffRulesSchema>;
 export type DiffRulesInput = z.input<typeof DiffRulesSchema>;
 

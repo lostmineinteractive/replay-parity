@@ -1093,6 +1093,24 @@
           },
           "required": ["tags"],
           "additionalProperties": false
+        },
+        "shrink": {
+          "type": "object",
+          "properties": {
+            "lower": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "simplify": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": [
@@ -2358,6 +2376,26 @@
                   },
                   "quantity_reduced": {
                     "type": "boolean"
+                  },
+                  "changed": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "from": {
+                          "$ref": "#/$defs/__schema2"
+                        },
+                        "to": {
+                          "$ref": "#/$defs/__schema3"
+                        }
+                      },
+                      "required": ["path", "from", "to"],
+                      "additionalProperties": false
+                    }
                   }
                 },
                 "required": ["id", "method", "path", "tags", "quantity_reduced"],
@@ -2951,6 +2989,68 @@
           },
           "additionalProperties": {
             "$ref": "#/$defs/__schema1"
+          }
+        }
+      ]
+    },
+    "__schema2": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/__schema2"
+          }
+        },
+        {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/__schema2"
+          }
+        }
+      ]
+    },
+    "__schema3": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/__schema3"
+          }
+        },
+        {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/__schema3"
           }
         }
       ]

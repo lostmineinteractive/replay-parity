@@ -6,6 +6,7 @@ import {
   formatDuration,
   loadDiffRules,
   readRecording,
+  type ReproductionStep,
   readRun,
   writeRun,
 } from '@replay-parity/core';
@@ -92,6 +93,14 @@ export interface ShrinkProgressState {
 
 export function formatShrinkProgress(state: ShrinkProgressState, elapsedMs: number): string {
   return `shrink ${state.attempts} attempt${state.attempts === 1 ? '' : 's'}, best ${state.bestSteps ?? '?'} steps, elapsed ${formatDuration(elapsedMs)}`;
+}
+
+function formatChanged(changed: ReproductionStep['changed']): string {
+  if (changed === undefined || changed.length === 0) return '';
+  const parts = changed.map(
+    (c) => `${c.path} ${JSON.stringify(c.from)} -> ${JSON.stringify(c.to)}`,
+  );
+  return ` (changed ${parts.join(', ')})`;
 }
 
 export async function runShrink(
@@ -205,6 +214,8 @@ export async function runShrink(
       target: options.target,
       reset,
       rule,
+      lower: rules.shrink?.lower,
+      simplify: rules.shrink?.simplify,
       replay: {
         rules,
         headers,
@@ -248,7 +259,7 @@ export async function runShrink(
   for (const s of reproduction.steps) {
     out(
       streams,
-      `  ${s.method} ${s.path}${s.body === undefined ? '' : ` ${JSON.stringify(s.body)}`}${s.quantity_reduced ? ' (quantity reduced)' : ''}`,
+      `  ${s.method} ${s.path}${s.body === undefined ? '' : ` ${JSON.stringify(s.body)}`}${s.quantity_reduced ? ' (quantity reduced)' : ''}${formatChanged(s.changed)}`,
     );
   }
   log.info(`wrote ${options.out} and updated ${options.run}`, {

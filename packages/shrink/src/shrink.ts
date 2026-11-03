@@ -1,13 +1,16 @@
 import { performance } from 'node:perf_hooks';
 import {
   ConfigError,
+  renderPath,
+  select,
+  type Segment,
   emptyRules,
   emptyThresholds,
   hashRecordingFile,
-  isJsonObject,
   type Exchange,
   type JsonValue,
   type Reproduction,
+  type ValueChange,
   type ReproductionStep,
   type Run,
 } from '@replay-parity/core';
@@ -17,6 +20,7 @@ import {
   type ReplayExchangesOptions,
 } from '@replay-parity/replay';
 import { AttemptBudgetExceeded, ddmin } from './ddmin.js';
+import { minimalValue, setAt, valueAt } from './lowering.js';
 import { Prerequisites } from './prerequisites.js';
 import { formatRule, reproduces, witnessOf, type ShrinkRule } from './rule.js';
 
@@ -49,6 +53,13 @@ export interface ShrinkOptions {
         >
       >
     | undefined;
+  /**
+   * JSONPaths in the request bodies whose integer values are lowered toward one.
+   * Default `$.qty` and `$.quantity`, and only for a candidate invariant rule.
+   */
+  lower?: readonly string[] | undefined;
+  /** JSONPaths in the request bodies whose values become "", [], or {} when the rule still reproduces. */
+  simplify?: readonly string[] | undefined;
   /** Default 64. */
   maxAttempts?: number | undefined;
   /** Default 120000. */
@@ -121,27 +132,16 @@ export async function verifyRecordingHash(
   return { expected, actual, mismatch };
 }
 
-const QUANTITY_FIELDS = ['qty', 'quantity'] as const;
+/** The fields lowered when the rules file gives no `shrink.lower`. */
+export const DEFAULT_LOWER_PATHS: readonly string[] = ['$.qty', '$.quantity'];
 
 interface Step {
   /** Index in the original list. */
   index: number;
   exchange: Exchange;
   quantityReduced: boolean;
-}
-
-function quantityFields(exchange: Exchange): (typeof QUANTITY_FIELDS)[number][] {
-  const body = exchange.request.body;
-  if (!isJsonObject(body)) return [];
-  return QUANTITY_FIELDS.filter((f) => {
-    const v = body[f];
-    return typeof v === 'number' && Number.isInteger(v) && v > 1;
-  });
-}
-
-function withQuantity(exchange: Exchange, field: string, value: number): Exchange {
-  const body = exchange.request.body as Record<string, JsonValue>;
-  return { ...exchange, request: { ...exchange.request, body: { ...body, [field]: value } } };
+  /** The values changed from the recording, by path, with the recorded value as `from`. */
+  changed: Map<string, ValueChange>;
 }
 
 function toStep(step: Step): ReproductionStep {
@@ -153,6 +153,7 @@ function toStep(step: Step): ReproductionStep {
     quantity_reduced: step.quantityReduced,
   };
   if (step.exchange.request.body !== undefined) out.body = step.exchange.request.body;
+  if (step.changed.size > 0) out.changed = [...step.changed.values()];
   return out;
 }
 
@@ -182,7 +183,9 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
 
   let attempts = 0;
   const steps = new Map<number, Step>();
-  scope.forEach((exchange, index) => steps.set(index, { index, exchange, quantityReduced: false }));
+  scope.forEach((exchange, index) =>
+    steps.set(index, { index, exchange, quantityReduced: false, changed: new Map() }),
+  );
   const listOf = (indices: readonly number[]): Exchange[] =>
     indices.map((i) => (steps.get(i) as Step).exchange);
 
@@ -223,9 +226,12 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
         closure: (subset) => prerequisites.closure(subset, always),
         test: (subset) => judge(subset, 'remove'),
       });
-      if (options.rule.kind === 'invariant' && options.rule.system === 'candidate') {
-        await lowerQuantities(current, steps, judge);
-      }
+      const lowerPaths =
+        options.lower ??
+        (options.rule.kind === 'invariant' && options.rule.system === 'candidate'
+          ? DEFAULT_LOWER_PATHS
+          : []);
+      await lowerValues(current, steps, judge, lowerPaths, options.simplify ?? []);
     }
   } catch (err) {
     if (!(err instanceof AttemptBudgetExceeded)) throw err;
@@ -234,8 +240,8 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
   const kept: Step[] = confirmed ? current.map((i) => steps.get(i) as Step) : [];
   const finalExchanges = confirmed ? kept.map((s) => s.exchange) : [...original];
   const reducedSteps = finalExchanges.length;
-  const quantityLowered = kept.some((s) => s.quantityReduced);
-  const successful = confirmed && (reducedSteps < original.length || quantityLowered);
+  const valuesChanged = kept.some((s) => s.changed.size > 0);
+  const successful = confirmed && (reducedSteps < original.length || valuesChanged);
   let recordingPath: string | null = null;
   if (options.out !== undefined && options.out !== null) {
     await writeExchanges(options.out, finalExchanges);
@@ -252,42 +258,111 @@ export async function shrink(options: ShrinkOptions): Promise<ShrinkResult> {
     recording: recordingPath,
     steps: confirmed
       ? kept.map(toStep)
-      : original.map((exchange, index) => toStep({ index, exchange, quantityReduced: false })),
+      : original.map((exchange, index) =>
+          toStep({ index, exchange, quantityReduced: false, changed: new Map() }),
+        ),
   };
   return { reproduction, exchanges: finalExchanges, aborted: stopped() };
 }
 
-/** Lowers `qty` and `quantity` fields toward one, keeping each change that still reproduces. */
-async function lowerQuantities(
+type Judge = (indices: readonly number[], phase: AttemptPhase) => Promise<boolean>;
+
+/**
+ * Lowers the integers at the `lower` paths toward one, then replaces the
+ * values at the `simplify` paths with their minimal form, keeping each change
+ * that still reproduces. Every change is recorded on its step.
+ */
+async function lowerValues(
   current: readonly number[],
   steps: Map<number, Step>,
-  judge: (indices: readonly number[], phase: AttemptPhase) => Promise<boolean>,
+  judge: Judge,
+  lower: readonly string[],
+  simplify: readonly string[],
 ): Promise<void> {
   for (const index of current) {
     const step = steps.get(index) as Step;
-    for (const field of quantityFields(step.exchange)) {
-      const body = step.exchange.request.body as Record<string, JsonValue>;
-      const recorded = body[field] as number;
-      const tryValue = async (value: number): Promise<boolean> => {
-        const before = step.exchange;
-        step.exchange = withQuantity(before, field, value);
-        const ok = await judge(current, 'lower');
-        if (ok) {
-          step.quantityReduced = true;
-        } else {
-          step.exchange = before;
-        }
-        return ok;
-      };
-      if (await tryValue(1)) continue;
-      // Binary search between the largest failing value and the smallest working one.
-      let low = 1;
-      let high = recorded;
-      while (high - low > 1) {
-        const mid = Math.floor((low + high) / 2);
-        if (await tryValue(mid)) high = mid;
-        else low = mid;
+    for (const path of lower) await lowerPath(step, path, current, judge);
+    for (const path of simplify) await simplifyPath(step, path, current, judge);
+  }
+}
+
+/** Tries `value` at `segments` of the step's body. Keeps it when the rule still reproduces. */
+async function tryValue(
+  step: Step,
+  segments: readonly Segment[],
+  value: JsonValue,
+  current: readonly number[],
+  judge: Judge,
+): Promise<boolean> {
+  const before = step.exchange;
+  const body = before.request.body;
+  if (body === undefined) return false;
+  step.exchange = {
+    ...before,
+    request: { ...before.request, body: setAt(body, segments, value) },
+  };
+  const ok = await judge(current, 'lower');
+  if (!ok) step.exchange = before;
+  return ok;
+}
+
+/** Records the final value at `segments` as a change when it differs from the recorded one. */
+function recordChange(step: Step, segments: readonly Segment[], recorded: JsonValue): void {
+  const now = valueAt(step.exchange.request.body, segments);
+  const path = renderPath(segments);
+  if (now === undefined || JSON.stringify(now) === JSON.stringify(recorded)) return;
+  const known = step.changed.get(path);
+  step.changed.set(path, { path, from: known?.from ?? recorded, to: now });
+}
+
+async function lowerPath(
+  step: Step,
+  path: string,
+  current: readonly number[],
+  judge: Judge,
+): Promise<void> {
+  const matches = select(step.exchange.request.body, path).filter(
+    (m) => typeof m.value === 'number' && Number.isInteger(m.value) && m.value > 1,
+  );
+  for (const match of matches) {
+    const recorded = match.value as number;
+    const attempt = (value: number): Promise<boolean> =>
+      tryValue(step, match.segments, value, current, judge);
+    if (await attempt(1)) {
+      step.quantityReduced = true;
+      recordChange(step, match.segments, recorded);
+      continue;
+    }
+    // Binary search between the largest failing value and the smallest working one.
+    let low = 1;
+    let high = recorded;
+    while (high - low > 1) {
+      const mid = Math.floor((low + high) / 2);
+      if (await attempt(mid)) {
+        high = mid;
+        step.quantityReduced = true;
+      } else {
+        low = mid;
       }
+    }
+    recordChange(step, match.segments, recorded);
+  }
+}
+
+async function simplifyPath(
+  step: Step,
+  path: string,
+  current: readonly number[],
+  judge: Judge,
+): Promise<void> {
+  for (const match of select(step.exchange.request.body, path)) {
+    const minimal = minimalValue(match.value);
+    if (minimal === undefined) continue;
+    // An earlier change may have replaced this value already.
+    const now = valueAt(step.exchange.request.body, match.segments);
+    if (JSON.stringify(now) !== JSON.stringify(match.value)) continue;
+    if (await tryValue(step, match.segments, minimal, current, judge)) {
+      recordChange(step, match.segments, match.value);
     }
   }
 }
