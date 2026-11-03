@@ -172,7 +172,13 @@ function invariants(run: Run): string {
       const conds = report.inconclusive
         .map((c) => `<li><code>${esc(c.kind)}</code> ${esc(c.detail)}</li>`)
         .join('');
-      return `<h3>${esc(report.system)}: ${esc(invariantSummary(report))}</h3><p class="muted">${esc(report.recording)}: ${report.exchanges} exchanges, ${report.commands} commands, ${report.snapshots.ledger_reads} ledger reads, ${report.snapshots.stock_reads} stock reads, ${report.snapshots.order_reads} order reads.</p>${
+      // Modules other than the built in one report zero snapshots, so the counts are left out then.
+      const { ledger_reads, stock_reads, order_reads } = report.snapshots;
+      const snapshots =
+        ledger_reads === 0 && stock_reads === 0 && order_reads === 0
+          ? ''
+          : `, ${ledger_reads} ledger reads, ${stock_reads} stock reads, ${order_reads} order reads`;
+      return `<h3>${esc(report.system)}: ${esc(invariantSummary(report))}</h3><p class="muted">${esc(report.recording)}: ${report.exchanges} exchanges, ${report.commands} commands${snapshots}.</p>${
         conds.length === 0 ? '' : `<ul class="conditions">${conds}</ul>`
       }<table><thead><tr><th class="num">#</th><th>Invariant</th><th>Status</th><th class="num">Checks</th><th>Evidence</th></tr></thead><tbody>${rows}</tbody></table>`;
     })
@@ -208,14 +214,58 @@ function latency(run: Run): string {
 /** The most errored exchanges the errors table lists. */
 const ERRORS_CAP = 50;
 
-function drillDown(e: ExchangeResult): string {
+/** One invariant evidence entry that names an exchange, with the system and rule it came from. */
+interface NamedEvidence {
+  system: string;
+  rule: string;
+  subject: string;
+  expected: JsonValue | undefined;
+  observed: JsonValue | undefined;
+  detail: string;
+}
+
+/** The evidence entries of both invariant reports, by the exchange each one names. */
+function evidenceByExchange(run: Run): Map<string, NamedEvidence[]> {
+  const out = new Map<string, NamedEvidence[]>();
+  for (const report of [run.invariants.reference, run.invariants.candidate]) {
+    if (report === null) continue;
+    for (const result of report.results) {
+      for (const e of result.evidence) {
+        if (e.exchange_id === null) continue;
+        const list = out.get(e.exchange_id) ?? [];
+        list.push({
+          system: report.system,
+          rule: result.name,
+          subject: e.subject,
+          expected: e.expected,
+          observed: e.observed,
+          detail: e.detail,
+        });
+        out.set(e.exchange_id, list);
+      }
+    }
+  }
+  return out;
+}
+
+function drillDown(e: ExchangeResult, evidence: ReadonlyMap<string, NamedEvidence[]>): string {
   const findings = (e.diff?.findings ?? [])
     .map(
       (f) =>
         `<tr class="${f.tolerated ? 'tolerated' : 'untolerated'}"><td><code>${esc(f.path)}</code></td><td>${esc(f.kind)}</td><td>${json(f.reference)}</td><td>${json(f.candidate)}</td><td>${f.tolerated ? `tolerated by <code>${esc(f.rule ?? '')}</code>` : esc(f.detail ?? '')}</td></tr>`,
     )
     .join('');
-  return `<details class="exchange" data-id="${esc(e.id)}"><summary id="${esc(exchangeAnchor(e.id))}">${esc(e.method)} ${esc(e.path)} <span class="muted">[${esc(e.tags.join(', '))}] ${esc(e.id)}</span> status ${e.reference.status} / ${e.candidate?.status ?? 'error'}, latency ${fmtMs(e.reference.latency_ms)} / ${fmtMs(e.candidate?.latency_ms)} ms</summary><table><thead><tr><th>Path</th><th>Kind</th><th>Reference</th><th>Candidate</th><th>Rule or detail</th></tr></thead><tbody>${findings}</tbody></table></details>`;
+  const entries = evidence.get(e.id) ?? [];
+  const named =
+    entries.length === 0
+      ? ''
+      : `<p class="muted">Invariant evidence naming this exchange:</p><ul class="evidence">${entries
+          .map(
+            (n) =>
+              `<li>${esc(n.system)} <code>${esc(n.rule)}</code>, ${esc(n.subject)}: expected ${json(n.expected)}, observed ${json(n.observed)}. ${esc(n.detail)}</li>`,
+          )
+          .join('')}</ul>`;
+  return `<details class="exchange" data-id="${esc(e.id)}"><summary id="${esc(exchangeAnchor(e.id))}">${esc(e.method)} ${esc(e.path)} <span class="muted">[${esc(e.tags.join(', '))}] ${esc(e.id)}</span> status ${e.reference.status} / ${e.candidate?.status ?? 'error'}, latency ${fmtMs(e.reference.latency_ms)} / ${fmtMs(e.candidate?.latency_ms)} ms</summary><table><thead><tr><th>Path</th><th>Kind</th><th>Reference</th><th>Candidate</th><th>Rule or detail</th></tr></thead><tbody>${findings}</tbody></table>${named}</details>`;
 }
 
 function correctness(run: Run): string {
@@ -237,6 +287,7 @@ function correctness(run: Run): string {
           )
           .join('')}</tbody></table>`;
   const plan = planDrillDown(run);
+  const evidence = evidenceByExchange(run);
   const leftOut = plan.total - plan.shown;
   const capNote =
     leftOut === 0
@@ -245,7 +296,7 @@ function correctness(run: Run): string {
   const groups = plan.groups
     .map(
       (g) =>
-        `<h4 data-path="${esc(g.path)}"><code>${esc(g.path)}</code> <span class="muted">showing ${g.shown.length} of ${g.exchanges.length}</span></h4>${g.shown.map(drillDown).join('')}`,
+        `<h4 data-path="${esc(g.path)}"><code>${esc(g.path)}</code> <span class="muted">showing ${g.shown.length} of ${g.exchanges.length}</span></h4>${g.shown.map((e) => drillDown(e, evidence)).join('')}`,
     )
     .join('');
   const errors = run.exchanges.filter((e) => e.error !== null);

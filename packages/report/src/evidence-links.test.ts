@@ -87,3 +87,51 @@ describe('evidence links in the HTML report', () => {
     expect(html).not.toContain('id="exchange-m-204"');
   });
 });
+
+describe('invariant details in the HTML report', () => {
+  it('leaves the snapshot counts out when all three are zero and keeps them otherwise', () => {
+    const zero = renderHtml(runWith([]));
+    expect(zero).toContain('candidate.jsonl: 3 exchanges, 2 commands.</p>');
+    expect(zero).not.toContain('ledger reads');
+    const counted = report([]);
+    counted.snapshots = { ledger_reads: 4, stock_reads: 0, order_reads: 0 };
+    const html = renderHtml(makeRun({ invariants: { reference: null, candidate: counted } }));
+    expect(html).toContain(
+      'candidate.jsonl: 3 exchanges, 2 commands, 4 ledger reads, 0 stock reads, 0 order reads.</p>',
+    );
+  });
+
+  it('lists the evidence that names an exchange beneath its diff table', () => {
+    const html = renderHtml(runWith(['x-1', 'x-1', 'x-3', null]));
+    const start = html.indexOf('<details class="exchange" data-id="x-1">');
+    const end = html.indexOf('</details>', start);
+    const entry = html.slice(start, end);
+    expect(entry.indexOf('</table>')).toBeGreaterThan(-1);
+    const after = entry.slice(entry.indexOf('</table>'));
+    expect(after).toContain('Invariant evidence naming this exchange');
+    expect(after.match(/<li>/g)).toHaveLength(2);
+    expect(after).toContain(
+      '<li>candidate <code>shipped-monotonic</code>, order o-1: expected <code>2</code>, observed <code>1</code>. shipped went down</li>',
+    );
+    // A mismatched exchange the evidence does not name has no such list.
+    const other = html.slice(html.indexOf('<details class="exchange" data-id="x/2'));
+    expect(other.slice(0, other.indexOf('</details>'))).not.toContain('Invariant evidence');
+  });
+
+  it('names the system when both reports have evidence for one exchange', () => {
+    const reference = { ...report(['x-1']), system: 'reference' as const };
+    const run = makeRun({
+      exchanges: [mismatched('x-1')],
+      invariants: { reference, candidate: report(['x-1']) },
+    });
+    const html = renderHtml(run);
+    const entry = html.slice(html.indexOf('<details class="exchange"'));
+    expect(entry).toContain('<li>reference <code>shipped-monotonic</code>');
+    expect(entry).toContain('<li>candidate <code>shipped-monotonic</code>');
+  });
+
+  it('adds no evidence list to a run without invariants', () => {
+    const html = renderHtml(makeRun({ exchanges: [mismatched('x-1')] }));
+    expect(html).not.toContain('Invariant evidence');
+  });
+});
