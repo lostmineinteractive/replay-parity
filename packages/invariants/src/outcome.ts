@@ -1,20 +1,14 @@
 import type { InvariantEvidence, InvariantStatus, JsonValue } from '@replay-parity/core';
-import type { Epoch } from '../model.js';
 
+/** The most evidence entries one rule reports. A rule counts the rest in its detail. */
 export const EVIDENCE_CAP = 25;
 
+/** What a rule's `check` returns for one epoch. */
 export interface RuleOutcome {
   status: InvariantStatus;
   checks: number;
   evidence: InvariantEvidence[];
   detail?: string | undefined;
-}
-
-export interface Rule {
-  id: number;
-  name: string;
-  statement: string;
-  check(epoch: Epoch): RuleOutcome;
 }
 
 /** Collects checks and evidence for one rule over one epoch. */

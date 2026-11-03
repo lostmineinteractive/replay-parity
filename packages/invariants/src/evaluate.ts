@@ -1,83 +1,114 @@
-import type {
-  Exchange,
-  InconclusiveCondition,
-  InvariantReport,
-  InvariantResult,
+import {
+  ConfigError,
+  InconclusiveConditionSchema,
+  InvariantResultSchema,
+  formatZodError,
+  type Exchange,
+  type InconclusiveCondition,
+  type InvariantReport,
+  type InvariantResult,
 } from '@replay-parity/core';
-import { STATE_CHANGING, parseCommands, type Command } from './commands.js';
-import { buildEpochs } from './model.js';
-import { RULES, mergeOutcomes } from './rules/index.js';
+import { defaultEpochs, type BaseCommand, type LoadedInvariantModule } from './module.js';
+import { orderLifecycle } from './order-lifecycle/index.js';
+import { mergeOutcomes, type RuleOutcome } from './outcome.js';
 
 export interface EvaluateOptions {
   /** Label for the report, normally `reference` or `candidate`. */
   system?: string | undefined;
   /** Path of the recording, for the report. */
   recording?: string | undefined;
+  /** The module whose rules run. Default: the built in `order-lifecycle` module. */
+  module?: LoadedInvariantModule | undefined;
 }
 
-/**
- * The completion check. The final ledger read is the snapshot the run ends
- * on. A state changing command that was sent before that read and
- * acknowledged after it was in flight when the snapshot was taken, so the
- * snapshot may not reflect it.
- */
-export function snapshotBeforeAck(commands: readonly Command[]): InconclusiveCondition | null {
-  let final: Command | null = null;
-  for (const c of commands) if (c.kind === 'read-ledger' && c.accepted) final = c;
-  if (final === null) return null;
-  const snapshot = final;
-  const inFlight = commands.filter(
-    (c) =>
-      STATE_CHANGING.has(c.kind) &&
-      c.accepted &&
-      c.sentMs < snapshot.sentMs &&
-      c.ackedMs > snapshot.sentMs,
+/** What one `check` call must return. */
+const OutcomeSchema = InvariantResultSchema.pick({
+  status: true,
+  checks: true,
+  evidence: true,
+  detail: true,
+});
+
+function failure(module: LoadedInvariantModule, what: string, e: unknown): ConfigError {
+  return new ConfigError(
+    `invariant module ${module.name}: ${what} failed: ${e instanceof Error ? e.message : String(e)}`,
   );
-  if (inFlight.length === 0) return null;
-  return {
-    kind: 'snapshot_before_ack',
-    detail: `the final ledger read ${snapshot.id} was sent while ${inFlight.length} accepted command${inFlight.length === 1 ? ' was' : 's were'} still in flight: ${inFlight
-      .slice(0, 5)
-      .map((c) => c.id)
-      .join(', ')}`,
-  };
 }
 
-/** Evaluates the ten invariants against one system's recording. */
+function runRule(
+  module: LoadedInvariantModule,
+  rule: LoadedInvariantModule['rules'][number],
+  epochs: readonly unknown[],
+): InvariantResult {
+  let outcomes: RuleOutcome[];
+  try {
+    outcomes = epochs.map((epoch) => rule.check(epoch));
+  } catch (e) {
+    throw failure(module, `rule ${rule.id} (${rule.name})`, e);
+  }
+  for (const outcome of outcomes) {
+    const parsed = OutcomeSchema.safeParse(outcome);
+    if (!parsed.success) {
+      throw new ConfigError(
+        `invariant module ${module.name}: rule ${rule.id} (${rule.name}) returned a malformed outcome: ${formatZodError(parsed.error)}`,
+      );
+    }
+  }
+  const merged = mergeOutcomes(outcomes);
+  const result: InvariantResult = {
+    id: rule.id,
+    name: rule.name,
+    statement: rule.statement,
+    status: merged.status,
+    checks: merged.checks,
+    evidence: merged.evidence,
+  };
+  if (merged.detail !== undefined) result.detail = merged.detail;
+  return result;
+}
+
+/** Evaluates the rules of one invariant module against one system's recording. */
 export function evaluateInvariants(
   exchanges: readonly Exchange[],
   options: EvaluateOptions = {},
 ): InvariantReport {
-  const commands = parseCommands(exchanges);
-  const epochs = buildEpochs(commands);
-  const results: InvariantResult[] = RULES.map((rule) => {
-    const merged = mergeOutcomes(epochs.map((epoch) => rule.check(epoch)));
-    const result: InvariantResult = {
-      id: rule.id,
-      name: rule.name,
-      statement: rule.statement,
-      status: merged.status,
-      checks: merged.checks,
-      evidence: merged.evidence,
-    };
-    if (merged.detail !== undefined) result.detail = merged.detail;
-    return result;
-  });
-  const inconclusive: InconclusiveCondition[] = [];
-  const completion = snapshotBeforeAck(commands);
-  if (completion) inconclusive.push(completion);
+  const module: LoadedInvariantModule = options.module ?? orderLifecycle;
+  let commands: BaseCommand[];
+  try {
+    commands = exchanges.map((e, i) => module.parse(e, i));
+  } catch (e) {
+    throw failure(module, 'parse', e);
+  }
+  let epochs: unknown[];
+  try {
+    epochs = module.epochs ? module.epochs(commands) : defaultEpochs(commands);
+  } catch (e) {
+    throw failure(module, 'epochs', e);
+  }
+  const results = module.rules.map((rule) => runRule(module, rule, epochs));
+  let inconclusive: InconclusiveCondition[];
+  try {
+    inconclusive = module.inconclusive?.(commands) ?? [];
+  } catch (e) {
+    throw failure(module, 'inconclusive', e);
+  }
+  for (const c of inconclusive) {
+    const parsed = InconclusiveConditionSchema.safeParse(c);
+    if (!parsed.success) {
+      throw new ConfigError(
+        `invariant module ${module.name}: inconclusive returned a malformed condition: ${formatZodError(parsed.error)}`,
+      );
+    }
+  }
+  const counted = module.stateChanging === undefined ? null : new Set<string>(module.stateChanging);
   return {
     system: options.system ?? 'system',
     recording: options.recording ?? '',
+    module: { name: module.name, version: module.version, sha256: module.sha256 ?? null },
     exchanges: exchanges.length,
-    commands: commands.filter((c) => STATE_CHANGING.has(c.kind)).length,
-    snapshots: {
-      ledger_reads: commands.filter((c) => c.kind === 'read-ledger' && c.accepted).length,
-      stock_reads: commands.filter(
-        (c) => (c.kind === 'read-ledger' || c.kind === 'read-inventory') && c.accepted,
-      ).length,
-      order_reads: commands.filter((c) => c.kind === 'read-order').length,
-    },
+    commands: commands.filter((c) => (counted === null ? c.kind !== 'other' : counted.has(c.kind)))
+      .length,
+    snapshots: module.snapshots?.(commands) ?? { ledger_reads: 0, stock_reads: 0, order_reads: 0 },
     results,
     violations: results.filter((r) => r.status === 'violated').length,
     inconclusive,

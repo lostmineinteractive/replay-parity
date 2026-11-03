@@ -6,7 +6,7 @@ import {
   type JsonValue,
 } from '@replay-parity/core';
 import { describe, expect, it } from 'vitest';
-import { formatMilli, parseCommands, parseDecimalMilli } from './commands.js';
+import { formatMilli, parseCommands, parseDecimalMilli } from './order-lifecycle/commands.js';
 import { evaluateInvariants } from './evaluate.js';
 
 /** A small recording builder. Each call appends one exchange. */

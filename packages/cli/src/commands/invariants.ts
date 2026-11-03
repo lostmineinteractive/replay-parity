@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import { EXIT_CODES, readRecording, type InvariantReport } from '@replay-parity/core';
-import { evaluateInvariants } from '@replay-parity/invariants';
+import { evaluateInvariants, loadInvariantModule } from '@replay-parity/invariants';
 import { invariantSummary } from '@replay-parity/report';
 import { Command } from 'commander';
 import { err, out, type CliStreams } from '../io.js';
@@ -9,15 +9,26 @@ export interface InvariantsCommandOptions {
   recording: string;
   out?: string;
   system: string;
+  /** An ES module that exports an invariant module. Default: the built in order lifecycle rules. */
+  module?: string;
 }
 
 export function renderInvariantReport(report: InvariantReport): string {
   const lines = [
     `invariants for ${report.system} (${report.recording}): ${invariantSummary(report)}`,
   ];
-  lines.push(
-    `  ${report.exchanges} exchanges, ${report.commands} commands, ${report.snapshots.ledger_reads} ledger reads, ${report.snapshots.stock_reads} stock reads, ${report.snapshots.order_reads} order reads`,
-  );
+  if (report.module !== undefined) {
+    const m = report.module;
+    lines.push(
+      `  module ${m.name} ${m.version}${m.sha256 === null ? ' (built in)' : ` sha256 ${m.sha256}`}`,
+    );
+  }
+  const { ledger_reads, stock_reads, order_reads } = report.snapshots;
+  const reads =
+    ledger_reads + stock_reads + order_reads === 0
+      ? ''
+      : `, ${ledger_reads} ledger reads, ${stock_reads} stock reads, ${order_reads} order reads`;
+  lines.push(`  ${report.exchanges} exchanges, ${report.commands} commands${reads}`);
   for (const r of report.results) {
     lines.push(
       `  ${String(r.id).padStart(2)}. ${r.status.padEnd(14)} ${r.name} (${r.checks} checks)${r.detail === undefined ? '' : `: ${r.detail}`}`,
@@ -43,10 +54,13 @@ export async function runInvariants(
   options: InvariantsCommandOptions,
   streams: CliStreams,
 ): Promise<number> {
+  const module =
+    options.module === undefined ? undefined : await loadInvariantModule(options.module);
   const exchanges = await readRecording(options.recording);
   const report = evaluateInvariants(exchanges, {
     system: options.system,
     recording: options.recording,
+    module,
   });
   out(streams, renderInvariantReport(report));
   if (options.out !== undefined) {
@@ -59,9 +73,13 @@ export async function runInvariants(
 export function invariantsCommand(streams: CliStreams, exit: (code: number) => void): Command {
   return new Command('invariants')
     .description(
-      'Evaluate the ten independent invariants against one recording. Exits 0 when every invariant holds, 2 on a violation, 3 when a rule could not decide.',
+      'Evaluate independent invariants against one recording: the ten built in order lifecycle rules, or the rules of --module. Exits 0 when every invariant holds, 2 on a violation, 3 when a rule could not decide.',
     )
     .requiredOption('--recording <path>', 'the recording of one system')
+    .option(
+      '--module <path>',
+      'an ES module exporting name, version, parse, and rules; see docs/invariants.md',
+    )
     .option('--out <path>', 'write the report as JSON here')
     .option('--system <label>', 'label for the report', 'system')
     .action(async (opts: InvariantsCommandOptions) => {

@@ -10,6 +10,7 @@ describe('the committed reference recording', () => {
     const exchanges = await readRecording(RECORDING);
     const report = evaluateInvariants(exchanges, { system: 'reference', recording: RECORDING });
     expect(report.exchanges).toBe(283);
+    expect(report.module).toEqual({ name: 'order-lifecycle', version: '1.0.0', sha256: null });
     expect(report.inconclusive).toEqual([]);
     expect(report.results.map((r) => [r.id, r.status, r.evidence.length])).toEqual(
       Array.from({ length: 10 }, (_, i) => [i + 1, 'holds', 0]),

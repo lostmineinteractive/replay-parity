@@ -1,3 +1,4 @@
+import { splitAtResets } from '../module.js';
 import type { Command, OrderView, ShipmentView } from './commands.js';
 
 /**
@@ -168,20 +169,6 @@ function fieldsOf(view: OrderView): ObservedFields {
     remaining: view.remaining,
     canceled_unshipped: view.canceled_unshipped,
   };
-}
-
-function splitAtResets(commands: Command[]): Command[][] {
-  const epochs: Command[][] = [];
-  let current: Command[] = [];
-  for (const c of commands) {
-    if (c.kind === 'reset' && c.accepted && current.length > 0) {
-      epochs.push(current);
-      current = [];
-    }
-    current.push(c);
-  }
-  epochs.push(current);
-  return epochs;
 }
 
 function buildEpoch(commands: Command[]): Epoch {

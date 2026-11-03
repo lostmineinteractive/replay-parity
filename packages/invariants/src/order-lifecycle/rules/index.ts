@@ -23,4 +23,4 @@ export const RULES: readonly Rule[] = [
   rule10,
 ];
 
-export { Collector, mergeOutcomes, type Rule, type RuleOutcome } from './rule.js';
+export type { Rule } from './rule.js';

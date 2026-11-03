@@ -28,7 +28,8 @@ export const InvariantEvidenceSchema = z
 
 export const InvariantResultSchema = z
   .object({
-    id: z.number().int().min(1).max(10),
+    /** A positive integer, unique within the module that produced the report. */
+    id: z.number().int().min(1),
     name: z.string().min(1),
     statement: z.string().min(1),
     status: InvariantStatusSchema,
@@ -40,10 +41,25 @@ export const InvariantResultSchema = z
   })
   .strict();
 
+/** The invariant module that produced a report. */
+export const InvariantModuleInfoSchema = z
+  .object({
+    name: z.string().min(1),
+    version: z.string(),
+    /** The SHA-256 of the module file or rules file, or null for a module built into the package. */
+    sha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable(),
+  })
+  .strict();
+
 export const InvariantReportSchema = z
   .object({
     system: z.string().min(1),
     recording: z.string(),
+    /** Absent in reports written before invariant modules existed, which all came from the order lifecycle rules. */
+    module: InvariantModuleInfoSchema.optional(),
     exchanges: z.number().int().nonnegative(),
     commands: z.number().int().nonnegative(),
     snapshots: z
@@ -63,3 +79,4 @@ export type InvariantStatus = z.output<typeof InvariantStatusSchema>;
 export type InvariantEvidence = z.output<typeof InvariantEvidenceSchema>;
 export type InvariantResult = z.output<typeof InvariantResultSchema>;
 export type InvariantReport = z.output<typeof InvariantReportSchema>;
+export type InvariantModuleInfo = z.output<typeof InvariantModuleInfoSchema>;

@@ -9,7 +9,7 @@ export {
   type CommandKind,
   type OrderView,
   type ShipmentView,
-} from './commands.js';
+} from './order-lifecycle/commands.js';
 export {
   buildEpochs,
   snapshotOf,
@@ -19,6 +19,24 @@ export {
   type Observation,
   type ShipmentRecord,
   type StockSnapshot,
-} from './model.js';
-export { RULES, type Rule, type RuleOutcome } from './rules/index.js';
-export { evaluateInvariants, snapshotBeforeAck, type EvaluateOptions } from './evaluate.js';
+} from './order-lifecycle/model.js';
+export { RULES, type Rule } from './order-lifecycle/rules/index.js';
+export {
+  ORDER_LIFECYCLE_NAME,
+  ORDER_LIFECYCLE_VERSION,
+  orderLifecycle,
+  snapshotBeforeAck,
+} from './order-lifecycle/index.js';
+export { Collector, EVIDENCE_CAP, mergeOutcomes, type RuleOutcome } from './outcome.js';
+export {
+  defaultEpochs,
+  splitAtResets,
+  type BaseCommand,
+  type CommandEpoch,
+  type InvariantModule,
+  type InvariantRule,
+  type LoadedInvariantModule,
+  type SnapshotCounts,
+} from './module.js';
+export { loadInvariantModule, validateInvariantModule } from './load.js';
+export { evaluateInvariants, type EvaluateOptions } from './evaluate.js';
