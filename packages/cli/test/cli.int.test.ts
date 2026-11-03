@@ -38,6 +38,10 @@ controls:
 
 // Every command takes the configuration flags.
 const CONFIG_FLAGS = ['--config', '--profile'];
+/** The progress flags of the commands that run long. */
+const PROGRESS_FLAGS = ['--progress', '--progress-every', '--heartbeat-ms'];
+/** The options of the program itself, listed in the top level help. */
+const GLOBAL_FLAGS = ['--log-level', '--log-format'];
 
 const FLAGS: Record<string, string[]> = {
   capture: [
@@ -58,6 +62,7 @@ const FLAGS: Record<string, string[]> = {
     '--upstream-key',
     '--upstream-insecure',
     '--upstream-servername',
+    ...PROGRESS_FLAGS,
     ...CONFIG_FLAGS,
   ],
   replay: [
@@ -98,6 +103,9 @@ const FLAGS: Record<string, string[]> = {
     '--upstream-key',
     '--upstream-insecure',
     '--upstream-servername',
+    ...PROGRESS_FLAGS,
+    '--trace',
+    '--metrics-port',
     ...CONFIG_FLAGS,
   ],
   report: ['--run', '--out', '--format', '--explain', '--fail-on-verdict', ...CONFIG_FLAGS],
@@ -135,6 +143,7 @@ const FLAGS: Record<string, string[]> = {
     '--upstream-key',
     '--upstream-insecure',
     '--upstream-servername',
+    ...PROGRESS_FLAGS,
     ...CONFIG_FLAGS,
   ],
   agent: [
@@ -166,6 +175,7 @@ const FLAGS: Record<string, string[]> = {
     ...CONFIG_FLAGS,
   ],
   doctor: ['--target', '--reference', '--reset', ...CONFIG_FLAGS],
+  compare: ['--format', ...CONFIG_FLAGS],
 };
 
 class Sink extends Writable {
@@ -220,6 +230,13 @@ describe('help and usage', () => {
     const top = await rp(['--help']);
     expect(top.code).toBe(0);
     for (const name of Object.keys(FLAGS)) expect(top.out).toContain(`  ${name}`);
+    for (const flag of GLOBAL_FLAGS) {
+      const line = top.out.split('\n').find((l) => l.includes(`${flag} `));
+      expect(line, flag).toBeDefined();
+      expect(
+        ((line as string).split(flag)[1] ?? '').replace(/<[^>]*>/g, '').trim().length,
+      ).toBeGreaterThan(5);
+    }
     for (const [name, flags] of Object.entries(FLAGS)) {
       const help = await rp([name, '--help']);
       expect(help.code).toBe(0);
