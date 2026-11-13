@@ -6,7 +6,7 @@
 # the packages it depends on, and lays out the cli with its production
 # dependencies in /out the way the demo images do. The final stage is distroless:
 # no shell, no package manager, and a non root user.
-FROM node:22-slim AS build
+FROM node:25-slim AS build
 WORKDIR /repo
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json tsconfig.base.json ./
