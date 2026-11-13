@@ -80,7 +80,7 @@ With `ANTHROPIC_API_KEY` set, `make demo` runs `rp agent` for two rounds against
 | `demo/rp.yaml`                                                                                         | the committed file           | The shared replay settings, with the `strict` profile naming `demo/diff-rules.yaml` and the `unordered` profile naming `demo/diff-rules-unordered.yaml`. `scripts/demo.sh` passes `--config demo/rp.yaml --profile <name>` on every replay, so an edit to the file changes every replay, and `examples/rp.yaml` explains every key. |
 | `RP_REPLAY_<FLAG>`                                                                                     | unset                        | A variable for any `rp replay` flag sits above the profile and below the command line, so `RP_REPLAY_CONCURRENCY=4 make demo` changes the pool without editing the file. The target, the run file, and the candidate recording are passed as flags by the script and win over a variable.                                           |
 
-## Measured on this machine
+## Measured figures
 
 Apple M4 Max, 16 cores, Docker Desktop 29.4.1 with a linux/aarch64 engine. Commands and figures from the run recorded in the changelog.
 
@@ -103,4 +103,4 @@ node packages/cli/dist/src/main.js replay --recording demo/recording.jsonl --tar
   --rules demo/diff-rules.yaml --thresholds demo/thresholds.yaml --barrier-tag list-ledger --out run.json
 ```
 
-A one round agent smoke was run that way on this machine: the committed recording replayed at `max` pacing against the reference on 3100 and the classic candidate on 3101, then `rp agent` against the candidate's run with four cases per round, one round, a fifty cent budget, and `--export-recording`. The model proposed four cases and all four were kept, the one cent difference on `$.total`, the inventory ordering, the unknown id answered 200 with no body, and the `adjust-stock` p99 over 40 runs at 62.9 ms against the 40 ms limit, for $0.0159, and the exported recording of four exchanges passed `rp recording validate`.
+A one round agent smoke was run that way locally: the committed recording replayed at `max` pacing against the reference on 3100 and the classic candidate on 3101, then `rp agent` against the candidate's run with four cases per round, one round, a fifty cent budget, and `--export-recording`. The model proposed four cases and all four were kept, the one cent difference on `$.total`, the inventory ordering, the unknown id answered 200 with no body, and the `adjust-stock` p99 over 40 runs at 62.9 ms against the 40 ms limit, for $0.0159, and the exported recording of four exchanges passed `rp recording validate`.

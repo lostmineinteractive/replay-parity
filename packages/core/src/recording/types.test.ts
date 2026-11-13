@@ -23,7 +23,7 @@ const specExample = {
 };
 
 describe('ExchangeSchema', () => {
-  it('accepts the example from the spec', () => {
+  it('accepts the documented example exchange', () => {
     expect(ExchangeSchema.parse(specExample)).toEqual(specExample);
   });
 

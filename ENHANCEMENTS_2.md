@@ -1,10 +1,10 @@
 # Enhancements, round two
 
-This document proposes the work that turns replay-parity from a complete portfolio build into a tool an engineering organization can run against production systems, on a schedule, with confidence in the verdict. It was written after reading every package, the demo, the scripts, the CI workflow, the docs, `PLAN.md`, `CHANGELOG.md`, and `DEFERRED.md` at commit `62046e5`. Every "today" statement below names the file it comes from so it can be checked.
+This document proposes the work that turns replay-parity from a working demo into a tool an engineering organization can run against production systems, on a schedule, with confidence in the verdict. It describes the repository at commit `62046e5`. Every "today" statement below names the file it comes from so it can be checked.
 
 ## Status
 
-Three waves of engineering landed after this document was written, so the "today" statements below describe commit `62046e5` and are partly out of date. The table says what has landed since, from the entries "Enhancements, round two: waves one and two" and "Enhancements, round two: wave three" in `CHANGELOG.md`, and `DEFERRED.md` lists what those waves noticed and left out.
+Three waves of work landed after this document was written, so the "today" statements below describe commit `62046e5` and are partly out of date. The table says what has landed since, from the entries "Enhancements, round two: waves one and two" and "Enhancements, round two: wave three" in `CHANGELOG.md`, and `DEFERRED.md` lists what those waves noticed and left out.
 
 | Id  | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -142,7 +142,7 @@ Sizes are for one engineer: S is up to three days, M is one to two weeks, L is t
 
 ### E5. Thresholds, baselines, and gating
 
-**Today.** `evaluate.ts` gates latency per tag, ratio to reference overall only, error rate overall only, and mismatch rate per tag. There is no comparison with an earlier run, so a candidate that regresses from 0 to 0.05 percent mismatches passes a 0.1 percent gate without anyone noticing the trend. `rp report` exits 0 regardless of the verdict, which `PLAN.md` records as a deliberate open question.
+**Today.** `evaluate.ts` gates latency per tag, ratio to reference overall only, error rate overall only, and mismatch rate per tag. There is no comparison with an earlier run, so a candidate that regresses from 0 to 0.05 percent mismatches passes a 0.1 percent gate without anyone noticing the trend. `rp report` exits 0 regardless of the verdict, which was left as an open question when the command was built.
 
 **Proposal.**
 

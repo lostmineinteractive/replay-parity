@@ -104,7 +104,7 @@ describe('pass through', () => {
     }
   });
 
-  it('records an exchange per request with the fields from the spec', async () => {
+  it('records an exchange per request with every recording field', async () => {
     await request(`${h.proxyUrl}/v1/orders?source=test&source=again&dry=1`, {
       method: 'POST',
       headers: {

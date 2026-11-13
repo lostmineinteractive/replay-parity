@@ -23,7 +23,7 @@ pacing:
 `;
 
 describe('parseThresholds', () => {
-  it('parses the example from the spec', () => {
+  it('parses the documented example thresholds', () => {
     expect(parseThresholds(example)).toEqual({
       latency: {
         min_samples: 1,

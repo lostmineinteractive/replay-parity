@@ -14,7 +14,7 @@ import { Store, type OrderRecord, type StockRow, type StoredResponse } from './s
 
 /**
  * Inventory and fulfillment service for the replay-parity demo.
- * Candidate: the planted lines are marked DIVERGENCE (the original four) and DEFECT (Addendum A).
+ * Candidate: the planted lines are marked DIVERGENCE (the original four) and DEFECT (the seeded defects).
  *
  * Routes:
  *   GET  /v1/inventory                  list stock

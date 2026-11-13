@@ -54,7 +54,7 @@ rp replay --recording lifecycle.jsonl --target "$CANDIDATE_URL" --rules demo/dif
 
 ## Why does a timing test stall on a loaded machine?
 
-This is about the repository's own test suite and not about `rp replay`. On the macOS machine where it was observed, a vitest worker stalls for about 9 seconds when another suite runs at the same time. A synchronous test of a few hundred milliseconds then takes 7 seconds, and a test with a plain elapsed bound fails. The engineer's hypothesis is process scheduling or timer throttling of the forked workers, and the cause is still open. The options listed to try are `pool: threads` or fewer workers in the CI configuration.
+This is about the repository's own test suite and not about `rp replay`. On the macOS machine where it was observed, a vitest worker stalls for about 9 seconds when another suite runs at the same time. A synchronous test of a few hundred milliseconds then takes 7 seconds, and a test with a plain elapsed bound fails. The likely cause is process scheduling or timer throttling of the forked workers, but it is not confirmed. The options listed to try are `pool: threads` or fewer workers in the CI configuration.
 
 The timing policy in `docs/testing.md` makes the suite pass under the stall. A timing test reads the run's own fields, `scheduled_at_ms`, `sent_at_ms`, and `acked_at_ms`, and not a stopwatch. Its absolute bound leaves at least 1500 ms over the quiet figure with a comment saying why. It carries `retry: 2`, and an `onTestFailed` hook prints what the failed attempt saw, so a retry is never silent. A candidate that runs in the test's own process shares the worker's stalls, so a test that expects a `pass` verdict gates on the correctness and error rows and not on latency.
 
