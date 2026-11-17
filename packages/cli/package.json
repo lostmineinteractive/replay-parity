@@ -52,7 +52,7 @@
     "@replay-parity/replay": "workspace:*",
     "@replay-parity/report": "workspace:*",
     "@replay-parity/shrink": "workspace:*",
-    "commander": "^15.0.0",
+    "commander": "^15.1.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
