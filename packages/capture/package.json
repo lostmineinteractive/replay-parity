@@ -44,7 +44,7 @@
   ],
   "dependencies": {
     "@replay-parity/core": "workspace:*",
-    "undici": "^8.12.2"
+    "undici": "^8.12.4"
   },
   "devDependencies": {
     "@replay-parity/demo-reference": "workspace:*"
