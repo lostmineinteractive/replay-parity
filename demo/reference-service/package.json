@@ -21,6 +21,6 @@
     "start": "node dist/src/server.js"
   },
   "dependencies": {
-    "fastify": "^5.12.7"
+    "fastify": "^5.12.8"
   }
 }
